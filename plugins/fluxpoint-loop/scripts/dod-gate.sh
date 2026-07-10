@@ -22,7 +22,7 @@ counter="$sd/$sid.blocks"
 [ -f "$dirty" ] || exit 0
 mkdir -p "$sd"
 
-if [ ! -x scripts/harness.sh ]; then
+if [ ! -f scripts/harness.sh ]; then
   rm -f "$dirty"
   fpl_json_obj systemMessage "fluxpoint-loop: code changed this session but scripts/harness.sh is absent, so the DoD gate has nothing to enforce. /fluxpoint-loop:loop-init scaffolds it."
   exit 0
@@ -31,7 +31,7 @@ fi
 nl=$'\n'
 findings=""
 hlog="$sd/full.log"
-if ! scripts/harness.sh --full >"$hlog" 2>&1; then
+if ! bash scripts/harness.sh --full >"$hlog" 2>&1; then
   findings="harness --full RED (last 40 lines):${nl}$(tail -n 40 "$hlog")${nl}${nl}"
 fi
 hy="$(fpl_scan_hygiene | head -n 40)"

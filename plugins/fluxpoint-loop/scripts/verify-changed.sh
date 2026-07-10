@@ -23,9 +23,9 @@ sd="$(fpl_state_dir)"
 mkdir -p "$sd"
 : >"$sd/$sid.dirty"
 
-[ -x scripts/harness.sh ] || exit 0
+[ -f scripts/harness.sh ] || exit 0
 log="$sd/changed.log"
-if ! scripts/harness.sh --changed "$file" >"$log" 2>&1; then
+if ! bash scripts/harness.sh --changed "$file" >"$log" 2>&1; then
   {
     printf 'harness --changed RED for %s (last 30 lines):\n' "$file"
     tail -n 30 "$log"

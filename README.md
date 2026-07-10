@@ -142,7 +142,11 @@ built into the hooks.
 1. Create the GitHub repo (private is fine) — the snippet above assumes
    `flux-point-studios/claude-plugins`; edit both the snippet and this
    README if the org or name differs.
-2. Push, then validate locally: `claude plugin validate .`
+2. Push, then validate locally: `claude plugin validate .` As of v0.1.1
+   the hooks are invoked via `bash`, so a stripped exec bit (GitHub web
+   uploads and Windows checkouts drop it) can no longer disarm the gate;
+   still, keep the bits correct for direct runs:
+   `git update-index --chmod=+x $(git ls-files '*.sh')` and commit.
 3. Smoke it end to end in a scratch repo:
    `/plugin marketplace add <org>/claude-plugins`, install, run
    `/fluxpoint-loop:loop-init`, make an edit containing `FIXME`, try to

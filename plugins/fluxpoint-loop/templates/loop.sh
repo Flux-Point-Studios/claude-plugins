@@ -27,7 +27,7 @@ for ((i = 1; i <= MAX_ITER; i++)); do
     echo "loop: claude exited non-zero on iteration $i (see logs)" >&2
   git add -A
   git commit -q -m "loop: iteration $i" || true
-  if scripts/harness.sh --full && grep -q '^STATUS: DONE' LOOP.md; then
+  if bash scripts/harness.sh --full && grep -q '^STATUS: DONE' LOOP.md; then
     echo "loop: harness green and STATUS DONE after iteration $i"
     exit 0
   fi

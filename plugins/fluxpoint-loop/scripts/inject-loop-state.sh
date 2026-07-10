@@ -26,7 +26,7 @@ if [ -f "$sd/last-harness" ]; then
 else
   echo "- No harness verdict has been recorded in this repo yet."
 fi
-if [ -x scripts/harness.sh ]; then
+if [ -f scripts/harness.sh ]; then
   echo "- Harness: scripts/harness.sh is present. A Stop-hook DoD gate runs '--full' plus a hygiene scan whenever files were edited this session; red results block the stop, up to ${FPL_MAX_BLOCKS:-3} consecutive times, after which the gate yields with a checkpoint notice. Green is the only clean exit."
 else
   echo "- Harness: scripts/harness.sh is absent, so the DoD gate is dormant in this repo. The /fluxpoint-loop:loop-init command scaffolds it."

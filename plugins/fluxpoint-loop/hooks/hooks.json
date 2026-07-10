@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/inject-loop-state.sh\"",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/inject-loop-state.sh\"",
             "timeout": 15
           }
         ]
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/verify-changed.sh\"",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/verify-changed.sh\"",
             "timeout": 180
           }
         ]
@@ -28,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/dod-gate.sh\"",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/dod-gate.sh\"",
             "timeout": 600
           }
         ]
