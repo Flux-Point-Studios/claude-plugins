@@ -68,6 +68,19 @@ Definition of Done to reach green; on the third block, write a checkpoint —
 what failed, what was attempted, two alternative paths — and hand control
 back to the user.
 
+## The ship pipeline
+
+Green is not done. A slice ends in exactly one of two states: merged and
+cleaned (squash, branch deleted, default branch synced) or explicitly
+parked per the repo's Merge policy in LOOP.md — never at "PR opened,
+awaiting someone". Before any merge, red-team the diff; VERDICT: BLOCK is
+harness-red. Prefer the deterministic form: run scripts/harness.sh --full
+as a required CI check alongside the red-team verdict, then
+`gh pr merge --auto --squash --delete-branch` — GitHub executes "merge if
+green" against the named checks, so the merge decision never rests on the
+agent's self-report of green. Repos where merge triggers a deploy get
+their policy decided once, per repo, in LOOP.md, not renegotiated per PR.
+
 ## Evidence discipline
 
 Every completion claim gets a row in LOOP.md's Evidence table: the command

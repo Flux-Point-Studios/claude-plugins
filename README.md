@@ -80,6 +80,14 @@ Claude Code v2.1.72+, self-ending v2.1.202+; Esc cancels):
 scripts/harness.sh --full exits 0 and LOOP.md reads STATUS: DONE
 ```
 
+Every driver runs the same per-slice contract from `LOOP_PROMPT.md`, and
+a slice ends merged-and-cleaned or explicitly parked — never at "PR
+opened". Merge authority is decided once per repo in LOOP.md's Merge
+policy; the deterministic form is `harness.sh --full` as a required CI
+check plus the red-team verdict, then
+`gh pr merge --auto --squash --delete-branch`, so GitHub — not the agent's
+self-report — executes "merge if green".
+
 Standing guardrails (cloud Routines — run with the laptop closed; fresh
 clone per run, pushes only to `claude/`-prefixed branches; cron floor one
 hour, daily run caps by plan; create conversationally in-session, add API

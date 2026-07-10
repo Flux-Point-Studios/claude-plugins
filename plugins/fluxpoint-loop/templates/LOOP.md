@@ -20,6 +20,14 @@ needs a row in Evidence.
 ## Constraints
 - <what must not change on the way there>
 
+## Merge policy
+- Auto-merge: <yes | no>. Merge requires all of: CI harness check green,
+  red-team VERDICT: SHIP, no unresolved review threads.
+- Method: squash; delete branch on merge; sync default branch after.
+- Merge-triggers-deploy repos: <park for human | proceed>.
+- Standing authorizations: <e.g. starting scripts/loop.sh for Plan items
+  in this file needs no further approval>.
+
 ## Evidence
 | When (UTC) | Claim | Proof |
 |---|---|---|

@@ -26,5 +26,10 @@ step; do not stop at copying files.
    iterate until it exits 0, or report precisely what is red and why.
 6. Fill in the LOOP.md goal line. Use "$ARGUMENTS" if provided; otherwise
    ask for the goal before writing it.
-7. Finish with a short report: files created, harness verdict, and the one
-   command that starts an outer loop (`scripts/loop.sh`).
+7. Fill in the Merge policy block, asking the user once: may green + SHIP
+   PRs merge autonomously in this repo, and does merging trigger a deploy?
+   If auto-merge is on, verify `gh` is authenticated and record the
+   required CI check names the merge will wait on.
+8. Finish with a short report: files created, harness verdict, merge
+   policy, and the one command that starts an outer loop
+   (`scripts/loop.sh`).
