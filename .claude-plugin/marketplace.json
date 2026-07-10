@@ -1,0 +1,14 @@
+{
+  "name": "fluxpoint",
+  "owner": { "name": "Flux Point Studios" },
+  "plugins": [
+    {
+      "name": "fluxpoint-loop",
+      "source": "./plugins/fluxpoint-loop",
+      "description": "Loop Engineering harness: SessionStart loop-state injection, per-edit verification, Stop-hook Definition-of-Done gate, red-team reviewer agent, and loop scaffolding templates.",
+      "version": "0.1.0",
+      "category": "workflow",
+      "keywords": ["loop", "ralph", "tdd", "harness", "defi", "cardano"]
+    }
+  ]
+}
