@@ -55,7 +55,9 @@ longest unchanged prefix from cache.
    the same tree; merging their work is an explicit node, not an accident.
 6. Verify nodes run the harness themselves with Bash and return the real
    exit code in their contract. The graph trusts exit codes, not
-   adjectives.
+   adjectives — and never a mutating node's own reported exit: the node
+   that wrote the code cannot be the node that grades whether it passed.
+   Re-derive every gate from an independent node.
 7. Failure isolation: a dead node returns null — `.filter(Boolean)` and
    `log()` the drop. No silent caps: top-N, sampling, and no-retry each
    get a `log()` line saying what was left on the floor.
@@ -67,6 +69,12 @@ longest unchanged prefix from cache.
    refuters. Default is inherit.
 10. No `Date.now()`, `Math.random()`, or argless `new Date()` in scripts —
     they break resume. Stamp Evidence rows from the shell after the run.
+11. Normalize inputs and fail loudly. `args` may arrive as an object, a
+    JSON string, or a bare string; coerce all three, then `throw` on a
+    missing required field or `log()` the resolved value. A required input
+    that silently falls back to a default reviews or builds the wrong
+    thing — the most expensive failure a graph has, because it looks like
+    success.
 
 ## Canonical shapes
 

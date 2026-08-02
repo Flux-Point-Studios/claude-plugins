@@ -13,9 +13,25 @@ export const meta = {
 // No Date.now()/Math.random() here — they break resume; stamp the
 // Evidence row from the shell after the run.
 
+// The Workflow tool may hand `args` over as an object, a JSON string, or a
+// bare string. Normalize all three; never silently review the wrong thing.
+const A =
+  args && typeof args === 'object'
+    ? args
+    : typeof args === 'string' && args.trim()
+    ? (() => {
+        try {
+          return JSON.parse(args)
+        } catch {
+          return { target: args }
+        }
+      })()
+    : {}
+
 const target =
-  (args && args.target) ||
+  A.target ||
   'the uncommitted diff: git diff HEAD, plus untracked files from git status'
+log(`review target: ${target}`)
 
 // Contracts. required + minLength keep lazy output from satisfying them.
 const FINDINGS = {

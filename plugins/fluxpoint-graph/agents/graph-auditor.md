@@ -21,10 +21,17 @@ Audit checklist, in priority order:
   tolerant); downstream stages regex-parsing upstream prose; contracts that
   report adjectives ("tests pass") where an exit code fits.
 - Verification layer: an edge whose only verifier is the producing node's
-  self-report; harness commands named in the verification map that no node
+  self-report; a gate keyed on a mutating node's own reported exit code or
+  pass/fail instead of an exit re-derived by a node that did not produce the
+  artifact; harness commands named in the verification map that no node
   actually executes; refuter panels with even counts, or prompts that leak
   the desired answer; verify nodes asked to confirm instead of refute;
   graph output treated as overriding the Stop-hook DoD gate.
+- Input layer: args or params consumed without a normalize-and-fail-loud
+  guard, so a malformed or mis-serialized input (an object arriving as a
+  JSON string) silently substitutes a default and changes which work runs.
+  A required input with a silent fallback is a finding; it must throw or
+  log the resolved value.
 - Context layer: context packets that paste transcripts or whole files
   where spans and prior contracts suffice; a node depending on state no
   edge delivers to it (hidden coupling); two mutating nodes sharing a

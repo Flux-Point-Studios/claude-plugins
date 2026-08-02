@@ -4,7 +4,7 @@ export const meta = {
   phases: [
     { title: 'Council', detail: 'three independent designs, judged side by side' },
     { title: 'Implement', detail: 'one fluxpoint-loop slice on its own branch' },
-    { title: 'Gate', detail: 'real harness exit code, then red-team verdict' },
+    { title: 'Gate', detail: 'independent harness re-run, then red-team verdict' },
   ],
 }
 // Shape: council -> pipeline of loops -> gate (see skills/graph-engineering).
@@ -13,10 +13,25 @@ export const meta = {
 // scripts/harness.sh exists in the repo.
 // args: { goal: string, constraints?: string[] }
 
-if (!args || !args.goal) {
-  throw new Error('feature-graph requires args.goal — one line, as it would appear in LOOP.md')
+// Normalize args (object | JSON string | bare goal string); fail loudly, never
+// silently build the wrong feature.
+const A =
+  args && typeof args === 'object'
+    ? args
+    : typeof args === 'string' && args.trim()
+    ? (() => {
+        try {
+          return JSON.parse(args)
+        } catch {
+          return { goal: args }
+        }
+      })()
+    : {}
+if (!A.goal) {
+  throw new Error('feature-graph requires a goal — pass {goal: "..."} or a bare goal string')
 }
-const constraints = (args.constraints || []).join('; ') || 'none beyond LOOP.md'
+const goal = A.goal
+const constraints = (A.constraints || []).join('; ') || 'none beyond LOOP.md'
 
 const DESIGN = {
   type: 'object',
@@ -47,8 +62,19 @@ const SLICE = {
     diffSummary: { type: 'string', minLength: 20 },
     testsAdded: { type: 'array', items: { type: 'string' } },
     harnessCommand: { type: 'string', minLength: 1 },
-    harnessExit: { type: 'integer' },
+    harnessExit: { type: 'integer' }, // the implementer's SELF-REPORT — never gated on; see Gate
     evidence: { type: 'array', minItems: 1, items: { type: 'string', minLength: 10 } },
+  },
+}
+
+// Independent verifier's contract. The gate trusts THIS exit code, re-derived
+// by a node that did not write the code, not the implementer's self-report.
+const HARNESS_CHECK = {
+  type: 'object',
+  required: ['exit', 'tail'],
+  properties: {
+    exit: { type: 'integer' },
+    tail: { type: 'string' },
   },
 }
 
@@ -83,7 +109,7 @@ const designs = (
   await parallel(
     ANGLES.map(a => () =>
       agent(
-        `Design an implementation for the goal "${args.goal}" from exactly this angle: ${a}. ` +
+        `Design an implementation for the goal "${goal}" from exactly this angle: ${a}. ` +
           `Constraints: ${constraints}. Read the repo first; ground every plan step in real files. ` +
           `Plan steps must be TDD-shaped: each names the failing test before the code.`,
         { label: `design:${a.split(':')[0]}`, phase: 'Council', schema: DESIGN }
@@ -99,7 +125,7 @@ const scored = (
   await parallel(
     designs.map((d, i) => () =>
       agent(
-        `Judge this design for the goal "${args.goal}" on: TDD-ability, blast radius, ` +
+        `Judge this design for the goal "${goal}" on: TDD-ability, blast radius, ` +
           `fit with the Definition of Done in LOOP.md, and honesty of its risks. ` +
           `Design: ${JSON.stringify(d)}. Score 1-10; name its strongest and weakest point.`,
         { label: `judge:${i + 1}`, phase: 'Council', schema: SCORE, effort: 'high' }
@@ -115,7 +141,7 @@ log(`council winner (${winner.score.score}/10): ${winner.design.summary}`)
 phase('Implement')
 const slice = await agent(
   `Implement exactly this design as one fluxpoint-loop slice: ${JSON.stringify(winner.design)}. ` +
-    `Goal: "${args.goal}". Constraints: ${constraints}. Work TDD strictly per LOOP_PROMPT.md: ` +
+    `Goal: "${goal}". Constraints: ${constraints}. Work TDD strictly per LOOP_PROMPT.md: ` +
     `failing test first, minimum code to green, scripts/harness.sh --changed <file> after each edit. ` +
     `Create and commit on a branch named claude/graph-<short-slug-of-goal> (test and code together). ` +
     `Before returning, run scripts/harness.sh --full and report its REAL exit code in the contract — ` +
@@ -126,9 +152,24 @@ const slice = await agent(
 if (!slice) throw new Error('implement node died — repair and re-run with resumeFromRunId')
 
 phase('Gate')
-if (slice.harnessExit !== 0) {
-  log(`harness red (exit ${slice.harnessExit}) — halting before red-team; the graph never argues with the harness`)
-  return { goal: args.goal, design: winner.design, slice, verdict: 'HARNESS-RED' }
+// Do NOT trust slice.harnessExit — that is the node that wrote the code grading
+// its own work, the exact self-report this whole system exists to distrust. An
+// independent node checks out the branch and re-runs the harness itself.
+const check = await agent(
+  `Independently verify branch ${slice.branch}. Check it out into a fresh worktree ` +
+    `(git worktree add), run scripts/harness.sh --full yourself, and return {exit, tail}: ` +
+    `the REAL integer exit code and the last ~20 lines of output. Do not trust any prior ` +
+    `claim about whether it passed; run it and report what you observe.`,
+  { label: 'harness-verify', phase: 'Gate', schema: HARNESS_CHECK }
+)
+if (!check) {
+  log('harness-verify node died — cannot confirm green; forcing HARNESS-RED, never SHIP on an unconfirmed gate')
+  return { goal, design: winner.design, slice, verdict: 'HARNESS-RED' }
+}
+if (check.exit !== 0) {
+  log(`independent harness RED (exit ${check.exit}) — halting before red-team; the graph never argues with the harness`)
+  if (slice.harnessExit === 0) log('NOTE: implementer self-reported exit 0 but independent re-run disagrees — self-report was false')
+  return { goal, design: winner.design, slice, check, verdict: 'HARNESS-RED' }
 }
 const redTeam = await agent(
   `Red-team the diff of branch ${slice.branch} against the default branch ` +
@@ -141,4 +182,4 @@ if (!redTeam) log('red-team node died — verdict forced to BLOCK, never SHIP by
 
 // Ship per LOOP.md Merge policy happens outside the graph: push the branch,
 // open the PR, let CI harness + this verdict gate the merge.
-return { goal: args.goal, design: winner.design, slice, redTeam, verdict }
+return { goal, design: winner.design, slice, check, redTeam, verdict }
