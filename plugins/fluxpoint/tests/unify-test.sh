@@ -55,6 +55,53 @@ check "skipped node: not counted as OK" "1" \
 check "skipped node: counted in artifact" "1" \
   "$(python3 -c "import json;print(json.load(open('.claude/fluxpoint/runs/wf_sk1.json'))['nodesSkipped'])")"
 
+# --- 2c. the two columns that decide shipping are derived, not declared ---
+# They arrived as CLI flags defaulting to 'n/a', so whether a campaign
+# reported its own blocking verdict depended on an orchestrator remembering
+# to pass it. The run already knows; the recorder now reads it.
+newrepo
+cp "$PLUGIN/templates/WORK.md" WORK.md
+BLOCKED='{"campaign":"c","outcome":"COMPLETE","contracts":{"gate":"HarnessCheckV1","rt":"RedTeamV1"},
+ "results":{"gate":{"exit":0},"rt":{"verdict":"BLOCK","findings":[{"severity":"HIGH"}]}},
+ "provenance":[{"node":"gate","status":"OK"},{"node":"rt","status":"OK"}]}'
+printf '%s' "$BLOCKED" | python3 "$PLUGIN/scripts/record-run.py" --run-id wf_b1 >/dev/null
+contains "BLOCK verdict degrades the outcome" "| wf_b1 | BLOCKED-REDTEAM |" WORK.md
+contains "BLOCK verdict is named in the claim" "red-team returned BLOCK — not shippable" WORK.md
+contains "verdict derived into the proof column" "red-team BLOCK" WORK.md
+check "artifact records the derived verdict" "BLOCK" \
+  "$(python3 -c "import json;print(json.load(open('.claude/fluxpoint/runs/wf_b1.json'))['redTeam'])")"
+
+# A flag that disagrees with the run does not get to win.
+newrepo
+cp "$PLUGIN/templates/WORK.md" WORK.md
+printf '%s' "$BLOCKED" | python3 "$PLUGIN/scripts/record-run.py" --run-id wf_b2 \
+  --harness 0 --red-team SHIP >/dev/null
+contains "a SHIP flag cannot override a BLOCK in the run" "| wf_b2 | BLOCKED-REDTEAM |" WORK.md
+
+# Worst exit wins: one red harness node is the campaign's answer.
+newrepo
+cp "$PLUGIN/templates/WORK.md" WORK.md
+TWOGATES='{"campaign":"c","outcome":"COMPLETE","contracts":{"g1":"HarnessCheckV1","g2":"HarnessCheckV1"},
+ "results":{"g1":{"exit":0},"g2":{"exit":2}},"provenance":[{"node":"g1","status":"OK"}]}'
+printf '%s' "$TWOGATES" | python3 "$PLUGIN/scripts/record-run.py" --run-id wf_b3 --harness 0 >/dev/null
+contains "a red harness node beats a green one" "harness exit 2" WORK.md
+
+# A run from before contracts were emitted still gets read.
+newrepo
+cp "$PLUGIN/templates/WORK.md" WORK.md
+OLD='{"campaign":"c","outcome":"COMPLETE","results":{"rt":{"verdict":"BLOCK","findings":[]}},
+ "provenance":[{"node":"rt","status":"OK"}]}'
+printf '%s' "$OLD" | python3 "$PLUGIN/scripts/record-run.py" --run-id wf_b4 >/dev/null
+contains "no contracts map: falls back to result shape" "| wf_b4 | BLOCKED-REDTEAM |" WORK.md
+
+# A campaign with neither node keeps the flags as the fallback they are.
+newrepo
+cp "$PLUGIN/templates/WORK.md" WORK.md
+printf '%s' "$RESULT" | python3 "$PLUGIN/scripts/record-run.py" --run-id wf_b5 \
+  --harness 0 --red-team SHIP >/dev/null
+contains "no gate node: the flag is still used" "harness exit 0; red-team SHIP" WORK.md
+contains "no gate node: outcome untouched" "| wf_b5 | COMPLETE |" WORK.md
+
 # --- 3. legacy 7-column GRAPH.md table still works (mid-migration repo) ---
 newrepo
 { printf '## Evidence\n\n'

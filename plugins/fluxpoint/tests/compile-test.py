@@ -308,6 +308,11 @@ for needle, why in [
     ("PROVENANCE", "provenance recorded"),
     ("const MAX_NODES", "the ceiling exists at run time, not only at compile time"),
     ("async function spawn(", "agents are spawned through one counted helper"),
+    # A consumer that has to infer a result's type from its shape will
+    # eventually file a harness exit code as a red-team verdict. The
+    # compiler knows the declared contract; it says so.
+    ("const CONTRACTS = {", "nodeId -> contract is emitted, not left to be sniffed"),
+    ("contracts: CONTRACTS", "the contract map rides out in the summary"),
 ]:
     ok = needle in js
     print(f"{'PASS' if ok else 'FAIL'}  emitted JS: {why:<42} -> {'found' if ok else 'MISSING'}")

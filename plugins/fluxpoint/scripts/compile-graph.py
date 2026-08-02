@@ -503,6 +503,16 @@ def emit(ir, contracts):
     a("const RESULTS = {}")
     a("const PROVENANCE = []")
     a("function note(id, status, detail) { PROVENANCE.push({ node: id, status, detail: detail || '' }) }")
+    # Which node returned which contract is known here and nowhere else.
+    # Without it a reader of the summary has to guess a result's type from
+    # its shape, and a recorder that guesses will eventually file a harness
+    # exit code as a red-team verdict.
+    a("// nodeId -> contract, so a consumer of the summary reads types rather")
+    a("// than sniffing them out of the result's shape.")
+    a("const CONTRACTS = {")
+    for n in ir["nodes"]:
+        a(f"  {js_str(n['id'])}: {js_str(n['contract'])},")
+    a("}")
     a("// Set whenever the campaign covered less ground than it set out to —")
     a("// budget declined work, or a sweep ended on its ceiling with more to")
     a("// find. It rides all the way out to the Evidence row, so a partial run")
@@ -510,7 +520,8 @@ def emit(ir, contracts):
     a("let INCOMPLETE = false")
     a("function summary(outcome) {")
     a("  const final = outcome === 'COMPLETE' && INCOMPLETE ? 'INCOMPLETE' : outcome")
-    a("  return { campaign, outcome: final, results: RESULTS, provenance: PROVENANCE }")
+    a("  return { campaign, outcome: final, results: RESULTS, provenance: PROVENANCE,")
+    a("           contracts: CONTRACTS }")
     a("}")
     a("")
     budget_cfg = ir.get("budget") or {}

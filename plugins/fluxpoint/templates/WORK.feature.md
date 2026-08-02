@@ -92,6 +92,8 @@ Uses the loop side of the plugin: the gate resolves `red-team-reviewer` via
       "prompt": "Red-team the diff of the branch implemented in this campaign against the default branch. Apply your full adversarial checklist. Context: {{prev}}",
       "contract": "RedTeamV1",
       "verify": "schema-only",
+      "haltWhen": "verdict == 'BLOCK'",
+      "haltReason": "red-team blocked the diff; a BLOCK verdict is harness-red and the campaign does not ship over it",
       "onRed": "halt"
     }
   ]
@@ -105,7 +107,10 @@ Uses the loop side of the plugin: the gate resolves `red-team-reviewer` via
 - `gate`: the only node whose exit code the campaign trusts. It never
   wrote the code. `haltWhen: exit != 0` stops the campaign before
   red-team burns tokens on a red branch.
-- `red-team`: `VERDICT: BLOCK` is harness-red; fix findings before merge.
+- `red-team`: `VERDICT: BLOCK` is harness-red, and `haltWhen` makes that
+  structural. A verdict this node collects but nothing reads is the exact
+  smell `graph-auditor` hunts — and being the terminal node is what makes
+  it dangerous, because falling through lands on `summary('COMPLETE')`.
 - Terminal: merge happens outside the graph, per WORK.md Merge policy,
   with the harness as a required CI check.
 
@@ -115,7 +120,8 @@ Uses the loop side of the plugin: the gate resolves `red-team-reviewer` via
 - Dead council seats drop and log; the campaign proceeds if at least one
   design survives.
 - Budget: 20 planned agent calls, verification floor 50k tokens.
-- Halt condition a human can name: independent harness exit != 0.
+- Halt conditions a human can name: independent harness exit != 0, and a
+  red-team verdict of BLOCK.
 
 ## Evidence
 Appended automatically by `scripts/record-run.py` — do not hand-edit.
