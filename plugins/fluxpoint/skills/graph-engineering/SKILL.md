@@ -66,9 +66,46 @@ compiler rejects, at compile time:
 - planned agent calls exceeding `budget.maxNodes`, or no ceiling at all —
   and rounds are priced in, so a four-round discovery loop is costed at
   four rounds, not one
+- `irreversible: true` without `confirm` in `requiredArgs`, without an
+  earlier `independent` node carrying a `haltWhen`, or combined with
+  `foreach`/`repeat`
 
 Those are structural. `/fluxpoint:graph-audit` judges what is left:
 scoping, tier-vs-stakes, prompt quality.
+
+## Effects that cannot be undone
+
+`mutates: true` buys `isolation: 'worktree'`. That is real containment for
+a filesystem write and none whatsoever for a chain write, a published
+release, or a destructive migration — the same marker on both reads as
+protection it does not provide.
+
+Mark those `irreversible: true`. Three things follow, and the second is
+the one that matters:
+
+1. The node refuses to fire unless a human named it in `confirm`. Naming
+   the campaign is not naming the effect, so a blanket "yes" carries
+   nothing along with it, and refusal is its own outcome
+   (`CONFIRM-REQUIRED`), never a warning in a log.
+2. **Resume stops double-firing.** Repair-one-node-and-resume is the
+   recovery path this skill prescribes, and it is also the operation that
+   mints twice: every node after the repair re-runs. Before each
+   irreversible spawn the compiled graph checks a committed ledger keyed by
+   campaign, node, and prompt hash; a hit restores the recorded result and
+   logs `REPLAYED-FROM-LEDGER` instead of performing the effect. A replayed
+   node is filed `REPLAYED`, never `OK` — a ceremony that did not happen
+   must not read like one that did.
+3. The gate must be *ordered before* the effect. The compiler requires an
+   earlier `independent` node with a `haltWhen`, because a verifier that
+   runs afterwards cannot un-mint an NFT.
+
+Two limits, stated rather than papered over. The sandbox running the
+compiled graph has no filesystem, so the ledger row is written from the run
+summary afterwards — a crash between the effect landing and the run ending
+leaves no record, and the confirm gate is what stands in that window.
+And editing a ceremony's prompt changes its key, which re-arms it; that is
+deliberate (a different effect deserves a different record) and is the
+second reason a human has to name the node every time.
 
 ## Choosing a verification tier
 

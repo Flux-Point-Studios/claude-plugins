@@ -93,6 +93,7 @@ def main():
     ap.add_argument("--red-team", default="n/a", help="SHIP | BLOCK | n/a")
     ap.add_argument("--executor", default="workflow", help="workflow | degraded-subagents")
     ap.add_argument("--state-dir", default=".claude/fluxpoint/runs")
+    ap.add_argument("--root", default=".", help="repo root holding .claude/fluxpoint")
     args = ap.parse_args()
 
     raw = open(args.result).read() if args.result else sys.stdin.read()
@@ -124,6 +125,17 @@ def main():
         # verdict it collected. Halting is the graph's job; refusing to
         # file the run as clean is this script's.
         outcome = "BLOCKED-REDTEAM"
+
+    # 1a. Irreversible effects go into the once-only ledger first. Written
+    # before anything else in this script, because a row missing here is the
+    # one that lets a resume perform a chain write twice.
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    try:
+        import ledger as _ledger
+        for r in _ledger.append_from_summary(args.root, summary, args.run_id):
+            print(f"record-run: ledger recorded {r['node']} — {r['evidence']}")
+    except Exception as e:  # noqa: BLE001 - never lose the Evidence row over this
+        print(f"record-run: ledger append failed: {e}", file=sys.stderr)
 
     # 1. Durable provenance artifact.
     os.makedirs(args.state_dir, exist_ok=True)

@@ -22,7 +22,8 @@ does.
 - `scripts/` — `lib.sh`, `inject-state.sh`, `verify-changed.sh`,
   `dod-gate.sh` (loop); `compile-graph.py`, `record-run.py` (graph);
   `proof-guard.py` (proof-strength ratchet); `plutus-budget.py` (on-chain
-  size and execution-unit limits); `migrate.py` (pre-1.0 migration,
+  size and execution-unit limits); `ledger.py` (once-only guard for
+  irreversible nodes); `migrate.py` (pre-1.0 migration,
   plan/apply/finalize).
 - `contracts/` — versioned named schemas (`FindingsV1`, `VerdictV1`,
   `HarnessCheckV1`, `DesignV1`, `SliceV1`, `RedTeamV1`).

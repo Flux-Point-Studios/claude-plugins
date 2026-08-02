@@ -43,7 +43,7 @@ NODE_FIELDS = {
     "id", "phase", "prompt", "contract", "role", "effort", "model", "agentType",
     "foreach", "after", "mutates", "independent", "verifies", "verify",
     "verifyOver", "expectItems", "haltWhen", "haltReason", "onRed", "isolation",
-    "repeat",
+    "repeat", "irreversible",
 }
 REPEAT_FIELDS = {"untilDryRounds", "maxRounds", "dedupeBy"}
 BUDGET_FIELDS = {"maxNodes", "verifyFloorTokens", "nodeFloorTokens"}
@@ -284,6 +284,41 @@ def validate(ir, contracts):
                     f"{where}: mutates the tree but no node with independent:true "
                     f"verifies:'{nid}' — a mutator may not certify its own work"
                 )
+        # Irreversible effects. `mutates` buys worktree isolation, which is
+        # real containment for a filesystem write and none at all for a chain
+        # write — the same marker covering "edit a test file" and "mint a
+        # one-shot NFT" reads as protection it does not provide.
+        if n.get("irreversible"):
+            if n.get("foreach"):
+                f.append(
+                    f"{where}: irreversible cannot be combined with foreach — "
+                    f"a fan-out of unrepeatable effects under one confirmation "
+                    f"authorizes N ceremonies by naming one. Declare each"
+                )
+            if n.get("repeat"):
+                f.append(
+                    f"{where}: irreversible cannot be combined with repeat — "
+                    f"a discovery loop re-fires its node by design"
+                )
+            # The adversarial gate has to be ordered BEFORE the effect. A
+            # verifier that runs after cannot un-mint an NFT.
+            guards = [
+                o for o in seen.values()
+                if o.get("independent") and o.get("haltWhen") and o.get("verifies")
+            ]
+            if not guards:
+                f.append(
+                    f"{where}: irreversible but no earlier node with "
+                    f"independent:true, verifies:'<node>' and a haltWhen — the "
+                    f"gate must be ordered before the effect, because a verifier "
+                    f"that runs afterwards cannot undo it"
+                )
+            if "confirm" not in (ir.get("requiredArgs") or []):
+                f.append(
+                    f"{where}: irreversible requires 'confirm' in requiredArgs — "
+                    f"the run must refuse to start unless a human named this node "
+                    f"in --confirm, not merely launched the campaign"
+                )
         if n.get("verifies"):
             if n["verifies"] not in seen and n["verifies"] != nid:
                 f.append(f"{where}: verifies '{n['verifies']}' is not a node defined earlier")
@@ -500,6 +535,40 @@ def emit(ir, contracts):
         for name, items in lists.items():
             a(f"const {list_var(name)} = {json.dumps(items, indent=2)}")
         a("")
+    if any(n.get("irreversible") for n in nodes):
+        a("// --- irreversible effects: once-only ledger ---")
+        a("// Resume is the flagship recovery path and also the operation that")
+        a("// double-mints: repairing any upstream node re-fires everything")
+        a("// after it. The ledger is consulted before every irreversible")
+        a("// spawn, so replay-safety is structural rather than something the")
+        a("// operator has to remember. It cannot help across a crash between")
+        a("// the effect and the run's end — nothing this script can reach")
+        a("// could, since it has no filesystem.")
+        a("if (!A._ledger || typeof A._ledger !== 'object')")
+        a("  throw new Error('this graph has irreversible nodes but no ledger was "
+          "passed — launch it with /fluxpoint:graph-run, which loads "
+          ".claude/fluxpoint/irreversible.jsonl into args._ledger')")
+        a("const LEDGER = A._ledger")
+        a("const LEDGER_WRITES = []")
+        a("// FNV-1a over the resolved prompt. A change-detector, not a security")
+        a("// boundary: a different prompt is a different operation and earns a")
+        a("// new key, which is also why editing a ceremony prompt re-arms it.")
+        a("// The confirm gate is what backstops that.")
+        a("function ledgerKey(id, prompt) {")
+        a("  let h = 2166136261")
+        a("  for (let i = 0; i < prompt.length; i++) {")
+        a("    h ^= prompt.charCodeAt(i); h = Math.imul(h, 16777619)")
+        a("  }")
+        a("  return `${campaign}|${id}|${(h >>> 0).toString(16)}`")
+        a("}")
+        a("// Naming the campaign is not naming the effect: --confirm lists the")
+        a("// node ids a human authorized, so a blanket yes cannot carry an")
+        a("// unrelated ceremony along with it.")
+        a("function confirmed(id) {")
+        a("  return String((A && A.confirm) || '').split(',')")
+        a("    .map(s => s.trim()).filter(Boolean).includes(id)")
+        a("}")
+        a("")
     a("const RESULTS = {}")
     a("const PROVENANCE = []")
     a("function note(id, status, detail) { PROVENANCE.push({ node: id, status, detail: detail || '' }) }")
@@ -520,8 +589,9 @@ def emit(ir, contracts):
     a("let INCOMPLETE = false")
     a("function summary(outcome) {")
     a("  const final = outcome === 'COMPLETE' && INCOMPLETE ? 'INCOMPLETE' : outcome")
+    ledger_out = ", ledger: LEDGER_WRITES" if any(n.get("irreversible") for n in nodes) else ""
     a("  return { campaign, outcome: final, results: RESULTS, provenance: PROVENANCE,")
-    a("           contracts: CONTRACTS }")
+    a(f"           contracts: CONTRACTS{ledger_out} }}")
     a("}")
     a("")
     budget_cfg = ir.get("budget") or {}
@@ -676,12 +746,48 @@ def emit_node(n, ir):
         verified = bool(panel and over)
         raw = f"{var}_raw" if verified else var
         on_red = n.get("onRed", "halt")
-        a(f"if (!affordable({js_str('node ' + nid)})) {{")
-        a(f"  note({js_str(nid)}, 'SKIPPED', 'budget floor reached')")
-        if on_red == "halt":
-            a("  return summary('BUDGET-EXHAUSTED')")
-        a("}")
-        a(f"const {raw} = affordable({js_str('node ' + nid)}) ? await spawn({prompt}, {opts(n, ir, phase, label)}) : null")
+        if n.get("irreversible"):
+            key = f"k_{var}"
+            a(f"const {key} = ledgerKey({js_str(nid)}, {prompt})")
+            # A replayed node must not also be filed 'OK'. Reporting a
+            # ceremony that did not happen the same way as one that did is
+            # the whole failure this is here to prevent.
+            a(f"const replayed_{var} = {key} in LEDGER")
+            a(f"let {raw}")
+            a(f"if (replayed_{var}) {{")
+            a(f"  log(`REPLAYED-FROM-LEDGER at {nid}: already recorded against this "
+              f"campaign — the effect is not performed again`)")
+            a(f"  note({js_str(nid)}, 'REPLAYED', 'once-only ledger hit; effect not repeated')")
+            a(f"  {raw} = LEDGER[{key}].result")
+            a("} else {")
+            a(f"  if (!confirmed({js_str(nid)})) {{")
+            a(f"    note({js_str(nid)}, 'REFUSED', 'irreversible node not named in confirm')")
+            a(f"    log(`REFUSED at {nid}: irreversible, and confirm does not name it. "
+              f"Re-launch with confirm listing {nid} once a human has authorized "
+              f"this specific effect.`)")
+            a("    return summary('CONFIRM-REQUIRED')")
+            a("  }")
+            a(f"  if (!affordable({js_str('node ' + nid)})) {{")
+            a(f"    note({js_str(nid)}, 'SKIPPED', 'budget floor reached')")
+            if on_red == "halt":
+                a("    return summary('BUDGET-EXHAUSTED')")
+            a("  }")
+            a(f"  {raw} = affordable({js_str('node ' + nid)}) ? await spawn({prompt}, {opts(n, ir, phase, label)}) : null")
+            # Recorded the moment it returns, so the row exists even if a later
+            # node halts the campaign.
+            a(f"  if ({raw}) LEDGER_WRITES.push({{ key: {key}, node: {js_str(nid)}, "
+              f"campaign, result: {raw} }})")
+            a("}")
+        else:
+            a(f"if (!affordable({js_str('node ' + nid)})) {{")
+            a(f"  note({js_str(nid)}, 'SKIPPED', 'budget floor reached')")
+            if on_red == "halt":
+                a("  return summary('BUDGET-EXHAUSTED')")
+            a("}")
+            a(f"const {raw} = affordable({js_str('node ' + nid)}) ? await spawn({prompt}, {opts(n, ir, phase, label)}) : null")
+        # A node restored from the ledger already carries its provenance.
+        if n.get("irreversible"):
+            a(f"if (!replayed_{var}) {{")
         a(f"if (!{raw}) {{")
         a(f"  note({js_str(nid)}, 'DEAD', 'node returned nothing')")
         if on_red == "halt":
@@ -692,6 +798,8 @@ def emit_node(n, ir):
         a("} else {")
         a(f"  note({js_str(nid)}, 'OK', '')")
         a("}")
+        if n.get("irreversible"):
+            a("}")
         if n.get("haltWhen"):
             # Halt on the raw contract: the gate reads the node's own fields.
             a(emit_halt(n, raw))

@@ -131,6 +131,28 @@ probe("node", "repeat", NODE_BASE,
       setnode(verify="skeptic:1", verifyOver="findings",
               repeat={"untilDryRounds": 2, "maxRounds": 6, "dedupeBy": ["file"]}))
 
+
+def _irreversible(ir):
+    """Mark the probe node irreversible, with the scaffolding it demands.
+
+    Probed against a graph that stays VALID on purpose: a rejection would
+    also register as "changed", and would prove the validator moved without
+    proving a single line of the once-only guard is emitted.
+    """
+    node = ir["nodes"][N]
+    ir["requiredArgs"] = ["confirm"]
+    ir["nodes"][:0] = [
+        {"id": "dry", "phase": "P0", "prompt": "rehearse without submitting",
+         "contract": "HarnessCheckV1"},
+        {"id": "gate", "phase": "P0", "prompt": "independently re-derive {{prev}}",
+         "after": "dry", "contract": "HarnessCheckV1", "independent": True,
+         "verifies": "dry", "haltWhen": "exit != 0"},
+    ]
+    node["irreversible"] = True
+
+
+probe("node", "irreversible", NODE_BASE, _irreversible)
+
 # ----------------------------------------------------------- repeat fields
 REPEAT_BASE = copy.deepcopy(NODE_BASE)
 REPEAT_BASE["nodes"][N].update(
@@ -182,7 +204,7 @@ probed = {
         "id", "phase", "prompt", "contract", "role", "effort", "model", "agentType",
         "foreach", "after", "mutates", "independent", "verifies", "verify",
         "verifyOver", "expectItems", "haltWhen", "haltReason", "onRed",
-        "isolation", "repeat",
+        "isolation", "repeat", "irreversible",
     },
     "repeat": {"untilDryRounds", "maxRounds", "dedupeBy"},
     "budget": {"maxNodes", "verifyFloorTokens", "nodeFloorTokens"},

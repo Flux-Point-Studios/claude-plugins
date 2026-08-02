@@ -21,32 +21,47 @@ Workflow tool requires.
    `python3 "$ROOT/scripts/compile-graph.py" <graph> -o .claude/workflows/<name>.graph.js`
    The output is generated code. Never hand-edit it; edit the IR and
    recompile, or the spec and the executor start lying to each other.
-4. Set `STATUS: RUNNING`. Invoke the Workflow tool with
+4. If the IR contains any `irreversible` node, load the once-only ledger
+   first — the compiled graph refuses to start without it:
+   ```
+   python3 "$ROOT/scripts/ledger.py" --load --campaign "<the IR's campaign line>"
+   ```
+   Put its output in `args._ledger`. Run `--list` and show the operator what
+   has already fired before asking for anything. `confirm` is theirs to
+   supply and yours never to invent: it is a comma-separated list of the
+   node ids a human authorized this run, and a node not named in it refuses
+   to fire. Never pass `confirm` because a previous run used it, because
+   the campaign obviously intends it, or because the user said "go" — only
+   when they have named the effect.
+5. Set `STATUS: RUNNING`. Invoke the Workflow tool with
    `{scriptPath: ".claude/workflows/<name>.graph.js", args: {...}}`.
    Pass args as a real JSON object, not a stringified one. Watch with
    `/workflows`; never poll with sleep.
-5. On completion, record the run — evidence is a build artifact, not
+6. On completion, record the run — evidence is a build artifact, not
    something you remember to write:
    ```
    echo '<the workflow return value as JSON>' | python3 "$ROOT/scripts/record-run.py" \
      --run-id <runId> --graph <graph> [--harness <exit>] [--red-team SHIP|BLOCK]
    ```
-   Before diagnosing an empty or surprising result, read the run's
-   `journal.jsonl` — it records what each node actually returned,
-   including cached ones.
-6. Partial failure is a targeted repair, not a restart: fix the one red
+   That also appends any irreversible effect to the ledger, so the next
+   run replays it instead of repeating it. Before diagnosing an empty or
+   surprising result, read the run's `journal.jsonl` — it records what
+   each node actually returned, including cached ones.
+7. Partial failure is a targeted repair, not a restart: fix the one red
    node (its IR prompt, its contract, or the code it touched), recompile,
    stop the run if still live, then re-invoke with
-   `{scriptPath, resumeFromRunId}`. The unchanged prefix returns from
-   cache; only the repaired node onward re-runs. Restarting a mostly-green
+   `{scriptPath, resumeFromRunId}` — passing `_ledger` again, freshly
+   loaded. The unchanged prefix returns from cache; only the repaired
+   node onward re-runs, and any irreversible node among them replays
+   from the ledger rather than firing twice. Restarting a mostly-green
    graph from zero is a finding.
-7. Graph green is not done. The campaign still exits through the
+8. Graph green is not done. The campaign still exits through the
    loop-engineering ship pipeline — `scripts/harness.sh --full`, red-team
    `VERDICT: SHIP`, the Merge policy in WORK.md — and the Stop-hook DoD
    gate keeps final authority. Set `STATUS: DONE` only when the Evidence
    row shows the terminal gate green; otherwise back to `READY` with the
    repair plan in Notes.
-8. If the Workflow tool is unavailable, degrade per the graph-engineering
+9. If the Workflow tool is unavailable, degrade per the graph-engineering
    skill: run the compiled script's nodes as parallel subagent calls with
    the same contracts, then record with `--executor degraded-subagents` so
    the Evidence row says which executor ran the graph.
