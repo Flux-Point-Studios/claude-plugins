@@ -180,23 +180,49 @@ def rewire_gitignore(path):
     return kept
 
 
+OLD_PLUGINS = ("fluxpoint-loop@fluxpoint", "fluxpoint-graph@fluxpoint")
+NEW_PLUGIN = "fluxpoint@fluxpoint"
+
+
+def check_settings(path):
+    """Parse settings before anything is mutated. Returns an error string, or
+    None when it is safe to proceed."""
+    if not os.path.exists(path):
+        return None
+    try:
+        d = json.load(open(path))
+    except json.JSONDecodeError as e:
+        return f"{path} is not valid JSON ({e}); fix it before migrating"
+    ep = d.get("enabledPlugins")
+    if ep is not None and not isinstance(ep, (dict, list)):
+        return f"{path}: enabledPlugins is a {type(ep).__name__}; expected an object or list"
+    return None
+
+
 def rewire_settings(path):
+    """Swap the split plugins for the unified one. Returns the new value, or
+    None when there was nothing to rewire — never a value implying success
+    that did not happen."""
     if not os.path.exists(path):
         return None
     d = json.load(open(path))
     ep = d.get("enabledPlugins")
     if isinstance(ep, dict):
-        changed = False
-        for old in ("fluxpoint-loop@fluxpoint", "fluxpoint-graph@fluxpoint"):
-            if old in ep:
-                del ep[old]
-                changed = True
-        if changed or "fluxpoint@fluxpoint" not in ep:
-            ep["fluxpoint@fluxpoint"] = True
-        d["enabledPlugins"] = ep
+        for old in OLD_PLUGINS:
+            ep.pop(old, None)
+        ep[NEW_PLUGIN] = True
+    elif isinstance(ep, list):
+        # The list form is equally valid config and used to be skipped
+        # silently, leaving the repo enabling plugins that no longer exist.
+        ep = [x for x in ep if x not in OLD_PLUGINS]
+        if NEW_PLUGIN not in ep:
+            ep.append(NEW_PLUGIN)
+    else:
+        return None
+    d["enabledPlugins"] = ep
     json.dump(d, open(path, "w"), indent=2)
     open(path, "a").write("\n")
-    return d.get("enabledPlugins")
+    return ep
 
 
 # --------------------------------------------------------------------- main
@@ -236,10 +262,21 @@ def main():
         if s["workflows"]:
             print(f"  workflows      : {len(s['workflows'])} compiled script(s) "
                   f"would be removed (build output; recompile from WORK.md)")
+        err = check_settings(p(".claude/settings.json"))
+        if err:
+            print(f"  BLOCKER        : {err}")
         print("  deletions      : none in this phase (--finalize removes sources)")
         return 0
 
     if args.apply:
+        # Everything that can fail is checked before anything is written, so a
+        # bad settings file cannot leave a half-migrated tree that --apply
+        # then refuses to touch again.
+        err = check_settings(p(".claude/settings.json"))
+        if err:
+            print(f"migrate: {err}", file=sys.stderr)
+            print("migrate: nothing was changed", file=sys.stderr)
+            return 1
         if s["work"]:
             print("migrate: WORK.md already exists — refusing to overwrite. "
                   "Move it aside and re-run, or finish the migration by hand.",
@@ -274,7 +311,10 @@ def main():
         print("  rewired .gitignore")
         ep = rewire_settings(p(".claude/settings.json"))
         if ep is not None:
-            print(f"  rewired enabledPlugins -> {sorted(ep)}")
+            shown = sorted(ep) if isinstance(ep, list) else sorted(ep)
+            print(f"  rewired enabledPlugins -> {shown}")
+        elif s["settings"]:
+            print("  settings.json has no enabledPlugins block — left untouched")
 
         for f in s["workflows"]:
             os.remove(p(".claude/workflows", f))

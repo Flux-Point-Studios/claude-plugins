@@ -109,6 +109,15 @@ def validate(ir, contracts):
     roles = ir.get("roles") or {}
     seen = {}
 
+    # A lists key is emitted as a JS identifier, so an unconstrained key is
+    # arbitrary code in the generated script. Constrain it like a node id.
+    for lname in lists:
+        if not IDENT.match(str(lname)):
+            f.append(
+                f"lists: key '{lname}' must be lowercase kebab-case — it is "
+                f"emitted as a JS identifier, so anything else is injected code"
+            )
+
     # Strict keys at every level: a typo must fail loudly, never quietly
     # disable the thing it was meant to configure.
     f += _unknown("IR", ir, IR_FIELDS)
@@ -209,6 +218,25 @@ def validate(ir, contracts):
         # the node is reading state no edge delivers to it.
         if "{{prev}}" in str(n.get("prompt", "")) and not n.get("after"):
             f.append(f"{where}: prompt uses {{{{prev}}}} but declares no 'after' — hidden coupling")
+
+        # Substitution tokens must resolve to something actually in scope for
+        # this node, or the graph compiles clean and dies at launch on a
+        # ReferenceError.
+        bound = {"A", "campaign"}
+        if n.get("after"):
+            bound.add("prev")
+        if n.get("foreach"):
+            bound.update({"item", "i"})
+        if n.get("repeat"):
+            bound.add("seen")
+        for tok in SUBST.findall(str(n.get("prompt", ""))):
+            root = tok.split(".")[0].split("[")[0]
+            if root not in bound:
+                f.append(
+                    f"{where}: prompt uses {{{{{tok}}}}} but '{root}' is not in "
+                    f"scope for this node (available: {', '.join(sorted(bound))}) — "
+                    f"it would compile clean and throw at launch"
+                )
 
         # Discovery loops: unknown-size work needs a dry rule, a hard round
         # ceiling, and a dedup key, or it either never converges or never ends.
@@ -333,6 +361,12 @@ def plan_node_count(ir):
 
 
 # ------------------------------------------------------------------ emission
+def list_var(name):
+    """JS identifier for a lists key. Validated by IDENT, so this is a
+    rename, not sanitisation — the guarantee lives in validate()."""
+    return "LIST_" + name.replace("-", "_")
+
+
 def panel_size(n):
     """Refuters per item for this node's tier; 0 when it needs none."""
     m = TIER.match(str(n.get("verify", "schema-only")))
@@ -373,13 +407,25 @@ def opts(n, ir, phase, label):
     return "{ " + ", ".join(parts) + " }"
 
 
-def emit_halt(n, var):
+def halt_parts(n):
+    """(field, js_operator, js_literal) for a validated haltWhen.
+
+    The literal is re-emitted from its parsed value rather than pasted from
+    the regex match: a crafted quote in the source text must not be able to
+    terminate the string it lands in.
+    """
     m = HALT.match(str(n["haltWhen"]))
     field, op, lit = m.group(1), m.group(2), m.group(3)
     op = {"==": "===", "!=": "!=="}.get(op, op)
+    lit = json.dumps(int(lit)) if re.fullmatch(r"-?\d+", lit) else json.dumps(lit[1:-1])
+    return field, op, lit
+
+
+def emit_halt(n, var):
+    field, op, lit = halt_parts(n)
     return (
         f"if ({var} && {var}.{field} {op} {lit}) {{\n"
-        f"  log(`HALT at {n['id']}: {field}=${{{var}.{field}}} — {n.get('haltReason', 'halt condition met')}`)\n"
+        f"  log(`HALT at {n['id']}: {field}=${{{var}.{field}}} — ` + {js_str(n.get('haltReason', 'halt condition met'))})\n"
         f"  RESULTS[{js_str(n['id'])}] = {var}\n"
         f"  return summary('HALTED')\n"
         f"}}"
@@ -388,14 +434,12 @@ def emit_halt(n, var):
 
 def emit_halt_any(n, var):
     """haltWhen across a fan-out: any tripping item halts the campaign."""
-    m = HALT.match(str(n["haltWhen"]))
-    field, op, lit = m.group(1), m.group(2), m.group(3)
-    op = {"==": "===", "!=": "!=="}.get(op, op)
+    field, op, lit = halt_parts(n)
     return (
         f"const tripped_{var} = {var}.filter(r => r && r.{field} {op} {lit})\n"
         f"if (tripped_{var}.length) {{\n"
         f"  log(`HALT at {n['id']}: ${{tripped_{var}.length}}/${{{var}.length}} item(s) "
-        f"tripped {field} {op} {lit} — {n.get('haltReason', 'halt condition met')}`)\n"
+        f"tripped {field} {op} {lit} — ` + {js_str(n.get('haltReason', 'halt condition met'))})\n"
         f"  note({js_str(n['id'])}, 'HALTED', `${{tripped_{var}.length}} item(s) tripped "
         f"{field}`)\n"
         f"  RESULTS[{js_str(n['id'])}] = {var}\n"
@@ -454,7 +498,7 @@ def emit(ir, contracts):
     if lists:
         a("// --- lists ---")
         for name, items in lists.items():
-            a(f"const LIST_{name.replace('-', '_')} = {json.dumps(items, indent=2)}")
+            a(f"const {list_var(name)} = {json.dumps(items, indent=2)}")
         a("")
     a("const RESULTS = {}")
     a("const PROVENANCE = []")
@@ -525,8 +569,14 @@ def emit(ir, contracts):
         a("    )")
         a("  ))")
         a("  const cast = votes.filter(Boolean)")
-        a("  if (cast.length < n) log(`refuter died on ${label} — ${cast.length}/${n} votes cast`)")
-        a("  return { kills: cast.filter(v => v.refuted).length, cast: cast.length }")
+        a("  // Any missing vote — a dead refuter or one declined by the node")
+        a("  // ceiling — means this claim was not fully checked, and says so.")
+        a("  if (cast.length < n) log(`${label}: only ${cast.length}/${n} votes cast — UNVERIFIED`)")
+        a("  return {")
+        a("    kills: cast.filter(v => v.refuted).length,")
+        a("    cast: cast.length,")
+        a("    unverified: cast.length < n,")
+        a("  }")
         a("}")
         a("")
         a("// Applies a node's declared tier to every item it produced. Used by")
@@ -537,7 +587,7 @@ def emit(ir, contracts):
         a("  const judged = await parallel(produced.map((it, i) => () =>")
         a("    refute(JSON.stringify(it), `${label}:${i}`, phase, n).then(v => ({ ...it, ...v }))")
         a("  ))")
-        a("  return judged.filter(Boolean).filter(v => v.unverified || v.kills < need)")
+        a("  return judged.filter(Boolean).filter(v => v.kills < need)")
         a("}")
         a("")
 
@@ -576,7 +626,7 @@ def emit_node(n, ir):
     if n.get("repeat"):
         a(emit_repeat(n, ir, prompt, phase, panel, over))
     elif n.get("foreach"):
-        lst = "LIST_" + n["foreach"].replace("-", "_")
+        lst = list_var(n["foreach"])
         label = f"`{nid}:${{item.key || i}}`"
         a(f"let {var} = []")
         a(f"if (!affordable({js_str('node ' + nid)})) {{")
@@ -660,7 +710,7 @@ def emit_repeat(n, ir, prompt, phase, panel, over):
     dry_target = int(rep["untilDryRounds"])
     max_rounds = int(rep["maxRounds"])
     need = math.ceil(panel / 2) if panel else 0
-    lst = "LIST_" + n["foreach"].replace("-", "_") if n.get("foreach") else None
+    lst = list_var(n["foreach"]) if n.get("foreach") else None
     label = f"`{nid}:${{item.key || i}}`" if lst else js_str(nid)
 
     L = []
@@ -706,7 +756,7 @@ def emit_repeat(n, ir, prompt, phase, panel, over):
           f"{js_str(phase)}, {panel}).then(v => ({{ ...it, ...v }}))")
         a("  ))")
         a(f"  const kept_{var} = judged_{var}.filter(Boolean)"
-          f".filter(v => v.unverified || v.kills < {need})")
+          f".filter(v => v.kills < {need})")
     else:
         a(f"  const kept_{var} = fresh_{var}")
     a(f"  {var}.push(...kept_{var})")

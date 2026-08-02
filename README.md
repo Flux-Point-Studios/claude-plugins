@@ -199,10 +199,10 @@ built into the hooks.
 into any other repo, and `.github/workflows/harness.yml` runs it on every
 push and pull request. It checks every manifest and contract, syntax-checks
 every script, validates the plugin, compiles all campaign templates and
-`node --check`s the generated JavaScript, then runs six suites: compiler
-invariants, field-effect probes, Stop-gate regression cases, hook wiring and
-PostToolUse behavior, migration against real pre-1.0 fixtures, and
-unified-state compatibility.
+`node --check`s the generated JavaScript, then runs seven suites: compiler
+invariants, field-effect probes, codegen-injection regressions, Stop-gate
+regression cases, hook wiring and PostToolUse behavior, migration against
+real pre-1.0 fixtures, and unified-state compatibility.
 
 The field-effect suite exists because of the defect that kept recurring
 here: not a wrong output, a *silent* one. `verify: harness` was accepted,
@@ -222,6 +222,26 @@ the sources in place, `--finalize` deletes them — and refuses to finalize if
 `WORK.md` carries fewer Evidence rows than the sources did. The one thing it
 will not do is invent a `graph-ir` block for a pre-0.2 prose campaign; it
 flags that for a human instead.
+
+## Treating WORK.md as untrusted input
+
+The compiler generates JavaScript that is then executed, so every value
+interpolated from `WORK.md` is an injection surface — including one that
+arrives from a legacy `GRAPH.md` during migration. An adversarial review of
+v1.3.0 drove two fields to real code execution: `haltReason` was pasted
+straight into a template literal, and a `lists` key was emitted as a bare JS
+identifier. Both passed `--check` and a fully green harness.
+
+The rule now, enforced by `tests/security-test.py`, which compiles real
+payloads and runs the output to prove they stay inert:
+
+- free text (prompts, reasons, list values) is emitted through `js_str` or
+  `js_template`, which escape backticks, `${`, and backslashes;
+- anything emitted as a JS *identifier* — node ids, `lists` keys — is
+  constrained by `IDENT` at validation time, because escaping does not
+  apply to an identifier position;
+- halt literals are re-emitted from their parsed value, never pasted from
+  the matched source text.
 
 ## Security posture
 

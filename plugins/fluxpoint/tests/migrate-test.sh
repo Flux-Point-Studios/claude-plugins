@@ -211,7 +211,33 @@ has WORK.md "| 1 | find | findings | panel |"                 "pre-0.2: prose wo
 python3 "$PLUGIN/scripts/compile-graph.py" WORK.md --check >/dev/null 2>&1
 check "pre-0.2: does not pretend to compile" 1 "$?"
 
-# ================= 5. already-unified repo is a no-op ======================
+# ========= 5. bad settings.json must not leave a half-migration ============
+mkrepo; write_loop; setup_common
+printf '{"enabledPlugins":{"fluxpoint-loop@fluxpoint":true,},}\n' >.claude/settings.json
+$MIG "$ROOT/r" --plan 2>&1 | grep -q 'BLOCKER' \
+  && ok "bad settings: plan reports the blocker" "flagged" \
+  || bad "bad settings: plan reports the blocker" "silent"
+$MIG "$ROOT/r" --apply >/dev/null 2>&1
+check "bad settings: apply refuses" 1 "$?"
+[ ! -f WORK.md ] && ok "bad settings: nothing was written" "clean" \
+  || bad "bad settings: nothing was written" "half-migrated"
+[ -f LOOP_PROMPT.md ] && ok "bad settings: prompt not renamed either" "intact" \
+  || bad "bad settings: prompt not renamed either" "renamed anyway"
+
+# ========= 6. list-form enabledPlugins is rewired, not silently skipped =====
+mkrepo; write_loop; setup_common
+printf '{"enabledPlugins":["fluxpoint-loop@fluxpoint","fluxpoint-graph@fluxpoint"],"env":{"KEEP":"me"}}\n' \
+  >.claude/settings.json
+$MIG "$ROOT/r" --apply >/dev/null 2>&1
+python3 -c "
+import json,sys;d=json.load(open('.claude/settings.json'))
+ep=d['enabledPlugins']
+assert ep==['fluxpoint@fluxpoint'], ep
+assert d['env']=={'KEEP':'me'}, d" 2>/dev/null \
+  && ok "list settings: rewired to the unified plugin" "ok" \
+  || bad "list settings: rewired to the unified plugin" "$(cat .claude/settings.json | tr -d '\n')"
+
+# ================= 7. already-unified repo is a no-op ======================
 mkrepo; printf '# WORK: done\nSTATUS: ACTIVE\nMODE: loop\n' >WORK.md
 out="$($MIG "$ROOT/r" --plan 2>&1)"
 case "$out" in *"nothing to migrate"*) ok "already unified: reports no-op" "no-op" ;;

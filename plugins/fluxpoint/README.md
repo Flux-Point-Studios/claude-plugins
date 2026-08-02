@@ -35,6 +35,7 @@ does.
 - `tests/` — `compile-test.py` (compiler invariants), `emission-test.py`
   (field-effect probes), `gate-test.sh` (Stop-gate bypass cases),
   `hooks-test.sh` (hooks.json command strings + PostToolUse behavior),
+  `security-test.py` (codegen injection and red-team regressions),
   `migrate-test.sh` (migration against real pre-1.0 fixtures),
   `unify-test.sh` (state model and compatibility). All of it runs from
   `scripts/harness.sh --full` in CI.
@@ -74,6 +75,13 @@ Evidence table both modes append to.
 - `budget.maxNodes` is counted at run time as well as compile time. Every
   emitted agent call goes through one `spawn()` helper, because the
   compile-time estimate leans on `expectItems`, which is a guess.
+- **WORK.md is untrusted input.** The compiler turns it into JavaScript that
+  is then executed, so every interpolated value is an injection surface.
+  Free text goes through `js_str`/`js_template`; anything emitted as a JS
+  *identifier* (node ids, `lists` keys) is constrained by `IDENT` at
+  validation; halt literals are re-emitted from their parsed value rather
+  than pasted from the source. `tests/security-test.py` compiles real
+  payloads and executes the output to prove they stay inert.
 - Every field the IR accepts must demonstrably change what the compiler
   produces. `tests/emission-test.py` probes each one and fails on a field
   that changes nothing, because the recurring defect here was never a wrong
