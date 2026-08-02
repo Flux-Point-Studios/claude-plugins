@@ -1,0 +1,11 @@
+{
+  "$id": "DesignV1",
+  "type": "object",
+  "required": ["summary", "plan", "files", "risks"],
+  "properties": {
+    "summary": { "type": "string", "minLength": 20 },
+    "plan": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 10 } },
+    "files": { "type": "array", "items": { "type": "string" } },
+    "risks": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 10 } }
+  }
+}

@@ -56,6 +56,40 @@ _fpl_skip_path() {
   return 1
 }
 
+# fpl_code_dirty — succeeds when the working tree carries code the DoD gate
+# should judge: tracked modifications against HEAD, or untracked files, that
+# survive _fpl_skip_path. Re-derived from git rather than read from a marker,
+# so source edits made through the Bash tool (cat >, sed -i, git apply, tee)
+# arm the gate exactly like Write/Edit/MultiEdit do.
+fpl_code_dirty() {
+  local f
+  if git rev-parse --verify -q HEAD >/dev/null 2>&1; then
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      _fpl_skip_path "$f" && continue
+      return 0
+    done < <(git diff HEAD --name-only --diff-filter=ACMR 2>/dev/null)
+  fi
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    _fpl_skip_path "$f" && continue
+    return 0
+  done < <(git ls-files --others --exclude-standard 2>/dev/null)
+  return 1
+}
+
+# fpl_harness_modified — succeeds when scripts/harness.sh is itself changed or
+# untracked in this working tree. The gate's verdict is only as trustworthy as
+# the contract that produced it, so a green from a modified harness gets said
+# out loud rather than passing silently.
+fpl_harness_modified() {
+  if git rev-parse --verify -q HEAD >/dev/null 2>&1; then
+    [ -n "$(git diff HEAD --name-only -- scripts/harness.sh 2>/dev/null)" ] && return 0
+  fi
+  [ -n "$(git ls-files --others --exclude-standard -- scripts/harness.sh 2>/dev/null)" ] && return 0
+  return 1
+}
+
 # Hygiene scan per the Flux Point Definition of Done. Scans lines added in
 # uncommitted work plus untracked files; committed history is CI's job.
 # Emits one "file: line" per finding.

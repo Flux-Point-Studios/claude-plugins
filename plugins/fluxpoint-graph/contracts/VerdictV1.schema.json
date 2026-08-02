@@ -1,0 +1,9 @@
+{
+  "$id": "VerdictV1",
+  "type": "object",
+  "required": ["refuted", "reason"],
+  "properties": {
+    "refuted": { "type": "boolean" },
+    "reason": { "type": "string", "minLength": 10 }
+  }
+}

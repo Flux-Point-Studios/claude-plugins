@@ -1,44 +1,88 @@
 # GRAPH: <one-line campaign goal>
 
 STATUS: DESIGN
-BUDGET: <max nodes> nodes, <token target if any>, <wall-clock bound>
+
+The IR block below is the single source of truth. `graph-run` compiles it
+to a Workflow script mechanically — no model transcribes it — so the spec
+and the executor cannot drift. Prose sections explain intent; the IR
+decides what runs.
 
 ## Org graph (stable roles this repo keeps)
 | Role | Zone owned | Binding | Notes |
 |---|---|---|---|
-| red-team-reviewer | adversarial diff review | fluxpoint-loop agent, `agentType: "red-team-reviewer"` | verdict shares merge authority with the harness |
-| graph-auditor | graph specs and scripts | fluxpoint-graph agent | audits this file before STATUS: READY |
-| <role> | <zone> | <agents/*.md name> | |
+| finder | read-only review | inline prompt, default effort | one per dimension |
+| red-team | adversarial diff review | `agentType: red-team-reviewer` (fluxpoint-loop) | verdict shares merge authority with the harness |
+| graph-auditor | graph specs and IR | fluxpoint-graph agent | audits semantics; the compiler enforces structure |
 
-## Work graph (this campaign)
-Nodes — one row each; a node without a contract does not run:
-| # | Node | Context packet (may believe) | Contract (must produce) | Verified by | On red |
-|---|---|---|---|---|---|
-| 1 | <name> | <exact inputs: spans, prior contracts, commands> | <schema summary> | <harness cmd \| refuter majority \| schema-only + why acceptable> | <retry N \| repair via # \| drop+log \| halt> |
+## Work graph
 
-Edges — explicit and deterministic; more than ten lines means split the campaign:
-- 1 → 2 when <condition>
-- 2 → {3a..3n} fan-out over <work-list>, pipeline, no barrier
-- {3*} ⇒ 4 barrier because <cross-item reason: dedup / zero-count exit / side-by-side judging>
+```json graph-ir
+{
+  "version": 1,
+  "name": "review-campaign",
+  "campaign": "Review the working diff; every finding must survive an adversarial panel",
+  "budget": { "maxNodes": 32, "verifyFloorTokens": 50000 },
+  "defaults": { "effort": "medium" },
+  "argDefaults": {
+    "target": "the uncommitted diff: git diff HEAD, plus untracked files from git status"
+  },
+  "roles": {
+    "finder": { "effort": "medium" },
+    "red-team": { "agentType": "red-team-reviewer", "effort": "high" }
+  },
+  "lists": {
+    "dimensions": [
+      { "key": "correctness", "brief": "wrong output, broken invariants, unhandled edges, boundary math" },
+      { "key": "security", "brief": "the red-team surface: eUTxO, oracle, authority, numeric, off-chain, infra" },
+      { "key": "tests", "brief": "behavior changed with no failing-test-first evidence, weakened assertions" }
+    ]
+  },
+  "nodes": [
+    {
+      "id": "find",
+      "phase": "Find",
+      "role": "finder",
+      "foreach": "dimensions",
+      "prompt": "Review {{A.target}} for {{item.brief}}. Read the code yourself with Read/Grep/Bash. Report only findings with a concrete failure path (inputs/state -> wrong outcome); no style commentary. An empty findings list is a valid, welcome answer.",
+      "contract": "FindingsV1",
+      "verify": "panel:3",
+      "verifyOver": "findings",
+      "expectItems": 3,
+      "onRed": "drop+log"
+    }
+  ]
+}
+```
+
+Edges are the IR's `after`/`foreach` fields; the compiler derives ordering
+and fan-out from them. More than ten nodes means split the campaign.
 
 ## Verification map
+- Tier per node is declared in the IR (`verify`). Pick by stakes, not by
+  habit: `schema-only` for cheap mechanical output, `harness` for anything
+  claiming green, `skeptic:1` for low-severity claims, `panel:3` (odd, so
+  majority is defined) for findings that will cost someone real time,
+  `panel:5` only for CRITICAL.
 - Inner: every mutating node works a fluxpoint-loop slice —
-  `scripts/harness.sh --changed <file>` green per edit, `--full` before
-  the node returns its contract.
-- Edge: <which edges run --full, which use refuter majorities, which are
-  schema-only and why that is acceptable there>.
+  `scripts/harness.sh --changed <file>` green per edit.
 - Terminal: `scripts/harness.sh --full` exit 0 plus red-team
   `VERDICT: SHIP` before merge. The graph never overrides the DoD gate.
+- A node with `mutates: true` MUST have a matching node with
+  `independent: true` and `verifies: "<id>"`. The compiler rejects the
+  graph otherwise: the node that wrote the code may not certify it.
 
 ## Failure policy
-- Node death (null return): <drop item and log | repair node and resume | halt>
-- Budget floor: stop fan-out when remaining < <N>; log what was left undone.
-- Dry rule: <K> consecutive empty rounds ends any discovery loop.
+- `onRed` per node: `halt` (default for single nodes) or `drop+log`.
+- Budget: `budget.maxNodes` is a hard compile-time ceiling on planned agent
+  calls; `verifyFloorTokens` stops verification fan-out before exhaustion
+  and logs every claim left unverified. No silent caps.
 - Halt condition a human can name: <what stops this graph unconditionally>
 
 ## Evidence
-| When (UTC) | runId | Nodes green/red | Harness | Red-team | Outcome |
-|---|---|---|---|---|---|
+Appended automatically by `scripts/record-run.py` — do not hand-edit.
+
+| When (UTC) | runId | Outcome | Nodes OK/dead | Findings | Harness | Red-team |
+|---|---|---|---|---|---|---|
 
 ## Notes for the next run
 <current state, dead nodes, targeted repairs planned, resume point>
