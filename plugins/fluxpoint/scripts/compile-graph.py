@@ -130,6 +130,39 @@ def validate(ir, contracts):
         if "{{prev}}" in str(n.get("prompt", "")) and not n.get("after"):
             f.append(f"{where}: prompt uses {{{{prev}}}} but declares no 'after' — hidden coupling")
 
+        # Discovery loops: unknown-size work needs a dry rule, a hard round
+        # ceiling, and a dedup key, or it either never converges or never ends.
+        rep = n.get("repeat")
+        if "{{seen}}" in str(n.get("prompt", "")) and not rep:
+            f.append(f"{where}: prompt uses {{{{seen}}}} but declares no 'repeat' block")
+        if rep is not None:
+            if not isinstance(rep, dict):
+                f.append(f"{where}: repeat must be an object")
+            else:
+                dry = rep.get("untilDryRounds")
+                mx = rep.get("maxRounds")
+                if not isinstance(dry, int) or dry < 1:
+                    f.append(f"{where}: repeat.untilDryRounds must be an integer >= 1")
+                if not isinstance(mx, int) or mx < 1:
+                    f.append(f"{where}: repeat.maxRounds must be an integer >= 1 — an unbounded discovery loop has no halt condition")
+                if isinstance(dry, int) and isinstance(mx, int) and dry > mx:
+                    f.append(f"{where}: repeat.untilDryRounds ({dry}) exceeds maxRounds ({mx}); the dry rule can never fire")
+                keys = rep.get("dedupeBy")
+                if not isinstance(keys, list) or not keys or not all(isinstance(k, str) and k for k in keys):
+                    f.append(f"{where}: repeat.dedupeBy must be a non-empty list of field names — without a key the loop re-finds the same items forever")
+                elif not n.get("verifyOver"):
+                    f.append(f"{where}: repeat needs verifyOver naming the array field being discovered")
+                elif c in contracts:
+                    item_props = (
+                        contracts[c].get("properties", {})
+                        .get(n["verifyOver"], {})
+                        .get("items", {})
+                        .get("properties", {})
+                    )
+                    for k in keys:
+                        if item_props and k not in item_props:
+                            f.append(f"{where}: repeat.dedupeBy '{k}' is not a field of {c}.{n['verifyOver']} items")
+
         # Self-report invariant. A node that changes the tree cannot be the
         # node that certifies the change; some later independent node must
         # verify it. This is the feature.graph.js bug, promoted to a rule.
@@ -167,12 +200,12 @@ def validate(ir, contracts):
 
 
 def plan_node_count(ir):
-    """Worst-case agent calls: fan-out times verification."""
+    """Worst-case agent calls: fan-out times verification times rounds."""
     lists = ir.get("lists") or {}
     total = 0
     for n in ir.get("nodes") or []:
         fan = len(lists.get(n.get("foreach"), [None])) if n.get("foreach") else 1
-        total += fan
+        per_round = fan
         m = TIER.match(str(n.get("verify", "schema-only")))
         if m:
             cnt = int(m.group(2) or m.group(3) or 0)
@@ -180,13 +213,23 @@ def plan_node_count(ir):
                 # Verification runs per produced item; assume the declared
                 # expectation, defaulting to 3 items per producing node.
                 per = int(n.get("expectItems", 3))
-                total += fan * per * cnt
+                per_round += fan * per * cnt
             elif m.group(1) == "harness":
-                total += fan
+                per_round += fan
+        # A discovery node re-runs until it goes dry; the ceiling must price
+        # the worst case, not one round of it.
+        rounds = int((n.get("repeat") or {}).get("maxRounds", 1))
+        total += per_round * max(1, rounds)
     return total
 
 
 # ------------------------------------------------------------------ emission
+def panel_size(n):
+    """Refuters per item for this node's tier; 0 when it needs none."""
+    m = TIER.match(str(n.get("verify", "schema-only")))
+    return int(m.group(2) or m.group(3) or 0) if m else 0
+
+
 def js_str(s):
     return json.dumps(str(s))
 
@@ -244,11 +287,7 @@ def emit(ir, contracts):
         if p not in seen_phase:
             seen_phase.add(p)
             phases.append(p)
-    needs_panel = any(
-        TIER.match(str(n.get("verify", "schema-only"))) and (TIER.match(str(n.get("verify")))
-        .group(2) or TIER.match(str(n.get("verify"))).group(3))
-        for n in nodes if n.get("verify") and n.get("verify") != "schema-only"
-    )
+    needs_panel = any(panel_size(n) for n in nodes)
 
     L = []
     a = L.append
@@ -297,7 +336,23 @@ def emit(ir, contracts):
     a("  return { campaign, outcome, results: RESULTS, provenance: PROVENANCE }")
     a("}")
     a("")
-    floor = (ir.get("budget") or {}).get("verifyFloorTokens", 50000)
+    budget_cfg = ir.get("budget") or {}
+    floor = budget_cfg.get("verifyFloorTokens", 50000)
+    node_floor = budget_cfg.get("nodeFloorTokens", floor)
+    a("// --- budget: work nodes get their own floor, not just verification ---")
+    a(f"const NODE_FLOOR = {int(node_floor)}")
+    a("// True when there is room to spawn work. Anything declined is announced")
+    a("// and recorded as SKIPPED — a graph never quietly does less than it says.")
+    a("function affordable(label) {")
+    a("  if (!budget.total) return true")
+    a("  const rem = budget.remaining()")
+    a("  if (rem < NODE_FLOOR) {")
+    a("    log(`budget floor: ${label} NOT RUN — ${Math.round(rem / 1000)}k remaining < ${Math.round(NODE_FLOOR / 1000)}k floor`)")
+    a("    return false")
+    a("  }")
+    a("  return true")
+    a("}")
+    a("")
     if needs_panel:
         a("// --- verification: refuters attack the claim; majority kills it ---")
         a(f"const VERIFY_FLOOR = {int(floor)}")
@@ -353,6 +408,10 @@ def emit_node(n, ir):
     mapping = {}
     if n.get("after"):
         mapping["prev"] = f"JSON.stringify(RESULTS[{js_str(n['after'])}])"
+    if n.get("repeat"):
+        # Later rounds are told what earlier rounds already surfaced, so the
+        # finder spends its round on new ground instead of re-reporting.
+        mapping["seen"] = f"(seenList_{var}.join('; ') || 'nothing yet')"
     prompt = js_template(n["prompt"], mapping)
     L = []
     a = L.append
@@ -360,38 +419,50 @@ def emit_node(n, ir):
       f"{', independent' if n.get('independent') else ''}) =====")
     a(f"phase({js_str(phase)})")
 
-    if n.get("foreach"):
+    if n.get("repeat"):
+        a(emit_repeat(n, ir, prompt, phase, panel, over))
+    elif n.get("foreach"):
         lst = "LIST_" + n["foreach"].replace("-", "_")
         label = f"`{nid}:${{item.key || i}}`"
+        a(f"let {var} = []")
+        a(f"if (!affordable({js_str('node ' + nid)})) {{")
+        a(f"  note({js_str(nid)}, 'SKIPPED', 'budget floor reached before fan-out')")
+        a("} else {")
         if panel and over:
-            a(f"const {var} = (await pipeline(")
-            a(f"  {lst},")
-            a(f"  (item, _o, i) => agent({prompt}, {opts(n, ir, phase, label)}),")
-            a("  async (prev, item, i) => {")
-            a(f"    if (!prev) {{ note({js_str(nid)}, 'DEAD', `${{item.key || i}} produced nothing`); "
+            a(f"  {var} = (await pipeline(")
+            a(f"    {lst},")
+            a(f"    (item, _o, i) => agent({prompt}, {opts(n, ir, phase, label)}),")
+            a("    async (prev, item, i) => {")
+            a(f"      if (!prev) {{ note({js_str(nid)}, 'DEAD', `${{item.key || i}} produced nothing`); "
               f"log(`node {nid} died for ${{item.key || i}} — dropped`); return [] }}")
-            a(f"    const produced = prev[{js_str(over)}] || []")
-            a(f"    note({js_str(nid)}, 'OK', `${{item.key || i}}: ${{produced.length}} item(s)`)")
+            a(f"      const produced = prev[{js_str(over)}] || []")
+            a(f"      note({js_str(nid)}, 'OK', `${{item.key || i}}: ${{produced.length}} item(s)`)")
             need = math.ceil(panel / 2)
-            a(f"    const judged = await verifyItems(prev, {js_str(over)}, "
+            a(f"      const judged = await verifyItems(prev, {js_str(over)}, "
               f"`{nid}:${{item.key || i}}`, {js_str(phase)}, {panel}, {need})")
-            a("    return judged.map(v => ({ ...v, source: item.key || String(i) }))")
-            a("  }")
-            a(")).filter(Boolean).flat()")
-            a(f"log(`{nid}: ${{{var}.length}} item(s) survived {tier}`)")
+            a("      return judged.map(v => ({ ...v, source: item.key || String(i) }))")
+            a("    }")
+            a("  )).filter(Boolean).flat()")
+            a(f"  log(`{nid}: ${{{var}.length}} item(s) survived {tier}`)")
         else:
-            a(f"const {var} = (await parallel({lst}.map((item, i) => () =>")
-            a(f"  agent({prompt}, {opts(n, ir, phase, label)})")
-            a("))).filter(Boolean)")
-            a(f"note({js_str(nid)}, {var}.length ? 'OK' : 'DEAD', `${{{var}.length}}/${{{lst}.length}} returned`)")
-            a(f"if ({var}.length < {lst}.length) log(`{nid}: "
+            a(f"  {var} = (await parallel({lst}.map((item, i) => () =>")
+            a(f"    agent({prompt}, {opts(n, ir, phase, label)})")
+            a("  ))).filter(Boolean)")
+            a(f"  note({js_str(nid)}, {var}.length ? 'OK' : 'DEAD', `${{{var}.length}}/${{{lst}.length}} returned`)")
+            a(f"  if ({var}.length < {lst}.length) log(`{nid}: "
               f"${{{lst}.length - {var}.length}} node(s) died — see provenance`)")
+        a("}")
     else:
         label = f"{js_str(nid)}"
         verified = bool(panel and over)
         raw = f"{var}_raw" if verified else var
-        a(f"const {raw} = await agent({prompt}, {opts(n, ir, phase, label)})")
         on_red = n.get("onRed", "halt")
+        a(f"if (!affordable({js_str('node ' + nid)})) {{")
+        a(f"  note({js_str(nid)}, 'SKIPPED', 'budget floor reached')")
+        if on_red == "halt":
+            a("  return summary('BUDGET-EXHAUSTED')")
+        a("}")
+        a(f"const {raw} = affordable({js_str('node ' + nid)}) ? await agent({prompt}, {opts(n, ir, phase, label)}) : null")
         a(f"if (!{raw}) {{")
         a(f"  note({js_str(nid)}, 'DEAD', 'node returned nothing')")
         if on_red == "halt":
@@ -413,6 +484,81 @@ def emit_node(n, ir):
             a(f"log(`{nid}: ${{{var}.length}} item(s) survived {tier}`)")
 
     a(f"RESULTS[{js_str(nid)}] = {var}")
+    return "\n".join(L)
+
+
+def emit_repeat(n, ir, prompt, phase, panel, over):
+    """Loop-until-dry discovery: re-run the finder until K consecutive rounds
+    surface nothing new, bounded by maxRounds and the budget floor.
+
+    The dedup set holds everything SEEN, not everything confirmed — dedup
+    against survivors instead and every judge-rejected item reappears next
+    round, so the loop never converges.
+    """
+    nid = n["id"]
+    var = "n_" + nid.replace("-", "_")
+    rep = n["repeat"]
+    keys = rep["dedupeBy"]
+    dry_target = int(rep["untilDryRounds"])
+    max_rounds = int(rep["maxRounds"])
+    need = math.ceil(panel / 2) if panel else 0
+    lst = "LIST_" + n["foreach"].replace("-", "_") if n.get("foreach") else None
+    label = f"`{nid}:${{item.key || i}}`" if lst else js_str(nid)
+
+    L = []
+    a = L.append
+    a(f"const {var} = []")
+    a(f"const seen_{var} = new Set()")
+    a(f"const seenList_{var} = []")
+    a(f"let dry_{var} = 0, round_{var} = 0")
+    keyexpr = " + '|' + ".join(f"String(it[{js_str(k)}])" for k in keys)
+    a(f"const key_{var} = it => {keyexpr}")
+    a(f"while (dry_{var} < {dry_target} && round_{var} < {max_rounds}) {{")
+    a(f"  round_{var}++")
+    a(f"  if (!affordable(`{nid} round ${{round_{var}}}`)) {{")
+    a(f"    note({js_str(nid)}, 'SKIPPED', `stopped at round ${{round_{var}}} on budget floor; "
+      f"discovery INCOMPLETE`)")
+    a("    break")
+    a("  }")
+    # Round 1 of the fan-out, unverified — dedup happens before verification
+    # so the panel never re-judges an item a previous round already saw.
+    if lst:
+        a(f"  const raw_{var} = (await parallel({lst}.map((item, i) => () =>")
+        a(f"    agent({prompt}, {opts(n, ir, phase, label)})")
+        a("  ))).filter(Boolean)")
+    else:
+        a(f"  const one_{var} = await agent({prompt}, {opts(n, ir, phase, label)})")
+        a(f"  const raw_{var} = one_{var} ? [one_{var}] : []")
+    a(f"  const found_{var} = raw_{var}.flatMap(r => r[{js_str(over)}] || [])")
+    a(f"  const fresh_{var} = found_{var}.filter(it => !seen_{var}.has(key_{var}(it)))")
+    a(f"  fresh_{var}.forEach(it => {{ seen_{var}.add(key_{var}(it)); "
+      f"seenList_{var}.push(key_{var}(it)) }})")
+    a(f"  log(`{nid} round ${{round_{var}}}: ${{found_{var}.length}} found, "
+      f"${{fresh_{var}.length}} new`)")
+    a(f"  if (!fresh_{var}.length) {{")
+    a(f"    dry_{var}++")
+    a(f"    note({js_str(nid)}, 'OK', `round ${{round_{var}}} dry "
+      f"(${{dry_{var}}}/{dry_target})`)")
+    a("    continue")
+    a("  }")
+    a(f"  dry_{var} = 0")
+    if panel and over:
+        a(f"  const judged_{var} = await parallel(fresh_{var}.map((it, i) => () =>")
+        a(f"    refute(JSON.stringify(it), `{nid}:r${{round_{var}}}:${{i}}`, "
+          f"{js_str(phase)}, {panel}).then(v => ({{ ...it, ...v }}))")
+        a("  ))")
+        a(f"  const kept_{var} = judged_{var}.filter(Boolean)"
+          f".filter(v => v.unverified || v.kills < {need})")
+    else:
+        a(f"  const kept_{var} = fresh_{var}")
+    a(f"  {var}.push(...kept_{var})")
+    a(f"  note({js_str(nid)}, 'OK', `round ${{round_{var}}}: ${{kept_{var}.length}} kept "
+      f"of ${{fresh_{var}.length}} new`)")
+    a("}")
+    a(f"if (round_{var} >= {max_rounds} && dry_{var} < {dry_target}) log(")
+    a(f"  `{nid}: hit maxRounds {max_rounds} while still finding new items — "
+      f"discovery INCOMPLETE, not exhausted`)")
+    a(f"log(`{nid}: ${{{var}.length}} item(s) kept across ${{round_{var}}} round(s)`)")
     return "\n".join(L)
 
 

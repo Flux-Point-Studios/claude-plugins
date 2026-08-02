@@ -4,7 +4,8 @@ These notes record what the v0.1 smoke test proved, the redesign it
 pointed to, and how that redesign landed. Not bound by prior conventions —
 the goal was the best design, not symmetry with what came before.
 
-## Status: all eight recommendations shipped (1–7 in v0.2.0, 8 in v1.0.0)
+## Status: all eight recommendations shipped (1–7 in v0.2.0, 8 in v1.0.0),
+plus the two gaps v1.0 named, closed in v1.1.0
 
 | # | Recommendation | Shipped as |
 |---|---|---|
@@ -37,13 +38,42 @@ What unification actually bought:
 - `/fluxpoint:migrate`, which folds pre-1.0 repos over without losing an
   Evidence row, and hooks that keep honoring `LOOP.md` until it runs.
 
-Verified: 22 compiler invariant tests, 7 gate-bypass regression cases,
-17 unified-state and compatibility tests; both canonical campaigns compile
-to syntactically valid Workflow scripts; the provenance path writes a real
-artifact and Evidence row; and a compiled campaign has been executed
-end-to-end on the Workflow engine.
+## v1.1.0: the two gaps v1.0 shipped with
+
+Both were named honestly at v1.0 rather than discovered later, and both
+were real:
+
+**Unknown-size discovery.** The IR could only express fixed fan-out, so an
+audit found whatever one pass happened to find. A `repeat` block
+(`untilDryRounds`, `maxRounds`, `dedupeBy`) turns a finder into a
+loop-until-dry sweep, with `{{seen}}` telling each round what earlier
+rounds surfaced. Two subtleties are compiler-enforced because they are
+easy to get wrong and quiet when wrong: items enter the seen-set **before**
+verification (dedup against survivors and every judge-rejected finding
+returns next round, so the loop never converges), and ending on the round
+ceiling is logged `discovery INCOMPLETE, not exhausted` rather than
+reading as a finished sweep.
+
+**Budget enforced where the tokens actually go.** `maxNodes` was a
+compile-time ceiling priced at one round, and the only run-time floor
+guarded verification. Now rounds are priced into the ceiling (a four-round
+loop costs four rounds), and `nodeFloorTokens` stops *work* fan-out —
+a node, or another discovery round — before it starts. Declined work is
+recorded `SKIPPED` in provenance and surfaces in the Evidence row as
+incomplete coverage, so a campaign that ran out of budget can never be
+read as a clean sweep.
+
+Verified: 45 compiler invariant tests, 7 gate-bypass regression cases,
+20 unified-state and compatibility tests; all three canonical campaigns
+compile to syntactically valid Workflow scripts; the provenance path
+writes a real artifact and Evidence row; and compiled campaigns have been
+executed end-to-end on the Workflow engine.
 
 ## What the smoke test established
+
+*(Historical record from v0.1/v0.2. Filenames are as they were then:
+`GRAPH.md` and `LOOP.md` became `WORK.md` in v1.0.0, and the hand-written
+`review.graph.js` / `feature.graph.js` templates became compiled output.)*
 
 Onboarded a scratch repo (`smoke-ledger`: a lovelace ledger, unittest
 suite, real `scripts/harness.sh`), ran `graph-init`, then exercised the
@@ -75,16 +105,16 @@ review. Verification fan-out (9 of 12 agents were refuters) dominates both.
 
 ## The core tension
 
-v0.1 makes `WORK.md` a prose spec that a model hand-compiles into a
+v0.1 made `GRAPH.md` a prose spec that a model hand-compiled into a
 `.graph.js` script. That transcription step is itself the source of the
 bug class the `graph-auditor` exists to police ("does the script mirror
-WORK.md?"). The highest-leverage redesign removes the compile step.
+the spec?"). The highest-leverage redesign removes the transcription step.
 
 ## Prioritized redesign
 
 ### 1. Declarative graph IR — single source of truth (highest leverage)
-Replace prose→script transcription with a declarative block inside
-WORK.md (fenced ```yaml/```json) that `graph-run` compiles *mechanically*
+Replace prose→script transcription with a declarative block inside the
+work file (fenced ```yaml/```json) that `graph-run` compiles *mechanically*
 to the Workflow script. Nodes, edges, contracts, and verifiers become
 data:
 

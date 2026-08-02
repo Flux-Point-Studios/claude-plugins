@@ -162,6 +162,82 @@ case(
     "haltWhen must be",
 )
 
+# --- discovery loops (repeat) -------------------------------------------
+def make_repeat(**over):
+    def m(ir):
+        r = {"untilDryRounds": 2, "maxRounds": 4, "dedupeBy": ["file", "line"]}
+        r.update(over)
+        for k, v in list(r.items()):
+            if v is None:
+                del r[k]
+        ir["nodes"][0]["repeat"] = r
+    return m
+
+
+case("repeat: sound discovery loop accepted", make_repeat(), None)
+case("repeat: no maxRounds (unbounded)", make_repeat(maxRounds=None), "maxRounds must be an integer >= 1")
+case("repeat: no dry rule", make_repeat(untilDryRounds=None), "untilDryRounds must be an integer >= 1")
+case("repeat: dry rule can never fire", make_repeat(untilDryRounds=9), "can never fire")
+case("repeat: no dedupe key", make_repeat(dedupeBy=None), "dedupeBy must be a non-empty list")
+case("repeat: dedupe key not in contract", make_repeat(dedupeBy=["nope"]), "is not a field of")
+
+
+def seen_without_repeat(ir):
+    ir["nodes"][0]["prompt"] = "find things, skip these: {{seen}}"
+
+
+case("repeat: {{seen}} without a repeat block", seen_without_repeat, "declares no 'repeat'")
+
+
+def rounds_blow_budget(ir):
+    make_repeat(maxRounds=4)(ir)
+    ir["budget"]["maxNodes"] = 20  # fine for one round, not for four
+
+
+case("repeat: rounds priced into the ceiling", rounds_blow_budget, "budget.maxNodes is 20")
+
+# The discovery loop's emitted shape carries its own guarantees.
+disc = copy.deepcopy(BASE)
+make_repeat()(disc)
+disc["nodes"][0]["prompt"] = "hunt, already seen: {{seen}}"
+disc["budget"]["maxNodes"] = 200
+disc_js = cg.emit(disc, CONTRACTS)
+for needle, why in [
+    ("while (dry_n_find < 2 && round_n_find < 4)", "bounded by both dry rule and ceiling"),
+    ("seen_n_find.add", "everything seen is remembered"),
+    ("!seen_n_find.has(key_n_find(it))", "dedup happens before verification"),
+    ("dry_n_find = 0", "a productive round resets the dry counter"),
+    ("discovery INCOMPLETE, not exhausted", "hitting the ceiling is never called exhaustion"),
+    ("seenList_n_find.join", "later rounds are told what earlier rounds found"),
+]:
+    ok = needle in disc_js
+    print(f"{'PASS' if ok else 'FAIL'}  discovery: {why:<45} -> {'found' if ok else 'MISSING'}")
+    passed, failed = (passed + ok, failed + (not ok))
+
+# --- run-time budget floor on work nodes, not just verification ----------
+for needle, why in [
+    ("const NODE_FLOOR", "work nodes have their own floor"),
+    ("function affordable(", "affordability is checked, not assumed"),
+    ("NOT RUN", "declined work is announced"),
+    ("'SKIPPED'", "declined work is recorded as SKIPPED"),
+]:
+    ok = needle in disc_js
+    print(f"{'PASS' if ok else 'FAIL'}  budget floor: {why:<43} -> {'found' if ok else 'MISSING'}")
+    passed, failed = (passed + ok, failed + (not ok))
+
+single_floor = cg.emit(
+    {**copy.deepcopy(BASE), "nodes": [
+        {"id": "solo", "phase": "S", "prompt": "do it", "contract": "HarnessCheckV1"}]},
+    CONTRACTS,
+)
+for needle, why in [
+    ("affordable(\"node solo\")", "single nodes check the floor too"),
+    ("BUDGET-EXHAUSTED", "a halt-on-red node stops rather than silently skipping"),
+]:
+    ok = needle in single_floor
+    print(f"{'PASS' if ok else 'FAIL'}  budget floor: {why:<43} -> {'found' if ok else 'MISSING'}")
+    passed, failed = (passed + ok, failed + (not ok))
+
 # A declared verification tier must actually run on a single (non-foreach)
 # node too. It silently did not before v1.0.0 — the tier was emitted into the
 # prelude and never called, so the claims went unverified while the spec said

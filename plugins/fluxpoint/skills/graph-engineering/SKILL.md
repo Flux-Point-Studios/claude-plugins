@@ -51,8 +51,14 @@ compiler rejects, at compile time:
 - `mutates: true` with no `independent: true` node that `verifies` it
 - a node verifying itself, or a verifier not marked independent
 - `after`/`foreach`/`role` pointing at things that do not exist
-- `{{prev}}` with no `after` edge (hidden coupling)
-- planned agent calls exceeding `budget.maxNodes`, or no ceiling at all
+- `{{prev}}` with no `after` edge, or `{{seen}}` with no `repeat` block
+  (hidden coupling)
+- a `repeat` block missing its dry rule, round ceiling, or dedup key, or
+  whose dry rule can never fire; a dedup key that is not a field of the
+  contract's items
+- planned agent calls exceeding `budget.maxNodes`, or no ceiling at all —
+  and rounds are priced in, so a four-round discovery loop is costed at
+  four rounds, not one
 
 Those are structural. `/fluxpoint:graph-audit` judges what is left:
 scoping, tier-vs-stakes, prompt quality.
@@ -95,6 +101,10 @@ told.
 - **Zone defense** (org graph): stable `agents/*.md` roles own domains —
   `red-team-reviewer` owns the adversarial pass — referenced by
   `agentType`, not re-prompted inline.
+- **Loop-until-dry** (`templates/WORK.discovery.md`): a `repeat` block on a
+  finder turns fixed fan-out into unknown-size discovery. Use it when "how
+  many are there" is the question rather than an input — audits, sweeps,
+  exhaustive reviews.
 - **Pipeline of loops**: each mutating node works one loop slice
   — TDD, `--changed` green per edit, `--full` before returning. The graph
   sequences slices; it never replaces the gate.
@@ -108,10 +118,40 @@ string) and logged; required args throw. Declare optional inputs in
 the most expensive failure a graph has.
 
 Failure is local: `onRed: drop+log` drops one item and says so; `halt`
-stops the campaign. Dead nodes land in provenance with a reason. Budget is
-a real ceiling (`budget.maxNodes` at compile time, `verifyFloorTokens` at
-run time), and anything skipped for budget is logged as UNVERIFIED. No
-silent caps.
+stops the campaign. Dead nodes land in provenance with a reason.
+
+Budget is enforced twice, and neither check is advisory. At compile time
+`budget.maxNodes` is a hard ceiling on planned agent calls, priced at the
+worst case including discovery rounds. At run time two floors apply:
+`verifyFloorTokens` stops verification fan-out (claims left unchecked are
+logged UNVERIFIED) and `nodeFloorTokens` stops *work* fan-out before a
+node or another discovery round starts — recorded as `SKIPPED` in
+provenance and carried into the Evidence row as incomplete coverage. A
+campaign that ran out of budget says so; it never reads as a clean sweep.
+
+## Discovery loops
+
+A fixed fan-out finds what one pass happens to find. When the size of the
+work is unknown, add `repeat` to the finder:
+
+```json
+"repeat": { "untilDryRounds": 2, "maxRounds": 4, "dedupeBy": ["file", "line", "claim"] }
+```
+
+Rounds re-run until `untilDryRounds` consecutive rounds surface nothing
+new, bounded by `maxRounds`. Use `{{seen}}` in the prompt so each round is
+told what earlier rounds found and spends itself on new ground.
+
+Two rules the compiler enforces because getting them wrong is subtle:
+
+- **Dedup against everything seen, not everything confirmed.** Items enter
+  the seen-set before verification. Dedup against survivors instead and
+  every judge-rejected finding reappears next round — the loop never
+  converges and the panel re-judges the same rejects forever.
+- **Hitting `maxRounds` is not exhaustion.** Ending on the ceiling while
+  still finding new items is logged `discovery INCOMPLETE, not exhausted`.
+  A sweep that stopped early and a sweep that finished are different
+  claims and never get blurred into one.
 
 ## Running, repairing, evidence
 
