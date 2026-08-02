@@ -126,7 +126,12 @@ fpl_harness_modified() {
 # uncommitted work plus untracked files; committed history is CI's job.
 # Emits one "file: line" per finding.
 fpl_scan_hygiene() {
+  # The last group are proof holes: a checker exits 0 on an assumed lemma
+  # exactly as it does on a proved one. Only unambiguous markers live here
+  # — `assume` and `todo` are too common in prose for a scan that cannot
+  # strip comments; proof-guard.py ratchets those with comment stripping.
   local pat='TODO|FIXME|\bXXX\b|for now|\.unwrap\(\)|\.(skip|only)\(|\bxit\(|#\[ignore\]'
+  pat="$pat"'|\bsorry\b|\bAdmitted\b|\{:axiom\}|\{:verify false\}|verifier::external_body|--skip-tests|--no-verify'
   local catch='catch[[:space:]]*(\([^)]*\))?[[:space:]]*\{[[:space:]]*\}'
   local f added
   if git rev-parse --verify -q HEAD >/dev/null 2>&1; then

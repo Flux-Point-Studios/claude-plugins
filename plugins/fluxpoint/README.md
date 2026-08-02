@@ -21,13 +21,15 @@ does.
   verification, Stop-hook DoD gate.
 - `scripts/` — `lib.sh`, `inject-state.sh`, `verify-changed.sh`,
   `dod-gate.sh` (loop); `compile-graph.py`, `record-run.py` (graph);
-  `migrate.py` (pre-1.0 migration, plan/apply/finalize).
+  `proof-guard.py` (proof-strength ratchet); `migrate.py` (pre-1.0
+  migration, plan/apply/finalize).
 - `contracts/` — versioned named schemas (`FindingsV1`, `VerdictV1`,
   `HarnessCheckV1`, `DesignV1`, `SliceV1`, `RedTeamV1`).
 - `commands/` — `/fluxpoint:init`, `:status`, `:migrate`, `:red-team`,
-  `:graph-design`, `:graph-run`, `:graph-audit`.
+  `:proof-audit`, `:graph-design`, `:graph-run`, `:graph-audit`.
 - `agents/` — `red-team-reviewer` (adversarial diff review),
-  `graph-auditor` (semantic review of a campaign IR).
+  `graph-auditor` (semantic review of a campaign IR), `proof-auditor`
+  (did the verification get weaker, not just greener).
 - `skills/` — `loop-engineering` (driver selection, conditions, the gate),
   `graph-engineering` (escalation rule, primitives, tiers, shapes).
 - `templates/` — `harness.sh` contract, `WORK.md`, `WORK.feature.md`,
@@ -87,6 +89,31 @@ Evidence table both modes append to.
   that changes nothing, because the recurring defect here was never a wrong
   output — it was a silent one. Unknown fields are compile errors for the
   same reason.
+
+## Verified work
+
+A prover behind this harness is the best case for it: `aiken check`,
+`dafny verify`, `lake build`, `coqc` give a crisp exit code. But exit 0 is
+weaker than it looks — every prover ships a way to discharge a goal without
+proving it, and a checker exits 0 on an assumed lemma exactly as on a
+proved one.
+
+- **The prover runs in `--full`.** Per-file checking on edit is feedback;
+  the gate that decides done must invoke the prover over the project.
+- **`scripts/proof-guard.py` ratchets escape hatches.** `--baseline`
+  records `todo`/`expect` (Aiken), `assume`/`{:axiom}` (Dafny), `sorry`
+  (Lean/Isabelle), `Admitted` (Coq), `#[verifier::external_body]` (Verus),
+  `ASSUME` (TLA+), and verification-disabling CLI flags into a committed
+  file. `--check` fails when a category rises. Falling is always allowed.
+- **`/fluxpoint:proof-audit`** runs the ratchet, checks the prover is
+  actually in `--full`, then the `proof-auditor` agent for what a count
+  cannot see: vacuity, specification drift, assumption laundering, tests
+  that cannot fail, unproved surface, on-chain budgets, solver `unknown`
+  read as success.
+
+The ratchet is a floor, not a ceiling — gutting an Aiken negative test to
+`True` leaves every count unchanged and reports green, which is precisely
+why the semantic pass exists.
 
 ## Migrating from the split plugins
 

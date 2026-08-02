@@ -89,6 +89,42 @@ green" against the named checks, so the merge decision never rests on the
 agent's self-report of green. Repos where merge triggers a deploy get
 their policy decided once, per repo, in WORK.md, not renegotiated per PR.
 
+## Verified work
+
+A prover is the best thing that can sit behind this harness: `aiken check`,
+`dafny verify`, `lake build`, `coqc` all give a crisp exit code, which beats
+"the code looks production-ready" by a mile. But exit 0 is weaker than it
+looks — every prover ships a way to discharge an obligation without proving
+it, and an agent told to "make it pass" will find it.
+
+Three rules, in order of how often they are broken:
+
+1. **The prover runs in `--full`, not only in `--changed`.** Per-file
+   checking on edit is feedback; the gate that decides done must invoke the
+   prover over the whole project. A harness that verifies only what was
+   touched will certify a repo it never checked.
+2. **Escape hatches ratchet.** `scripts/proof-guard.py --baseline` records
+   `todo`, `expect`, `assume`, `{:axiom}`, `sorry`, `Admitted`,
+   `verifier::external_body`, `--skip-tests` and friends into a committed
+   file; `--check` fails when any category rises. Proving something you
+   previously assumed lowers the count and is always allowed. Raising one
+   is a diff a human has to justify.
+   The ratchet is a floor, not a ceiling: it counts hatches, so it cannot
+   see a proof that got hollower without adding one. Gutting an Aiken
+   negative test to `True` leaves every count unchanged and reports green —
+   which is exactly why rule 3 exists.
+3. **Green is not stronger.** `/fluxpoint:proof-audit` runs the ratchet and
+   then the `proof-auditor` agent, which looks for what a count cannot see:
+   a theorem whose statement got weaker, a property proved about an
+   unreachable state, an Aiken `test` that cannot fail, a validator with no
+   test at all, a solver `unknown` read as success. `VERDICT: WEAKENED` is
+   harness-red.
+
+For Cardano specifically, correctness is necessary and not sufficient:
+script size and execution-unit budgets, min-ADA, and datum size decide
+whether a proved-correct validator can actually be submitted. Put those in
+the harness too.
+
 ## Evidence discipline
 
 Every completion claim gets a row in WORK.md's single Evidence table

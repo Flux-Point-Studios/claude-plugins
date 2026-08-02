@@ -39,10 +39,17 @@ step; do not stop at copying files.
    verification, cross-zone ownership). If the Campaign section stays,
    verify it compiles:
    `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compile-graph.py" WORK.md --check`
-8. Fill in the Merge policy block, asking the user once: may green + SHIP
+8. If the repo tracks proof-language files (`.ak`, `.dfy`, `.lean`, `.v`,
+   `.thy`, `.tla`, or verified Rust), arm the proof-strength ratchet:
+   `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/proof-guard.py" --baseline`
+   Commit `.fluxpoint-proof-baseline.json` — it belongs in review, because
+   a rise in it is someone making a proof obligation disappear. Confirm
+   `harness.sh --full` actually invokes the prover; per-file checking on
+   edit is not a Definition-of-Done gate.
+9. Fill in the Merge policy block, asking the user once: may green + SHIP
    PRs merge autonomously in this repo, and does merging trigger a deploy?
    If auto-merge is on, verify `gh` is authenticated and record the
    required CI check names the merge will wait on.
-9. Finish with a short report: files created, harness verdict, MODE, merge
+10. Finish with a short report: files created, harness verdict, MODE, merge
    policy, and the one command that starts an outer loop
    (`scripts/loop.sh`) or a campaign (`/fluxpoint:graph-run`).

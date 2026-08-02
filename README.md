@@ -199,10 +199,11 @@ built into the hooks.
 into any other repo, and `.github/workflows/harness.yml` runs it on every
 push and pull request. It checks every manifest and contract, syntax-checks
 every script, validates the plugin, compiles all campaign templates and
-`node --check`s the generated JavaScript, then runs seven suites: compiler
+`node --check`s the generated JavaScript, then runs eight suites: compiler
 invariants, field-effect probes, codegen-injection regressions, Stop-gate
 regression cases, hook wiring and PostToolUse behavior, migration against
-real pre-1.0 fixtures, and unified-state compatibility.
+real pre-1.0 fixtures, the proof-strength ratchet across seven provers, and
+unified-state compatibility.
 
 The field-effect suite exists because of the defect that kept recurring
 here: not a wrong output, a *silent* one. `verify: harness` was accepted,
@@ -222,6 +223,39 @@ the sources in place, `--finalize` deletes them — and refuses to finalize if
 `WORK.md` carries fewer Evidence rows than the sources did. The one thing it
 will not do is invent a `graph-ir` block for a pre-0.2 prose campaign; it
 flags that for a human instead.
+
+## Verified work (Aiken, Dafny, Lean, Coq, Verus, Isabelle, TLA+)
+
+A prover is the ideal thing to put behind a Definition-of-Done gate,
+because it answers with an exit code rather than an opinion. The catch is
+that exit 0 does not mean what it looks like: every proof assistant ships a
+way to make a goal go away without proving it, and an agent told to "make
+it pass" will find it.
+
+Three mechanisms, in `scripts/harness.sh` and `scripts/proof-guard.py`:
+
+1. The scaffolded harness invokes the prover in **`--full`**, not only in
+   the per-file `--changed` path. A gate that decides "done" without
+   calling the prover is not a gate.
+2. **The proof-strength ratchet.** `proof-guard.py --baseline` records every
+   escape hatch — `todo`/`expect` in Aiken, `assume`/`{:axiom}` in Dafny,
+   `sorry` in Lean and Isabelle, `Admitted` in Coq,
+   `#[verifier::external_body]` in Verus, `ASSUME` in TLA+, and
+   `--skip-tests`/`--no-verify` anywhere — into a committed
+   `.fluxpoint-proof-baseline.json`. `--check` fails when any category
+   rises. Proving something you previously assumed lowers the count and is
+   always welcome; raising one becomes a diff a human has to justify.
+3. **`/fluxpoint:proof-audit`** adds the semantic pass a counter cannot do,
+   via the `proof-auditor` agent: a theorem whose statement lost a
+   conjunct, a property proved about an unreachable state, an Aiken `test`
+   that cannot fail, a validator with no test at all, a solver `unknown`
+   read as success, and — for Cardano — script size and execution-unit
+   budgets, since a proved-correct validator that cannot be submitted is
+   not done.
+
+The ratchet is deliberately a floor. Gutting an Aiken negative test to
+`True` leaves every count unchanged and reports green; that blind spot is
+documented, tested for, and is exactly why the second pass exists.
 
 ## Treating WORK.md as untrusted input
 
