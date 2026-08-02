@@ -76,7 +76,7 @@ NODE_BASE = {
     "campaign": "a baseline campaign used to probe field effects",
     "budget": {"maxNodes": 400},
     "roles": {"other": {"effort": "high"}},
-    "lists": {"L": [{"key": "a"}, {"key": "b"}], "M": [{"key": "z"}]},
+    "lists": {"la": [{"key": "a"}, {"key": "b"}], "lb": [{"key": "z"}]},
     "nodes": [
         {"id": "seed", "phase": "P0", "prompt": "seed", "contract": "DesignV1"},
         {
@@ -105,7 +105,7 @@ probe("node", "role", NODE_BASE, setnode(role="other"))
 probe("node", "effort", NODE_BASE, setnode(effort="max"))
 probe("node", "model", NODE_BASE, setnode(model="claude-haiku-4-5-20251001"))
 probe("node", "agentType", NODE_BASE, setnode(agentType="red-team-reviewer"))
-probe("node", "foreach", NODE_BASE, setnode(foreach="L"))
+probe("node", "foreach", NODE_BASE, setnode(foreach="la"))
 probe("node", "after", NODE_BASE,
       setnode(after="seed", prompt="use the prior result: {{prev}}"))
 probe("node", "mutates", NODE_BASE, lambda ir: (
@@ -167,8 +167,8 @@ probe("IR", "roles", NODE_BASE,
       lambda ir: (ir["roles"].update(extra={"agentType": "graph-auditor"}),
                   ir["nodes"][N].update(role="extra")))
 probe("IR", "lists", NODE_BASE,
-      lambda ir: (ir["lists"].update(L=[{"key": "a"}, {"key": "b"}, {"key": "c"}]),
-                  ir["nodes"][N].update(foreach="L")))
+      lambda ir: (ir["lists"].update(la=[{"key": "a"}, {"key": "b"}, {"key": "c"}]),
+                  ir["nodes"][N].update(foreach="la")))
 probe("IR", "nodes", NODE_BASE,
       lambda ir: ir["nodes"].append({"id": "extra", "phase": "P2",
                                      "prompt": "another", "contract": "DesignV1"}))

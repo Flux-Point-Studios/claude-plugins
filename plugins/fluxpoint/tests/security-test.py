@@ -1,0 +1,145 @@
+#!/usr/bin/env python3
+"""Regression tests for the red-team findings against v1.3.0.
+
+The compiler turns user-authored JSON into JavaScript that is then executed,
+which makes every interpolated field an injection surface. Two of these were
+driven to real code execution before they were fixed: `haltReason` was pasted
+straight into a template literal, and a `lists` key became a bare JS
+identifier. `js_template` already escaped prompts, which is what made the gap
+so easy to miss — the authors clearly knew WORK.md was untrusted input and
+still left two fields raw.
+
+Each case below re-runs an exploit or failure path that was confirmed real.
+"""
+import importlib.util
+import json
+import os
+import subprocess
+import sys
+import tempfile
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+PLUGIN = os.path.dirname(HERE)
+spec = importlib.util.spec_from_file_location(
+    "compile_graph", os.path.join(PLUGIN, "scripts", "compile-graph.py")
+)
+cg = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(cg)
+CONTRACTS = cg.load_contracts(os.path.join(PLUGIN, "contracts"))
+
+passed = failed = 0
+
+
+def report(name, ok, detail):
+    global passed, failed
+    print(f"{'PASS' if ok else 'FAIL'}  {name:<52} -> {detail}")
+    passed, failed = (passed + ok, failed + (not ok))
+
+
+def rejected(name, ir, needle):
+    errs = cg.validate(ir, CONTRACTS)
+    hit = any(needle in e for e in errs)
+    report(name, hit, "rejected at compile" if hit else f"ACCEPTED (got {errs})")
+
+
+def node(**kw):
+    n = {"id": "n", "phase": "P", "prompt": "go", "contract": "FindingsV1"}
+    n.update(kw)
+    return {"version": 1, "name": "t", "campaign": "a campaign for security probes",
+            "budget": {"maxNodes": 8}, "nodes": [n]}
+
+
+def emits_inert(name, ir, payload_marker):
+    """Compile, then run the emitted JS under stubs; the payload must not fire."""
+    with tempfile.TemporaryDirectory() as d:
+        js = cg.emit(ir, CONTRACTS)
+        canary = os.path.join(d, "PWNED")
+        js = js.replace("__CANARY__", canary)
+        wrapped = os.path.join(d, "w.mjs")
+        with open(wrapped, "w") as fh:
+            fh.write(
+                "const agent=async()=>({exit:1,command:'x',findings:[]}),"
+                "parallel=async()=>[],pipeline=async()=>[],log=()=>{},phase=()=>{},"
+                "args={},budget={total:null,remaining:()=>1e9},workflow=0;\n"
+                "(async () => {\n"
+                + js.replace("export const meta", "const meta")
+                + "\n})()\n"
+            )
+        syntax = subprocess.run(["node", "--check", wrapped], capture_output=True)
+        if syntax.returncode != 0:
+            report(name, False, "emitted JS does not even parse")
+            return
+        subprocess.run(["node", wrapped], capture_output=True, timeout=30)
+        fired = os.path.exists(canary)
+        report(name, not fired, "payload inert" if not fired else "PAYLOAD EXECUTED")
+
+
+# --- HIGH: haltReason was pasted raw into a template literal (proven RCE) ---
+emits_inert(
+    "haltReason cannot break out of its string",
+    node(contract="HarnessCheckV1", haltWhen="exit != 0",
+         haltReason="`);await import('node:fs').then(m=>m.writeFileSync('__CANARY__','x'));log(`"),
+    "__CANARY__",
+)
+
+# --- HIGH: a lists key became a bare JS identifier (proven RCE) -------------
+evil_key = "unused = 0; await import('node:fs').then(m=>m.writeFileSync('__CANARY__','x')); const dummy"
+ir = node()
+ir["lists"] = {evil_key: [{"key": "a"}]}
+rejected("lists key must be an identifier", ir, "emitted as a JS identifier")
+for bad in ("Upper", "has space", "semi;colon", "1leading", "dot.key"):
+    ir = node()
+    ir["lists"] = {bad: [{"key": "a"}]}
+    rejected(f"lists key rejected: {bad!r}", ir, "must be lowercase kebab-case")
+
+# --- MEDIUM: a crafted haltWhen literal emitted unparseable JS -------------
+emits_inert(
+    "crafted haltWhen literal stays inside its string",
+    node(contract="HarnessCheckV1", haltWhen="command == 'abc\\'"),
+    "__CANARY__",
+)
+emits_inert(
+    "backtick in a haltWhen literal is escaped",
+    node(contract="HarnessCheckV1", haltWhen="command == '`+x+`'"),
+    "__CANARY__",
+)
+
+# --- LOW: an unbound {{token}} compiled clean and threw at launch ----------
+rejected("unbound {{item}} without foreach", node(prompt="audit {{item.brief}}"),
+         "not in scope for this node")
+rejected("unbound {{seen}} without repeat", node(prompt="skip {{seen}}"),
+         "declares no 'repeat'")
+
+# Bindings that ARE in scope must still compile.
+ok_ir = node(foreach="dims", prompt="audit {{item.brief}} for {{A.target}}")
+ok_ir["lists"] = {"dims": [{"key": "a", "brief": "b"}]}
+errs = cg.validate(ok_ir, CONTRACTS)
+report("in-scope tokens still compile", not errs, "accepted" if not errs else str(errs))
+
+# --- MEDIUM: ceiling-declined refuters were laundered into "survived" ------
+disc = node(verify="panel:3", verifyOver="findings", expectItems=2)
+disc["budget"] = {"maxNodes": 40}
+js = cg.emit(disc, CONTRACTS)
+report("a short panel marks the item unverified",
+       "unverified: cast.length < n," in js,
+       "tagged" if "unverified: cast.length < n," in js else "MISSING")
+report("survival is decided by the majority alone",
+       "filter(v => v.kills < need)" in js and "v.unverified || v.kills" not in js,
+       "kills-only" if "v.unverified || v.kills" not in js else "unverified still grants survival")
+
+# --- Prompts were already escaped; keep it that way ------------------------
+emits_inert(
+    "prompt cannot break out of its template literal",
+    node(prompt="hi `);await import('node:fs').then(m=>m.writeFileSync('__CANARY__','x'));log(`"),
+    "__CANARY__",
+)
+emits_inert(
+    "list item values cannot break out",
+    (lambda: (lambda i: (i.update(lists={"dims": [
+        {"key": "a", "brief": "`);await import('node:fs').then(m=>m.writeFileSync('__CANARY__','x'));log(`"}]}),
+        i["nodes"][0].update(foreach="dims", prompt="do {{item.brief}}"), i)[-1])(node()))(),
+    "__CANARY__",
+)
+
+print(f"\n{passed} passed, {failed} failed")
+sys.exit(1 if failed else 0)

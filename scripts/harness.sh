@@ -30,9 +30,11 @@ check_sh()   { bash -n "$1"; }
 check_py()   { python3 -m py_compile "$1"; }
 
 compile_templates() {
-  local t
+  local t n=0
   for t in "$PLUGIN"/templates/WORK*.md; do
+    [ -f "$t" ] || continue
     grep -q '```json graph-ir' "$t" || continue
+    n=$((n + 1))
     python3 "$PLUGIN/scripts/compile-graph.py" "$t" -o /tmp/fpl-compiled.js || return 1
     # Generated scripts must be syntactically valid under the runtime's
     # async wrapper, or the graph fails at launch instead of at compile.
@@ -43,6 +45,12 @@ compile_templates() {
     } >/tmp/fpl-wrapped.mjs
     node --check /tmp/fpl-wrapped.mjs || return 1
   done
+  # A green that compiled nothing is not a green: if the templates are ever
+  # renamed or moved, this check must fail rather than silently pass.
+  if [ "$n" -lt 2 ]; then
+    echo "expected at least 2 campaign templates with an IR block, compiled $n" >&2
+    return 1
+  fi
 }
 
 case "${1:---full}" in
@@ -78,7 +86,10 @@ case "${1:---full}" in
     step "templates compile + emit valid JS" compile_templates
     step "compiler invariants" python3 "$PLUGIN/tests/compile-test.py"
     step "emission coverage" python3 "$PLUGIN/tests/emission-test.py"
+    step "codegen injection + red-team regressions" python3 "$PLUGIN/tests/security-test.py"
     step "stop-gate regression" bash "$PLUGIN/tests/gate-test.sh"
+    step "hook wiring + PostToolUse" bash "$PLUGIN/tests/hooks-test.sh"
+    step "migration against pre-1.0 fixtures" bash "$PLUGIN/tests/migrate-test.sh"
     step "unified state + compatibility" bash "$PLUGIN/tests/unify-test.sh"
     ;;
   *)
