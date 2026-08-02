@@ -190,8 +190,10 @@ than the one it is named for, still needs the semantic pass.
 moves local state under `.claude/fluxpoint/`, and rewires settings. Until
 then the hooks still honor `LOOP.md`, so nothing breaks mid-migration.
 
-Requires `git` and `python3`; `jq` preferred with a python3 fallback built
-into the hooks. Graph mode additionally needs a Claude Code version with
-the Workflow tool.
+Requires `git` and Python 3, reached as either `python3` or `python` — the
+latter is what a standard Windows install provides. Scripts are invoked
+through `scripts/py.sh`, which resolves the name and pins UTF-8 stdio. `jq`
+preferred, with a Python fallback built into the hooks. Graph mode
+additionally needs a Claude Code version with the Workflow tool.
 
 Full documentation lives in the repository root README.

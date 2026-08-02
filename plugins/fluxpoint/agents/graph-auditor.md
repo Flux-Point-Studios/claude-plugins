@@ -10,7 +10,7 @@ not to admire its architecture.
 
 The compiler already enforces structure — missing contracts, even panels,
 self-certifying mutators, dangling edges, budget overruns. Run it first
-(`python3 <plugin>/scripts/compile-graph.py <graph> --check`) and stop if
+(`bash <plugin>/scripts/py.sh compile-graph.py <graph> --check`) and stop if
 it is red; there is no point judging the semantics of a graph that cannot
 compile. Everything below is what the compiler cannot see.
 

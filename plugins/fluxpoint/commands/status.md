@@ -7,7 +7,7 @@ Report the state of this repo's work, concisely. Read-only; change
 nothing.
 
 0. **Lead with what is blocked on a person.**
-   `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/inbox.py" --list`. If anything
+   `bash "${CLAUDE_PLUGIN_ROOT}/scripts/py.sh" inbox.py --list`. If anything
    is open, the report opens with a **BLOCKED ON YOU** section listing each
    item and how to clear it (`/fluxpoint:release <node>` for a parked node,
    a named confirmation for a refused irreversible one). This goes first
@@ -24,7 +24,7 @@ nothing.
    migrated: the STATUS and MODE lines, checked vs unchecked counts for
    Definition of Done and Plan, and the last few Evidence rows.
 3. In `graph` or `both` mode, add:
-   - `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compile-graph.py" WORK.md --check`
+   - `bash "${CLAUDE_PLUGIN_ROOT}/scripts/py.sh" compile-graph.py WORK.md --check`
      — valid or invalid, node count, planned agent calls, budget ceiling.
    - the newest recorded run: runId, outcome, nodes OK/dead, findings,
      harness exit, red-team verdict, and any node whose status is `DEAD`

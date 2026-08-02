@@ -14,10 +14,10 @@ not something to drive from prose.
 Resolve the plugin root first: `${CLAUDE_PLUGIN_ROOT}`, else
 `find ~/.claude/plugins -type d -name fluxpoint | head -1`. Call it `$ROOT`.
 
-1. **Plan.** `python3 "$ROOT/scripts/migrate.py" --plan`
+1. **Plan.** `bash "$ROOT/scripts/py.sh" migrate.py --plan`
    Show the user its output verbatim. It touches nothing. If it reports
    nothing to migrate, say so and stop.
-2. **Apply.** `python3 "$ROOT/scripts/migrate.py" --apply`
+2. **Apply.** `bash "$ROOT/scripts/py.sh" migrate.py --apply`
    This writes `WORK.md`, renames `LOOP_PROMPT.md`, moves local state under
    `.claude/fluxpoint/`, rewires `.gitignore` and `enabledPlugins`, and
    deletes compiled `.graph.js` build output. It deliberately leaves
@@ -36,8 +36,8 @@ Resolve the plugin root first: `${CLAUDE_PLUGIN_ROOT}`, else
      change, so a break here means the migration touched something it
      should not have.
    - If `WORK.md` has a Campaign section:
-     `python3 "$ROOT/scripts/compile-graph.py" WORK.md --check`
-5. **Finalize.** `python3 "$ROOT/scripts/migrate.py" --finalize`
+     `bash "$ROOT/scripts/py.sh" compile-graph.py WORK.md --check`
+5. **Finalize.** `bash "$ROOT/scripts/py.sh" migrate.py --finalize`
    This removes `LOOP.md` and `GRAPH.md`, and refuses if `WORK.md` carries
    fewer Evidence rows than the sources did. If it refuses, the migration
    lost history — fix `WORK.md`, do not force it.

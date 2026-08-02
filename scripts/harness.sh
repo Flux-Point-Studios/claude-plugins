@@ -67,6 +67,24 @@ compile_templates() {
   fi
 }
 
+# Commands and agents are run as literal instructions, so a `python3` written
+# into one is reached by no shell resolver — and `python3` is absent from a
+# standard Windows install, which made every slash command a no-op there.
+# Invocations go through scripts/py.sh, which also pins UTF-8 stdio.
+portable_invocations() {
+  local hits
+  hits=$(grep -rn 'python3[^`]*\.py' --include='*.md' "$PLUGIN" || true)
+  if [ -n "$hits" ]; then
+    echo "$hits" >&2
+    echo "hardcoded python3 invocation; route it through scripts/py.sh" >&2
+    return 1
+  fi
+  [ -x "$PLUGIN/scripts/py.sh" ] || {
+    echo "scripts/py.sh missing or not executable" >&2
+    return 1
+  }
+}
+
 case "${1:---full}" in
   --changed)
     f="${2:?usage: harness.sh --changed <file>}"
@@ -97,6 +115,7 @@ case "${1:---full}" in
       [ -f "$f" ] && step "py_compile: $(basename "$f")" check_py "$f"
     done
     step "manifests validate" claude plugin validate .
+    step "portable interpreter invocations" portable_invocations
     step "templates compile + emit valid JS" compile_templates
     step "compiler invariants" "$FPL_PY" "$PLUGIN/tests/compile-test.py"
     step "emission coverage" "$FPL_PY" "$PLUGIN/tests/emission-test.py"

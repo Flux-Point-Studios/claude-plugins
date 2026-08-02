@@ -42,7 +42,7 @@ command.
      `{{seen}}` in the prompt so each round works new ground. See
      `templates/WORK.discovery.md`.
 5. Compile-check until clean:
-   `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compile-graph.py" WORK.md --check`
+   `bash "${CLAUDE_PLUGIN_ROOT}/scripts/py.sh" compile-graph.py WORK.md --check`
    Its findings are structural. Fix the IR — never weaken a contract,
    drop a verifier, or raise the budget just to silence it.
 6. Run `/fluxpoint:graph-audit` for the semantic pass the compiler

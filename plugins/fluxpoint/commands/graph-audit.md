@@ -9,7 +9,7 @@ structure; this pass judges what it cannot.
 1. Resolve targets: "$ARGUMENTS" if provided, otherwise `WORK.md` plus
    any sibling `GRAPH.*.md` campaigns.
 2. Run the structural check first and require it clean —
-   `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compile-graph.py" <graph> --check`.
+   `bash "${CLAUDE_PLUGIN_ROOT}/scripts/py.sh" compile-graph.py <graph> --check`.
    If it fails, report those findings and stop: there is no point judging
    semantics of a graph that cannot compile.
 3. Launch the `graph-auditor` agent on the IR. It reports only findings
