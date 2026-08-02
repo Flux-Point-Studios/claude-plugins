@@ -22,12 +22,17 @@ count, and `--baseline` re-records it.
 Dormant by design: a repo with no proof-language files exits 0 in silence,
 exactly like the DoD gate in a repo with no harness.
 
-One weakening does not add a hatch at all: gutting a test. `test t()
-{ True }` still runs, still passes, and asserts nothing, so no line-based
-scan can see it. That case is now counted structurally by matching the
-test's braces and reading its body — but only where it is unambiguous
-(a bare boolean, a value compared to itself, an empty body), because a
-false positive here would train people to ignore the ratchet.
+Two weakenings add no hatch at all, so both are counted structurally by
+matching braces and reading the body — but only where the body is
+unambiguous, because a false positive here would train people to ignore
+the ratchet:
+
+  * Gutting a test. `test t() { True }` still runs, still passes, and
+    asserts nothing, so no line-based scan can see it.
+  * Discharging a condition by fiat. `fn credential_matches(o, k) -> Bool
+    { True }` moves an obligation into a helper that always agrees — the
+    validator still reads as if it checks something, and the count of
+    `todo`/`expect` never moves.
 
 Known misses are pinned by tests rather than assumed covered — a `when x
 is { _ -> True }` is vacuous but needs real expression analysis to see, so
@@ -120,11 +125,42 @@ def strip_comment(line, suffix):
 
 # Categories that need structure rather than a line match, so they are
 # counted by a small parser instead of a regex.
-STRUCTURAL = ["aiken.vacuous_test"]
+STRUCTURAL = ["aiken.vacuous_test", "aiken.constant_predicate"]
 
 TEST_HEAD = re.compile(r"^\s*test\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s*(fail\b[^{]*)?\{")
 # A body that proves nothing: a bare boolean, or a value compared to itself.
 VACUOUS_BODY = re.compile(r"^(True|False|(?P<x>[A-Za-z0-9_.]+)\s*==\s*(?P=x))$")
+
+# A predicate whose body is a bare boolean decides nothing, whatever its
+# arguments say. Declared return type is required: without `-> Bool` this
+# would flag constructors and helpers that merely happen to end in a literal.
+CONST_FN_HEAD = re.compile(
+    r"^\s*(?:pub\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\([^)]*\)\s*->\s*Bool\s*\{")
+CONST_BODY = re.compile(r"^(True|False)$")
+
+
+def body_of(lines, i):
+    """Brace-matched body of the block opening on line i, comments stripped.
+
+    Returns the inner text whitespace-collapsed, or None if the braces never
+    balance (a truncated file). Shared by both structural scanners so they
+    agree on what "the body" means.
+    """
+    depth, body = 0, []
+    for j in range(i, len(lines)):
+        src = strip_comment(lines[j], ".ak")
+        depth += src.count("{") - src.count("}")
+        body.append(src)
+        if depth <= 0 and j > i:
+            break
+        if depth <= 0 and j == i and "}" in src:
+            break
+    else:
+        return None
+    inner = "\n".join(body)
+    if "}" not in inner:
+        return None
+    return " ".join(inner[inner.find("{") + 1 : inner.rfind("}")].split())
 
 
 def scan_vacuous_tests(path, text):
@@ -144,20 +180,34 @@ def scan_vacuous_tests(path, text):
         m = TEST_HEAD.match(strip_comment(line, ".ak"))
         if not m:
             continue
-        depth, body, start = 0, [], i
-        for j in range(i, len(lines)):
-            src = strip_comment(lines[j], ".ak")
-            depth += src.count("{") - src.count("}")
-            body.append(src)
-            if depth <= 0 and j > i:
-                break
-            if depth <= 0 and j == i and "}" in src:
-                break
-        inner = "\n".join(body)
-        inner = inner[inner.find("{") + 1 : inner.rfind("}")] if "}" in inner else ""
-        stripped = " ".join(inner.split())
+        stripped = body_of(lines, i)
+        if stripped is None:
+            continue
         if VACUOUS_BODY.match(stripped) or not stripped:
-            found.append((start + 1, m.group(1), stripped or "<empty>"))
+            found.append((i + 1, m.group(1), stripped or "<empty>"))
+    return found
+
+
+def scan_constant_predicates(path, text):
+    """Aiken predicates that always return the same answer.
+
+    The other way to weaken a validator without adding a hatch: keep the
+    call site and make the callee agree unconditionally. `spend` still reads
+    as `signed_by(..) && credential_matches(..)`, so a reviewer skimming the
+    validator sees a conjunction that is checked; the helper is where the
+    obligation went. Only a literal `True`/`False` body is flagged, and a
+    pre-existing one is absorbed into the baseline, so this fires on the
+    diff that introduces one rather than on a repo that already had it.
+    """
+    found = []
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        m = CONST_FN_HEAD.match(strip_comment(line, ".ak"))
+        if not m:
+            continue
+        stripped = body_of(lines, i)
+        if stripped and CONST_BODY.match(stripped):
+            found.append((i + 1, m.group(1), stripped))
     return found
 
 
@@ -188,11 +238,18 @@ def scan(root):
                     if len(hits[cat]) < 20:
                         hits[cat].append(f"{rel}:{n}: {raw.strip()[:100]}")
         if suffix == ".ak":
-            for lineno, name, body in scan_vacuous_tests(path, "".join(lines)):
+            text = "".join(lines)
+            for lineno, name, body in scan_vacuous_tests(path, text):
                 counts["aiken.vacuous_test"] += 1
                 if len(hits["aiken.vacuous_test"]) < 20:
                     hits["aiken.vacuous_test"].append(
                         f"{rel}:{lineno}: test {name} body is `{body}` — cannot fail"
+                    )
+            for lineno, name, body in scan_constant_predicates(path, text):
+                counts["aiken.constant_predicate"] += 1
+                if len(hits["aiken.constant_predicate"]) < 20:
+                    hits["aiken.constant_predicate"].append(
+                        f"{rel}:{lineno}: fn {name} always returns `{body}` — decides nothing"
                     )
     return counts, hits
 

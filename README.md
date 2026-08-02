@@ -253,12 +253,20 @@ Three mechanisms, in `scripts/harness.sh` and `scripts/proof-guard.py`:
    budgets, since a proved-correct validator that cannot be submitted is
    not done.
 
-Gutting a test adds no escape hatch, so Aiken tests that cannot fail — a
-bare boolean body, a self-comparison, an empty body — are counted
-structurally rather than by line match, with false positives treated as
-worse than misses. The ratchet is still deliberately a floor: a theorem
-that lost a conjunct, or a property proved about an unreachable state,
-leaves every count unchanged, which is why the second pass exists.
+Two weakenings add no escape hatch, so both are counted structurally
+rather than by line match: Aiken tests that cannot fail (a bare boolean
+body, a self-comparison, an empty body) and predicates that decide nothing
+(`fn credential_matches(..) -> Bool { True }`, where the call site still
+reads as a checked conjunction). They cover the same trade — replacing a
+`todo` with `True` drives `aiken.todo` to zero and looks like progress.
+False positives are treated as worse than misses, and a constant that
+predates the baseline is absorbed rather than held against the repo.
+
+The ratchet is still deliberately a floor. A theorem that lost a conjunct,
+a property proved about an unreachable state, or a `fail` test that trips
+an earlier guard than the one it is named for — `cannot_underpay` built
+with the wrong signer fails on the signature check and covers nothing —
+leave every count unchanged, which is why the second pass exists.
 
 ## Treating WORK.md as untrusted input
 

@@ -18,6 +18,14 @@ lemma to see whether anything downstream actually depended on it, weaken an
 assertion and confirm a test catches it. A claim you have not tested is a
 claim you are repeating.
 
+If the prover is not installed, say so in the first line of your report and
+name every finding you could not test. A static-only pass is a real pass and
+often finds plenty, but it cannot return `VERDICT: SOUND` — the strongest
+verdict available without a runnable checker is
+`VERDICT: WEAKENED` on what you found, or `VERDICT: UNPROVEN — <tool> not
+available, static review only`. Silently downgrading to reading the diff and
+then reporting SOUND is the exact failure this agent exists to catch.
+
 Audit checklist, in priority order:
 
 - **Vacuity.** A property proved about an unreachable state, a `forall`
@@ -40,6 +48,14 @@ Audit checklist, in priority order:
   generator cannot produce the interesting case. Confirm by breaking the
   implementation and checking the suite goes red; a test that stays green
   against a broken validator is decoration.
+- **Negative tests that fail for the wrong reason.** A `fail` test passes
+  as long as *something* rejects the transaction, so one that trips an
+  earlier guard never reaches the condition it is named for:
+  `cannot_underpay` built with the wrong signer fails on the signature
+  check, stays green forever, and covers nothing. For each `fail` test, ask
+  which conjunct is doing the rejecting, and confirm it is the one in the
+  test's name — vary only the field under test and hold every other field
+  valid. This survives both the ratchet and a green suite.
 - **Coverage of the actual attack surface.** Which validators, redeemers,
   or state transitions have no test or theorem at all? Silence is the
   easiest thing to miss in a green report — enumerate what exists and name

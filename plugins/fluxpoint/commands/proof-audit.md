@@ -20,7 +20,13 @@ Resolve the plugin root: `${CLAUDE_PLUGIN_ROOT}`, else
    verify that `--full` invokes the prover, not only the per-file
    `--changed` path. A Definition-of-Done gate that never calls the prover
    is the failure this whole command exists to catch. Report it as
-   CRITICAL if so.
+   CRITICAL if so. For Aiken, check for `aiken build` as well as `aiken
+   check`: `check` proves the logic, `build` is what produces the compiled
+   script, so a `--full` that only checks can never measure script size or
+   execution units — the budgets that decide whether a correct validator is
+   submittable at all. Same shape elsewhere: confirm the artifact the
+   downstream gate needs is actually produced, not just that the prover
+   exited 0.
 3. **Semantic pass.** Launch the `proof-auditor` agent over
    "$ARGUMENTS" (or the working diff). It judges vacuity, specification
    drift, assumption laundering, test theatre, unproved surface, on-chain

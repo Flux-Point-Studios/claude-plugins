@@ -109,12 +109,15 @@ Three rules, in order of how often they are broken:
    file; `--check` fails when any category rises. Proving something you
    previously assumed lowers the count and is always allowed. Raising one
    is a diff a human has to justify.
-   Gutting a test adds no hatch at all, so that case is counted
-   structurally: `test t() { True }` is flagged as a test that cannot fail.
-   The ratchet is still a floor, not a ceiling — a theorem that lost a
-   conjunct, a property about an unreachable state, or a generator that
-   cannot produce the interesting case all leave the counts untouched,
-   which is why rule 3 exists.
+   Two weakenings add no hatch at all, so both are counted structurally:
+   `test t() { True }` is flagged as a test that cannot fail, and `fn
+   check(..) -> Bool { True }` as a predicate that decides nothing — which
+   is what a `todo` usually becomes when someone is told to make the count
+   go down. The ratchet is still a floor, not a ceiling — a theorem that
+   lost a conjunct, a property about an unreachable state, a generator that
+   cannot produce the interesting case, or a `fail` test that trips an
+   earlier guard than the one it is named for all leave the counts
+   untouched, which is why rule 3 exists.
 3. **Green is not stronger.** `/fluxpoint:proof-audit` runs the ratchet and
    then the `proof-auditor` agent, which looks for what a count cannot see:
    a theorem whose statement got weaker, a property proved about an

@@ -111,12 +111,17 @@ proved one.
   that cannot fail, unproved surface, on-chain budgets, solver `unknown`
   read as success.
 
-It also counts Aiken tests that cannot fail — a body that is a bare
-boolean, a self-comparison, or empty — because gutting a test weakens a
-suite without adding any hatch for a line scan to find. Only unambiguous
-cases are flagged; a false positive would train people to ignore the
-ratchet. The ratchet remains a floor, not a ceiling: a theorem that lost a
-conjunct still needs the semantic pass.
+It also counts two weakenings that add no hatch for a line scan to find:
+Aiken tests that cannot fail (a body that is a bare boolean, a
+self-comparison, or empty) and predicates that decide nothing (`fn
+credential_matches(..) -> Bool { True }` — the call site still reads as a
+checked conjunction). Both catch the same trade: swapping a `todo` for
+`True` lowers `aiken.todo` to zero and looks like progress. Only
+unambiguous cases are flagged, and a pre-existing one is absorbed by the
+baseline rather than indicting the repo; a false positive would train
+people to ignore the ratchet. The ratchet remains a floor, not a ceiling: a
+theorem that lost a conjunct, or a `fail` test that trips an earlier guard
+than the one it is named for, still needs the semantic pass.
 
 ## Migrating from the split plugins
 
