@@ -63,7 +63,27 @@ recorded `SKIPPED` in provenance and surfaces in the Evidence row as
 incomplete coverage, so a campaign that ran out of budget can never be
 read as a clean sweep.
 
-Verified: 45 compiler invariant tests, 7 gate-bypass regression cases,
+### The ceiling is a backstop, not a dial (v1.1.1)
+
+The first real discovery run ended on its ceiling with findings still
+arriving each round (3 -> 4 -> 4 new, not decaying). The instinct is to
+raise the default; the actual lesson is that `maxRounds` had become the
+binding constraint instead of the dry rule, so every sweep would report
+INCOMPLETE and the word would stop carrying information.
+
+Two changes, because the number alone would only move the problem:
+- the shipped template's ceiling went 4 -> 6 (`maxNodes` 84 -> 126),
+- and the compiler now warns when `maxRounds - untilDryRounds < 2`, so a
+  too-tight ceiling is caught per repo rather than depending on a default
+  being right everywhere. It also warns on discovery with no verification
+  tier, since sweep output tends to get consumed as fact.
+
+A generous ceiling is nearly free: it raises the declared worst case,
+which is what `maxNodes` must cover, but the loop exits the moment it goes
+dry, so unrun rounds cost nothing. Cost is capped by the token floors, not
+the round count.
+
+Verified: 52 compiler invariant tests, 7 gate-bypass regression cases,
 20 unified-state and compatibility tests; all three canonical campaigns
 compile to syntactically valid Workflow scripts; the provenance path
 writes a real artifact and Evidence row; and compiled campaigns have been

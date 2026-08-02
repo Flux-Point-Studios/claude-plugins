@@ -142,6 +142,20 @@ Rounds re-run until `untilDryRounds` consecutive rounds surface nothing
 new, bounded by `maxRounds`. Use `{{seen}}` in the prompt so each round is
 told what earlier rounds found and spends itself on new ground.
 
+**`maxRounds` is a backstop, not a thoroughness dial.** The dry rule is
+what should end a healthy sweep; the ceiling exists for the loop that
+never converges. Set it with headroom — `untilDryRounds + 3` or more — or
+the ceiling ends every run and every run reports INCOMPLETE, which trains
+readers to ignore the word. The compiler warns when the headroom is under
+two rounds.
+
+A generous ceiling is cheap, because it prices risk rather than spend:
+`budget.maxNodes` must cover the worst case (rounds are priced in), but
+the loop exits the moment it goes dry, so rounds that never run cost
+nothing. Raising `maxRounds` from 4 to 6 raises the declared ceiling by
+50% and typical spend by roughly zero. Let the token floors, not the round
+count, be what actually caps cost.
+
 Two rules the compiler enforces because getting them wrong is subtle:
 
 - **Dedup against everything seen, not everything confirmed.** Items enter

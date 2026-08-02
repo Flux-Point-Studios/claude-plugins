@@ -199,6 +199,35 @@ def validate(ir, contracts):
     return f
 
 
+def warnings(ir):
+    """Non-blocking findings: shapes that compile but will predictably
+    disappoint. Returned separately from validate() so they inform without
+    refusing to build."""
+    w = []
+    for n in ir.get("nodes") or []:
+        nid = n.get("id", "?")
+        rep = n.get("repeat") or {}
+        dry, mx = rep.get("untilDryRounds"), rep.get("maxRounds")
+        if isinstance(dry, int) and isinstance(mx, int):
+            # A sweep needs room for productive rounds AND the dry streak that
+            # proves it is finished. Without that headroom the ceiling, not the
+            # dry rule, ends every run — and every run reports INCOMPLETE.
+            headroom = mx - dry
+            if headroom < 2:
+                w.append(
+                    f"node '{nid}': maxRounds {mx} leaves only {headroom} round(s) "
+                    f"above untilDryRounds {dry}, so the ceiling will end the sweep "
+                    f"before the dry rule can — expect INCOMPLETE. Prefer "
+                    f"maxRounds >= {dry + 3} unless a short sweep is the point."
+                )
+        if n.get("repeat") and not panel_size(n) and n.get("verify", "schema-only") == "schema-only":
+            w.append(
+                f"node '{nid}': discovery with no verification tier — a sweep's "
+                f"output is usually consumed as fact; consider skeptic:1 or panel:3"
+            )
+    return w
+
+
 def plan_node_count(ir):
     """Worst-case agent calls: fan-out times verification times rounds."""
     lists = ir.get("lists") or {}
@@ -605,6 +634,11 @@ def main():
         return 1
 
     planned = plan_node_count(ir)
+    # Warnings inform, never block: these shapes are legal and occasionally
+    # deliberate, but they will usually disappoint whoever reads the result.
+    for w in warnings(ir):
+        print(f"graph-compile: warning — {w}", file=sys.stderr)
+
     if args.check:
         print(f"graph-compile: IR valid — {len(ir['nodes'])} node(s), "
               f"{planned} planned agent call(s), budget.maxNodes="

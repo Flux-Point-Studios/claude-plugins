@@ -31,7 +31,7 @@ does.
   `graph-engineering` (escalation rule, primitives, tiers, shapes).
 - `templates/` — `harness.sh` contract, `WORK.md`, `WORK.feature.md`,
   `WORK.discovery.md`, `WORK_PROMPT.md`, `loop.sh`, settings snippet.
-- `tests/` — `gate-test.sh` (7 gate cases), `compile-test.py` (45 compiler
+- `tests/` — `gate-test.sh` (7 gate cases), `compile-test.py` (52 compiler
   invariants), `unify-test.sh` (20 state and compatibility cases).
 
 ## The two contracts
