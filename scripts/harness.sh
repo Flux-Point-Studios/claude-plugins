@@ -91,6 +91,7 @@ case "${1:---full}" in
     step "hook wiring + PostToolUse" bash "$PLUGIN/tests/hooks-test.sh"
     step "migration against pre-1.0 fixtures" bash "$PLUGIN/tests/migrate-test.sh"
     step "proof-strength ratchet" bash "$PLUGIN/tests/proof-guard-test.sh"
+    step "on-chain budget gate" bash "$PLUGIN/tests/budget-test.sh"
     step "unified state + compatibility" bash "$PLUGIN/tests/unify-test.sh"
     ;;
   *)

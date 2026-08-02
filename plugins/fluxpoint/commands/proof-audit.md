@@ -27,16 +27,21 @@ Resolve the plugin root: `${CLAUDE_PLUGIN_ROOT}`, else
    submittable at all. Same shape elsewhere: confirm the artifact the
    downstream gate needs is actually produced, not just that the prover
    exited 0.
-3. **Semantic pass.** Launch the `proof-auditor` agent over
+3. **On-chain budgets (Cardano).** If `plutus.json` exists, run
+   `python3 "$ROOT/scripts/plutus-budget.py" --report`. A validator over
+   `maxTxSize` cannot be submitted no matter how well it is proved, and the
+   prover never mentions it. Report an unmeasured `exUnits` as a gap rather
+   than a pass — it is the budget most often assumed met.
+4. **Semantic pass.** Launch the `proof-auditor` agent over
    "$ARGUMENTS" (or the working diff). It judges vacuity, specification
    drift, assumption laundering, test theatre, unproved surface, on-chain
    budgets, and solver honesty — everything a count cannot see. It ends
    `VERDICT: SOUND` or `VERDICT: WEAKENED`.
-4. **Treat WEAKENED as harness-red.** Fix the findings; never lower a
+5. **Treat WEAKENED as harness-red.** Fix the findings; never lower a
    specification, add an assumption, or re-record the baseline to reach
    SOUND. Re-recording is legitimate only when a rise is deliberate and
    justified in review — and then the justification belongs in the commit
    message, not in a silent baseline bump.
-5. Record the outcome in WORK.md's Evidence table: the ratchet result, the
+6. Record the outcome in WORK.md's Evidence table: the ratchet result, the
    auditor verdict, and what you ran to establish each. A verification
    claim without a row is treated as false, exactly like any other.

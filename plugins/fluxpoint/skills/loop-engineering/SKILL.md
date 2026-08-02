@@ -127,8 +127,16 @@ Three rules, in order of how often they are broken:
 
 For Cardano specifically, correctness is necessary and not sufficient:
 script size and execution-unit budgets, min-ADA, and datum size decide
-whether a proved-correct validator can actually be submitted. Put those in
-the harness too.
+whether a proved-correct validator can actually be submitted. Script size
+is already gated — the scaffolded harness runs `scripts/plutus-budget.py`
+after `aiken build`, which fails on the protocol `maxTxSize` whatever you
+have configured, and on a tighter headroom target if you set
+`maxScriptBytes` in `.fluxpoint-budget.json`. Point it at real
+`cardano-cli query protocol-parameters` output via `FPL_PROTOCOL_PARAMS`
+when you target anything but mainnet. Execution units are not derivable
+from a compiled script, so record measured values from your own
+transaction-building tests under `exUnits` in that file; until you do, the
+gate reports them unmeasured rather than met.
 
 ## Evidence discipline
 

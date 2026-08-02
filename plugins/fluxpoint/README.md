@@ -21,8 +21,9 @@ does.
   verification, Stop-hook DoD gate.
 - `scripts/` — `lib.sh`, `inject-state.sh`, `verify-changed.sh`,
   `dod-gate.sh` (loop); `compile-graph.py`, `record-run.py` (graph);
-  `proof-guard.py` (proof-strength ratchet); `migrate.py` (pre-1.0
-  migration, plan/apply/finalize).
+  `proof-guard.py` (proof-strength ratchet); `plutus-budget.py` (on-chain
+  size and execution-unit limits); `migrate.py` (pre-1.0 migration,
+  plan/apply/finalize).
 - `contracts/` — versioned named schemas (`FindingsV1`, `VerdictV1`,
   `HarnessCheckV1`, `DesignV1`, `SliceV1`, `RedTeamV1`).
 - `commands/` — `/fluxpoint:init`, `:status`, `:migrate`, `:red-team`,
@@ -105,11 +106,23 @@ proved one.
   (Lean/Isabelle), `Admitted` (Coq), `#[verifier::external_body]` (Verus),
   `ASSUME` (TLA+), and verification-disabling CLI flags into a committed
   file. `--check` fails when a category rises. Falling is always allowed.
+- **`scripts/plutus-budget.py` gates submittability.** Correct and
+  submittable are different properties and only one has a prover:
+  `aiken check` is green on a validator too large to go on chain. It reads
+  `compiledCode` out of the plutus.json blueprint, folds the entries a
+  multi-purpose validator repeats, and fails on the protocol's `maxTxSize`
+  unconditionally — that limit is a fact, not a preference. Headroom is the
+  part you configure (`.fluxpoint-budget.json`), and `--params` takes real
+  `cardano-cli query protocol-parameters` output so the constants here are a
+  fallback rather than the authority. Execution units cannot be derived from
+  a compiled artifact — they are a property of evaluating a script against a
+  transaction — so measured values go in the same file and an absent
+  measurement is reported as unmeasured rather than passed.
 - **`/fluxpoint:proof-audit`** runs the ratchet, checks the prover is
   actually in `--full`, then the `proof-auditor` agent for what a count
   cannot see: vacuity, specification drift, assumption laundering, tests
-  that cannot fail, unproved surface, on-chain budgets, solver `unknown`
-  read as success.
+  that cannot fail, negative tests that fail for the wrong reason, unproved
+  surface, on-chain budgets, solver `unknown` read as success.
 
 It also counts two weakenings that add no hatch for a line scan to find:
 Aiken tests that cannot fail (a body that is a bare boolean, a
