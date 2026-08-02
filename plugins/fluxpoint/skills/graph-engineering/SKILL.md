@@ -48,6 +48,13 @@ compiler rejects, at compile time:
 - a node with no contract, or an unknown contract name
 - `verifyOver` that is not a field of the node's contract
 - an even panel (majority undefined) or a panel with no `verifyOver`
+- `verify: harness` — removed; it compiled to nothing while the spec
+  claimed the node was checked. Gate on the harness the honest way:
+  `mutates: true` on the producer plus an `independent` node that runs it
+- an unknown field at any level (a misspelled `verifyOver` used to disable
+  verification silently), or `after` whose prompt never uses `{{prev}}` —
+  declaration order already sequences nodes, so a consumed-nothing edge is
+  a phantom
 - `mutates: true` with no `independent: true` node that `verifies` it
 - a node verifying itself, or a verifier not marked independent
 - `after`/`foreach`/`role` pointing at things that do not exist
@@ -66,8 +73,7 @@ scoping, tier-vs-stakes, prompt quality.
 ## Choosing a verification tier
 
 By stakes, never by habit. `schema-only` for cheap mechanical output whose
-consumer re-reads the source anyway. `harness` for anything claiming
-green. `skeptic:1` for low-severity claims. `panel:3` for findings that
+consumer re-reads the source anyway. `skeptic:1` for low-severity claims. `panel:3` for findings that
 will cost someone real time. `panel:5` only for CRITICAL. Panels are odd
 so majority is defined; refuters are prompted to *refute*, default to
 refuted when uncertain, re-read the underlying code themselves, and run at

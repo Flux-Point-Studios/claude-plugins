@@ -32,7 +32,9 @@ does.
 - `templates/` — `harness.sh` contract, `WORK.md`, `WORK.feature.md`,
   `WORK.discovery.md`, `WORK_PROMPT.md`, `loop.sh`, settings snippet.
 - `tests/` — `gate-test.sh` (7 gate cases), `compile-test.py` (52 compiler
-  invariants), `unify-test.sh` (20 state and compatibility cases).
+  invariants), `emission-test.py` (42 field-effect probes), `unify-test.sh`
+  (20 state and compatibility cases). All of it runs from
+  `scripts/harness.sh --full` in CI.
 
 ## The two contracts
 
@@ -62,6 +64,11 @@ Evidence table both modes append to.
 - Ending a discovery sweep on its round ceiling is logged
   `discovery INCOMPLETE, not exhausted` — stopping early and finishing are
   different claims.
+- Every field the IR accepts must demonstrably change what the compiler
+  produces. `tests/emission-test.py` probes each one and fails on a field
+  that changes nothing, because the recurring defect here was never a wrong
+  output — it was a silent one. Unknown fields are compile errors for the
+  same reason.
 
 ## Migrating from the split plugins
 

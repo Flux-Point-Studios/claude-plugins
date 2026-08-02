@@ -98,7 +98,7 @@ def add_verified_mutator(ir):
             "id": "gate",
             "phase": "Gate",
             "after": "build",
-            "prompt": "re-run the harness yourself",
+            "prompt": "re-run the harness yourself against this slice: {{prev}}",
             "contract": "HarnessCheckV1",
             "independent": True,
             "verifies": "build",

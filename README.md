@@ -40,7 +40,7 @@ restarts.
 | Piece | Mechanism | Behavior |
 |---|---|---|
 | Spec | ```json graph-ir block in `WORK.md` | The single source of truth: nodes with named contracts, `foreach`/`after` edges, a verification tier per node, budget ceiling, failure policy. Prose explains intent; the IR decides what runs. |
-| Compiler | `scripts/compile-graph.py` (python3, stdlib) | Compiles the IR to a Workflow script **deterministically — no model transcribes it**, so spec and executor cannot drift. Rejects unsound graphs at compile time: missing/unknown contracts, even panels, `verifyOver` that is not a contract field, dangling `after`/`foreach`/`role`, `{{prev}}` without an edge, a discovery loop with no dry rule/ceiling/dedup key, planned fan-out over `budget.maxNodes` (rounds priced in), and any mutator with no independent node verifying it. It also warns (without blocking) on shapes that compile but disappoint — a discovery ceiling too tight for its dry rule to ever fire, or a sweep with no verification tier. |
+| Compiler | `scripts/compile-graph.py` (python3, stdlib) | Compiles the IR to a Workflow script **deterministically — no model transcribes it**, so spec and executor cannot drift. Rejects unsound graphs at compile time: missing/unknown contracts, even panels, `verifyOver` that is not a contract field, dangling `after`/`foreach`/`role`, `{{prev}}` without an edge, a discovery loop with no dry rule/ceiling/dedup key, planned fan-out over `budget.maxNodes` (rounds priced in), and any mutator with no independent node verifying it. Unknown fields are errors too, at every level, so a misspelled `verifyOver` fails loudly instead of silently disabling verification. It also warns (without blocking) on shapes that compile but disappoint — a discovery ceiling too tight for its dry rule to ever fire, or a sweep with no verification tier. |
 | Executor | Claude Code Workflow tool | `/fluxpoint:graph-run` compiles, runs, and records. Generated code carries the guarantees: input normalization, worktree isolation for mutators, refuter panels that attack rather than confirm, a budget floor that logs whatever it leaves unverified. On partial failure, `resumeFromRunId` re-runs only the repaired node onward. |
 | Evidence | `scripts/record-run.py`, `/fluxpoint:status` | Provenance is a build artifact: `runs/<runId>.json` plus an auto-appended Evidence row (outcome, nodes OK/dead, findings, harness exit, red-team verdict). Nothing is remembered by hand. |
 | Review | `graph-auditor` agent, `/fluxpoint:graph-audit` | Semantic adversarial pass — stakes-vs-tier mismatches, vacuous contracts, context packets that paste transcripts, hidden coupling, ceilings that are not ceilings. Structure is the compiler's job. Ends `VERDICT: SOUND` or `VERDICT: REWIRE`. |
@@ -192,6 +192,24 @@ hooks still honor `LOOP.md`, so a half-migrated repo keeps working.
 
 Dependencies: `git` required; `jq` preferred with a `python3` fallback
 built into the hooks.
+
+## This repo gates itself
+
+`scripts/harness.sh --full` is the same contract `/fluxpoint:init` scaffolds
+into any other repo, and `.github/workflows/harness.yml` runs it on every
+push and pull request. It checks every manifest and contract, syntax-checks
+every script, validates the plugin, compiles all campaign templates and
+`node --check`s the generated JavaScript, then runs the four suites: 52
+compiler invariants, 42 field-effect probes, 7 Stop-gate regression cases,
+20 unified-state and pre-1.0 compatibility cases.
+
+The field-effect suite exists because of the defect that kept recurring
+here: not a wrong output, a *silent* one. `verify: harness` was accepted,
+documented, priced into the budget, and emitted nothing; `haltWhen` on a
+fan-out node compiled clean and could never fire. Reviewing for that is
+unreliable, so the suite sets every field the IR accepts to a non-default
+value and fails if the compiler's output does not change. A field added to
+the registry without a probe fails the run.
 
 ## Security posture
 
