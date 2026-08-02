@@ -1,3 +1,4 @@
 .claude/fluxpoint-loop/
 .DS_Store
 __pycache__/
+.claude/worktrees/

@@ -23,7 +23,13 @@ LEGACY_HDR = "| When (UTC) | runId | Outcome | Nodes OK/dead | Findings | Harnes
 
 
 def count_items(results):
-    """Total verified items the graph produced across all node results."""
+    """Total array items across all node results.
+
+    Deliberately generic: a review campaign's arrays are findings, a build
+    campaign's are tests and evidence lines. The Evidence row therefore says
+    "item(s)", not "finding(s)" — calling a slice's test list "verified
+    findings" would overstate what the run actually established.
+    """
     n = 0
     for v in (results or {}).values():
         if isinstance(v, list):
@@ -88,7 +94,7 @@ def main():
         )
 
     # 2. Evidence row, appended under whichever table header the file carries.
-    claim = f"graph run: {ok} node(s) OK, {dead} dead, {findings} verified finding(s)"
+    claim = f"graph run: {ok} node(s) OK, {dead} dead, {findings} produced item(s)"
     if skipped:
         claim += f"; {skipped} SKIPPED on budget — coverage incomplete"
     for p in partial:

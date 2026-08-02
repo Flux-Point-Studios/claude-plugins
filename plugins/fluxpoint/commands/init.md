@@ -17,7 +17,11 @@ step; do not stop at copying files.
    If a destination exists, show a diff and propose a merge instead. If
    the repo has a pre-1.0 `LOOP.md`, stop and run `/fluxpoint:migrate`
    instead of writing a second state file.
-3. Ensure `.gitignore` contains `.claude/fluxpoint/` and `__pycache__/`.
+3. Ensure `.gitignore` contains `.claude/fluxpoint/`,
+   `.claude/worktrees/`, and `__pycache__/`. The worktrees entry
+   matters as soon as any campaign has a `mutates` node: those run in
+   isolated trees under `.claude/worktrees/`, which must never be
+   committed.
 4. Merge the keys from `templates/settings.snippet.json` into
    `.claude/settings.json`, creating the file if absent and preserving
    every existing key.

@@ -474,6 +474,26 @@ def emit(ir, contracts):
     node_floor = budget_cfg.get("nodeFloorTokens", floor)
     a("// --- budget: work nodes get their own floor, not just verification ---")
     a(f"const NODE_FLOOR = {int(node_floor)}")
+    max_nodes = budget_cfg.get("maxNodes")
+    if max_nodes is not None:
+        a("// maxNodes was a compile-time estimate only, and the estimate leans on")
+        a("// expectItems, which is a guess. A run that found more than expected")
+        a("// could quietly exceed its own declared ceiling, so the ceiling is")
+        a("// counted at run time too.")
+        a(f"const MAX_NODES = {int(max_nodes)}")
+        a("let SPAWNED = 0")
+        a("// Every agent in this graph is spawned through here, so the ceiling")
+        a("// counts what actually ran. Declining returns null, which every call")
+        a("// site already treats as a dead node.")
+        a("async function spawn(prompt, opts) {")
+        a("  if (SPAWNED >= MAX_NODES) {")
+        a("    log(`budget ceiling: ${opts.label} NOT RUN — ${SPAWNED}/${MAX_NODES} agent call(s) already spawned`)")
+        a("    INCOMPLETE = true")
+        a("    return null")
+        a("  }")
+        a("  SPAWNED++")
+        a("  return agent(prompt, opts)")
+        a("}")
     a("// True when there is room to spawn work. Anything declined is announced")
     a("// and recorded as SKIPPED — a graph never quietly does less than it says.")
     a("function affordable(label) {")
@@ -496,7 +516,7 @@ def emit(ir, contracts):
         a("    return { kills: 0, cast: 0, unverified: true }")
         a("  }")
         a("  const votes = await parallel(Array.from({ length: n }, (_, i) => () =>")
-        a("    agent(")
+        a("    spawn(")
         a("      `Attempt to REFUTE this claim. ${claimText}\\n\\n` +")
         a("        `Re-read the underlying code or evidence YOURSELF; do not trust the claim's own summary. ` +")
         a("        `Hunt for the reason it is wrong: a guard upstream, a type that forbids the state, a test that pins it. ` +")
@@ -565,7 +585,7 @@ def emit_node(n, ir):
         if panel and over:
             a(f"  {var} = (await pipeline(")
             a(f"    {lst},")
-            a(f"    (item, _o, i) => agent({prompt}, {opts(n, ir, phase, label)}),")
+            a(f"    (item, _o, i) => spawn({prompt}, {opts(n, ir, phase, label)}),")
             a("    async (prev, item, i) => {")
             a(f"      if (!prev) {{ note({js_str(nid)}, 'DEAD', `${{item.key || i}} produced nothing`); "
               f"log(`node {nid} died for ${{item.key || i}} — dropped`); return [] }}")
@@ -580,7 +600,7 @@ def emit_node(n, ir):
             a(f"  log(`{nid}: ${{{var}.length}} item(s) survived {tier}`)")
         else:
             a(f"  {var} = (await parallel({lst}.map((item, i) => () =>")
-            a(f"    agent({prompt}, {opts(n, ir, phase, label)})")
+            a(f"    spawn({prompt}, {opts(n, ir, phase, label)})")
             a("  ))).filter(Boolean)")
             a(f"  note({js_str(nid)}, {var}.length ? 'OK' : 'DEAD', `${{{var}.length}}/${{{lst}.length}} returned`)")
             a(f"  if ({var}.length < {lst}.length) log(`{nid}: "
@@ -600,7 +620,7 @@ def emit_node(n, ir):
         if on_red == "halt":
             a("  return summary('BUDGET-EXHAUSTED')")
         a("}")
-        a(f"const {raw} = affordable({js_str('node ' + nid)}) ? await agent({prompt}, {opts(n, ir, phase, label)}) : null")
+        a(f"const {raw} = affordable({js_str('node ' + nid)}) ? await spawn({prompt}, {opts(n, ir, phase, label)}) : null")
         a(f"if (!{raw}) {{")
         a(f"  note({js_str(nid)}, 'DEAD', 'node returned nothing')")
         if on_red == "halt":
@@ -662,10 +682,10 @@ def emit_repeat(n, ir, prompt, phase, panel, over):
     # so the panel never re-judges an item a previous round already saw.
     if lst:
         a(f"  const raw_{var} = (await parallel({lst}.map((item, i) => () =>")
-        a(f"    agent({prompt}, {opts(n, ir, phase, label)})")
+        a(f"    spawn({prompt}, {opts(n, ir, phase, label)})")
         a("  ))).filter(Boolean)")
     else:
-        a(f"  const one_{var} = await agent({prompt}, {opts(n, ir, phase, label)})")
+        a(f"  const one_{var} = await spawn({prompt}, {opts(n, ir, phase, label)})")
         a(f"  const raw_{var} = one_{var} ? [one_{var}] : []")
     a(f"  const found_{var} = raw_{var}.flatMap(r => r[{js_str(over)}] || [])")
     a(f"  const fresh_{var} = found_{var}.filter(it => !seen_{var}.has(key_{var}(it)))")

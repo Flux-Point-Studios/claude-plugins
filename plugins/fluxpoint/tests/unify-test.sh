@@ -40,7 +40,7 @@ newrepo
 cp "$PLUGIN/templates/WORK.md" WORK.md
 printf '%s' "$RESULT" | python3 "$PLUGIN/scripts/record-run.py" --run-id wf_u1 --harness 0 --red-team SHIP >/dev/null
 contains "unified table: row appended" "| wf_u1 | COMPLETE |" WORK.md
-contains "unified table: claim column" "1 node(s) OK, 1 dead, 2 verified finding(s)" WORK.md
+contains "unified table: claim column" "1 node(s) OK, 1 dead, 2 produced item(s)" WORK.md
 contains "unified table: proof column" "harness exit 0; red-team SHIP" WORK.md
 check "provenance artifact written" "0" "$([ -f .claude/fluxpoint/runs/wf_u1.json ] && echo 0 || echo 1)"
 

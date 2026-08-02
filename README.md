@@ -199,9 +199,10 @@ built into the hooks.
 into any other repo, and `.github/workflows/harness.yml` runs it on every
 push and pull request. It checks every manifest and contract, syntax-checks
 every script, validates the plugin, compiles all campaign templates and
-`node --check`s the generated JavaScript, then runs the four suites: 52
-compiler invariants, 42 field-effect probes, 7 Stop-gate regression cases,
-20 unified-state and pre-1.0 compatibility cases.
+`node --check`s the generated JavaScript, then runs six suites: compiler
+invariants, field-effect probes, Stop-gate regression cases, hook wiring and
+PostToolUse behavior, migration against real pre-1.0 fixtures, and
+unified-state compatibility.
 
 The field-effect suite exists because of the defect that kept recurring
 here: not a wrong output, a *silent* one. `verify: harness` was accepted,
@@ -210,6 +211,17 @@ fan-out node compiled clean and could never fire. Reviewing for that is
 unreliable, so the suite sets every field the IR accepts to a non-default
 value and fails if the compiler's output does not change. A field added to
 the registry without a probe fails the run.
+
+## Migrating from the split plugins
+
+`/fluxpoint:migrate` drives `scripts/migrate.py`, which is tested against
+built pre-1.0 fixtures (a v0.1 loop-only repo, a v0.2 loop+graph repo, and a
+pre-0.2 repo whose GRAPH.md is prose). It runs in three phases — `--plan`
+touches nothing, `--apply` writes `WORK.md` and rewires config while leaving
+the sources in place, `--finalize` deletes them — and refuses to finalize if
+`WORK.md` carries fewer Evidence rows than the sources did. The one thing it
+will not do is invent a `graph-ir` block for a pre-0.2 prose campaign; it
+flags that for a human instead.
 
 ## Security posture
 

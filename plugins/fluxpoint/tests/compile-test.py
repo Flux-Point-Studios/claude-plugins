@@ -306,9 +306,22 @@ for needle, why in [
     ("kills < need", "survival is decided by the majority threshold"),
     ('"Find", 3, 2)', "panel:3 passes need=2, a true majority"),
     ("PROVENANCE", "provenance recorded"),
+    ("const MAX_NODES", "the ceiling exists at run time, not only at compile time"),
+    ("async function spawn(", "agents are spawned through one counted helper"),
 ]:
     ok = needle in js
     print(f"{'PASS' if ok else 'FAIL'}  emitted JS: {why:<42} -> {'found' if ok else 'MISSING'}")
+    passed, failed = (passed + ok, failed + (not ok))
+
+# Every agent call in generated code must go through spawn(), or the runtime
+# ceiling counts less than actually ran.
+import re as _re
+for name, src in [("fan-out+panel", js), ("discovery", disc_js), ("single", single_js)]:
+    bypass = [l for l in src.splitlines()
+              if _re.search(r'(?<![a-zA-Z])agent\(', l) and 'return agent(prompt, opts)' not in l]
+    ok = not bypass
+    print(f"{'PASS' if ok else 'FAIL'}  ceiling: {name+' routes every agent via spawn':<44} -> "
+          f"{'yes' if ok else bypass[0].strip()[:50]}")
     passed, failed = (passed + ok, failed + (not ok))
 
 print(f"\n{passed} passed, {failed} failed")
