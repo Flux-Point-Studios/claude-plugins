@@ -1,8 +1,0 @@
-{
-  "name": "fluxpoint-loop",
-  "version": "0.1.3",
-  "description": "Loop Engineering harness for Flux Point Studios: SessionStart loop-state injection, per-edit verification, a Stop-hook Definition-of-Done gate, a red-team reviewer agent, and loop scaffolding templates.",
-  "author": {
-    "name": "Flux Point Studios"
-  }
-}
