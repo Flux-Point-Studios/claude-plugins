@@ -22,14 +22,19 @@ count, and `--baseline` re-records it.
 Dormant by design: a repo with no proof-language files exits 0 in silence,
 exactly like the DoD gate in a repo with no harness.
 
-What this cannot see, verified by trying it: counting escape hatches says
-nothing about whether a proof still means anything. Gutting an Aiken
-negative test to `True` removes all of its force and leaves every count
-unchanged, so this script reports green. The same is true of a theorem
-whose statement lost a conjunct, a property proved about an unreachable
-state, or a solver `unknown` read as success. Those are the
-`proof-auditor` agent's job — run `/fluxpoint:proof-audit`, which does
-both passes. A ratchet is a floor, not a ceiling.
+One weakening does not add a hatch at all: gutting a test. `test t()
+{ True }` still runs, still passes, and asserts nothing, so no line-based
+scan can see it. That case is now counted structurally by matching the
+test's braces and reading its body — but only where it is unambiguous
+(a bare boolean, a value compared to itself, an empty body), because a
+false positive here would train people to ignore the ratchet.
+
+What remains beyond counting: a theorem whose statement lost a conjunct, a
+property proved about an unreachable state, a generator that cannot produce
+the interesting case, a solver `unknown` read as success. Those need
+judgment, and they are the `proof-auditor` agent's job — run
+`/fluxpoint:proof-audit`, which does both passes. A ratchet is a floor,
+not a ceiling.
 """
 import argparse
 import json
@@ -109,9 +114,53 @@ def strip_comment(line, suffix):
     return line[: m.start()] if m else line
 
 
+# Categories that need structure rather than a line match, so they are
+# counted by a small parser instead of a regex.
+STRUCTURAL = ["aiken.vacuous_test"]
+
+TEST_HEAD = re.compile(r"^\s*test\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s*(fail\b[^{]*)?\{")
+# A body that proves nothing: a bare boolean, or a value compared to itself.
+VACUOUS_BODY = re.compile(r"^(True|False|(?P<x>[A-Za-z0-9_.]+)\s*==\s*(?P=x))$")
+
+
+def scan_vacuous_tests(path, text):
+    """Aiken tests that cannot fail.
+
+    Counting escape hatches misses the most direct way to weaken a suite:
+    leave the test in place and empty it out. `test t() { True }` still runs,
+    still passes, and asserts nothing — no `todo`, no `expect`, nothing for a
+    line-based scan to see. This finds the unambiguous cases by matching the
+    test's braces and looking at what is actually in the body. Anything less
+    than obvious is left to the proof-auditor; a false positive here would
+    train people to ignore the ratchet.
+    """
+    found = []
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        m = TEST_HEAD.match(strip_comment(line, ".ak"))
+        if not m:
+            continue
+        depth, body, start = 0, [], i
+        for j in range(i, len(lines)):
+            src = strip_comment(lines[j], ".ak")
+            depth += src.count("{") - src.count("}")
+            body.append(src)
+            if depth <= 0 and j > i:
+                break
+            if depth <= 0 and j == i and "}" in src:
+                break
+        inner = "\n".join(body)
+        inner = inner[inner.find("{") + 1 : inner.rfind("}")] if "}" in inner else ""
+        stripped = " ".join(inner.split())
+        if VACUOUS_BODY.match(stripped) or not stripped:
+            found.append((start + 1, m.group(1), stripped or "<empty>"))
+    return found
+
+
 def scan(root):
     """Return (counts, hits) where hits is category -> ['path:line: text']."""
-    counts, hits = {c: 0 for c, _, _ in PATTERNS}, {c: [] for c, _, _ in PATTERNS}
+    counts = {c: 0 for c, _, _ in PATTERNS} | {c: 0 for c in STRUCTURAL}
+    hits = {c: [] for c, _, _ in PATTERNS} | {c: [] for c in STRUCTURAL}
     compiled = [(c, sfx, re.compile(rx)) for c, sfx, rx in PATTERNS]
     for rel in tracked_files(root):
         base = os.path.basename(rel)
@@ -134,6 +183,13 @@ def scan(root):
                     counts[cat] += 1
                     if len(hits[cat]) < 20:
                         hits[cat].append(f"{rel}:{n}: {raw.strip()[:100]}")
+        if suffix == ".ak":
+            for lineno, name, body in scan_vacuous_tests(path, "".join(lines)):
+                counts["aiken.vacuous_test"] += 1
+                if len(hits["aiken.vacuous_test"]) < 20:
+                    hits["aiken.vacuous_test"].append(
+                        f"{rel}:{lineno}: test {name} body is `{body}` — cannot fail"
+                    )
     return counts, hits
 
 

@@ -109,10 +109,12 @@ Three rules, in order of how often they are broken:
    file; `--check` fails when any category rises. Proving something you
    previously assumed lowers the count and is always allowed. Raising one
    is a diff a human has to justify.
-   The ratchet is a floor, not a ceiling: it counts hatches, so it cannot
-   see a proof that got hollower without adding one. Gutting an Aiken
-   negative test to `True` leaves every count unchanged and reports green —
-   which is exactly why rule 3 exists.
+   Gutting a test adds no hatch at all, so that case is counted
+   structurally: `test t() { True }` is flagged as a test that cannot fail.
+   The ratchet is still a floor, not a ceiling — a theorem that lost a
+   conjunct, a property about an unreachable state, or a generator that
+   cannot produce the interesting case all leave the counts untouched,
+   which is why rule 3 exists.
 3. **Green is not stronger.** `/fluxpoint:proof-audit` runs the ratchet and
    then the `proof-auditor` agent, which looks for what a count cannot see:
    a theorem whose statement got weaker, a property proved about an

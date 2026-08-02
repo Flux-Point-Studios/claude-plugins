@@ -36,7 +36,7 @@ validator {
 }
 
 test spend_allows_owner() {
-  True
+  spend(mk_datum(1000), Void, mk_ctx(owner: True, now: 2000))
 }
 EOF
 }
@@ -128,7 +128,71 @@ check "a --skip-tests flag fails the ratchet" 1 "$rc"
 case "$err" in *flags.verification_off*) ok "the flag is named as an escape hatch" "reported" ;;
   *) bad "the flag is named as an escape hatch" "${err:0:60}" ;; esac
 
-# ================= 6. untracked and build output are out of scope =========
+# ========= 6. tests that cannot fail: the ratchet's old blind spot ========
+# Gutting a test leaves every escape-hatch count unchanged, so this was
+# invisible until it was counted structurally. False positives matter more
+# than the catch here: one would train people to ignore the ratchet.
+mkrepo; write_aiken; commit base
+$PG "$ROOT/r" --baseline >/dev/null 2>&1
+out="$($PG "$ROOT/r" --scan 2>&1)"
+case "$out" in *"spend_allows_owner"*) bad "a real test body is not vacuous" "flagged" ;;
+  *) ok "a real test body is not vacuous" "clean" ;; esac
+
+# Gut the negative test: body becomes a bare True. No hatch is added.
+python3 -c "
+import pathlib
+p = pathlib.Path('validators/vault.ak')
+t = p.read_text().replace(
+    '  spend(mk_datum(1000), Void, mk_ctx(owner: True, now: 2000))', '  True')
+p.write_text(t)
+"
+commit gutted
+err="$($PG "$ROOT/r" --check 2>&1 >/dev/null)"; rc=$?
+check "a gutted test fails the ratchet" 1 "$rc"
+case "$err" in *vacuous_test*) ok "gutted test: named as vacuous" "reported" ;;
+  *) bad "gutted test: named as vacuous" "${err:0:70}" ;; esac
+case "$err" in *"cannot fail"*) ok "gutted test: says why it is a hole" "reported" ;;
+  *) bad "gutted test: says why it is a hole" "${err:0:70}" ;; esac
+case "$err" in *aiken.todo*) bad "gutted test: no hatch was added" "misattributed" ;;
+  *) ok "gutted test: caught with no hatch added" "structural" ;; esac
+
+# ========= 6b. bodies that only look trivial must not be flagged ==========
+mkrepo; mkdir -p validators
+cat >validators/real.ak <<'REALEOF'
+test compares_two_things() {
+  balance_after == balance_before + amount
+}
+
+test calls_the_validator() {
+  spend(mk_datum(1000), Void, mk_ctx())
+}
+
+test multiline_and_real() {
+  let result = spend(mk_datum(1), Void, mk_ctx())
+  result == True
+}
+
+test negative_case() fail {
+  spend(mk_datum(0), Void, mk_ctx())
+}
+
+test trailing_comment_only() {
+  spend(mk_datum(2), Void, mk_ctx()) // True
+}
+REALEOF
+commit real
+out="$($PG "$ROOT/r" --scan 2>&1)"
+case "$out" in *vacuous*) bad "no false positives on five real bodies" "flagged one" ;;
+  *) ok "no false positives on five real bodies" "clean" ;; esac
+
+# Self-comparison proves nothing even though it reads like an assertion.
+printf '\ntest looks_like_an_assertion() {\n  owner == owner\n}\n' >>validators/real.ak
+commit selfcmp
+out="$($PG "$ROOT/r" --scan 2>&1)"
+case "$out" in *looks_like_an_assertion*) ok "self-comparison counts as vacuous" "caught" ;;
+  *) bad "self-comparison counts as vacuous" "missed" ;; esac
+
+# ========= 7. untracked and build output are out of scope =================
 mkrepo; write_aiken; commit base
 $PG "$ROOT/r" --baseline >/dev/null 2>&1
 mkdir -p build; printf 'fn x() { todo }\n' >build/generated.ak   # untracked
