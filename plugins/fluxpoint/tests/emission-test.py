@@ -131,6 +131,94 @@ probe("node", "repeat", NODE_BASE,
       setnode(verify="skeptic:1", verifyOver="findings",
               repeat={"untilDryRounds": 2, "maxRounds": 6, "dedupeBy": ["file"]}))
 
+
+def _irreversible(ir):
+    """Mark the probe node irreversible, with the scaffolding it demands.
+
+    Probed against a graph that stays VALID on purpose: a rejection would
+    also register as "changed", and would prove the validator moved without
+    proving a single line of the once-only guard is emitted.
+    """
+    node = ir["nodes"][N]
+    ir["requiredArgs"] = ["confirm"]
+    ir["nodes"][:0] = [
+        {"id": "dry", "phase": "P0", "prompt": "rehearse without submitting",
+         "contract": "HarnessCheckV1"},
+        {"id": "gate", "phase": "P0", "prompt": "independently re-derive {{prev}}",
+         "after": "dry", "contract": "HarnessCheckV1", "independent": True,
+         "verifies": "dry", "haltWhen": "exit != 0"},
+    ]
+    node["irreversible"] = True
+
+
+probe("node", "irreversible", NODE_BASE, _irreversible)
+
+
+DECIDE = {
+    "id": "choose", "phase": "P0", "prompt": "pick one and say why",
+    "contract": "DecisionV1", "decides": "vault-params",
+}
+probe("node", "decides", NODE_BASE, lambda ir: ir["nodes"].insert(0, dict(DECIDE)))
+
+HONOR_BASE = copy.deepcopy(NODE_BASE)
+HONOR_BASE["nodes"].insert(0, dict(DECIDE))
+probe("node", "honors", HONOR_BASE, lambda ir: ir["nodes"][N + 1].update(
+    honors=["vault-params"],
+    prompt="implement under the frozen choice {{decisions.vault-params}}"))
+
+# imports lets a frozen decision cross a campaign split, which the ten-node
+# ceiling forces. Probed with a node that actually reads it, since honors
+# without the token is now itself a compile error.
+probe("IR", "imports", NODE_BASE, lambda ir: (
+    ir.update(imports={"vault-params": "latest"}),
+    ir["nodes"][N].update(
+        honors=["vault-params"],
+        prompt="build on the frozen {{decisions.vault-params}}"),
+))
+
+
+def _human(ir):
+    ir["nodes"][N].update(actor="human", release={
+        "instructions": "a person signs this one",
+        "whyNotAgent": "the key material is on a device no agent may hold",
+        "proofContract": ir["nodes"][N]["contract"]})
+
+
+probe("node", "actor", NODE_BASE, _human)
+
+# release and wake are probed against a base that is already parked, so the
+# change measured is theirs rather than actor's leaking into both.
+PARK_BASE = copy.deepcopy(NODE_BASE)
+_human(PARK_BASE)
+WAKE = {"check": "cardano-cli query tip --mainnet", "everyMinutes": 30}
+probe("node", "release", PARK_BASE,
+      lambda ir: ir["nodes"][N]["release"].update(
+          instructions="materially different instructions for the blocked human"))
+probe("node", "wake", PARK_BASE,
+      lambda ir: ir["nodes"][N].update(wake=copy.deepcopy(WAKE)))
+
+# ---------------------------------------------------- release / wake fields
+probe("release", "instructions", PARK_BASE,
+      lambda ir: ir["nodes"][N]["release"].update(
+          instructions="the exact text the blocked human will read"))
+# proofContract must agree with the node's contract, so moving it alone is
+# a compile error — which is the effect, and the reason the field is not
+# merely decorative.
+probe("release", "whyNotAgent", PARK_BASE,
+      lambda ir: ir["nodes"][N]["release"].update(
+          whyNotAgent="legal authority this account does not have"))
+probe("release", "proofContract", PARK_BASE,
+      lambda ir: ir["nodes"][N]["release"].update(proofContract="DesignV1"))
+
+WAKE_BASE = copy.deepcopy(PARK_BASE)
+WAKE_BASE["nodes"][N]["wake"] = copy.deepcopy(WAKE)
+probe("wake", "check", WAKE_BASE,
+      lambda ir: ir["nodes"][N]["wake"].update(check="cardano-cli query utxo --mainnet"))
+probe("wake", "everyMinutes", WAKE_BASE,
+      lambda ir: ir["nodes"][N]["wake"].update(everyMinutes=180))
+probe("wake", "deadline", WAKE_BASE,
+      lambda ir: ir["nodes"][N]["wake"].update(deadline="2030-06-01T00:00:00Z"))
+
 # ----------------------------------------------------------- repeat fields
 REPEAT_BASE = copy.deepcopy(NODE_BASE)
 REPEAT_BASE["nodes"][N].update(
@@ -182,17 +270,21 @@ probed = {
         "id", "phase", "prompt", "contract", "role", "effort", "model", "agentType",
         "foreach", "after", "mutates", "independent", "verifies", "verify",
         "verifyOver", "expectItems", "haltWhen", "haltReason", "onRed",
-        "isolation", "repeat",
+        "isolation", "repeat", "irreversible", "actor", "release", "wake",
+        "decides", "honors",
     },
     "repeat": {"untilDryRounds", "maxRounds", "dedupeBy"},
+    "release": {"instructions", "proofContract", "whyNotAgent"},
+    "wake": {"check", "everyMinutes", "deadline"},
     "budget": {"maxNodes", "verifyFloorTokens", "nodeFloorTokens"},
     "IR": {
         "version", "name", "campaign", "budget", "defaults", "roles", "lists",
-        "nodes", "requiredArgs", "argDefaults",
+        "nodes", "requiredArgs", "argDefaults", "imports",
     },
 }
 for level, registry in [
     ("node", cg.NODE_FIELDS), ("repeat", cg.REPEAT_FIELDS),
+    ("release", cg.RELEASE_FIELDS), ("wake", cg.WAKE_FIELDS),
     ("budget", cg.BUDGET_FIELDS), ("IR", cg.IR_FIELDS),
 ]:
     missing = registry - probed[level]

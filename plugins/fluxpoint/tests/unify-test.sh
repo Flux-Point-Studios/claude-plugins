@@ -55,6 +55,53 @@ check "skipped node: not counted as OK" "1" \
 check "skipped node: counted in artifact" "1" \
   "$(python3 -c "import json;print(json.load(open('.claude/fluxpoint/runs/wf_sk1.json'))['nodesSkipped'])")"
 
+# --- 2c. the two columns that decide shipping are derived, not declared ---
+# They arrived as CLI flags defaulting to 'n/a', so whether a campaign
+# reported its own blocking verdict depended on an orchestrator remembering
+# to pass it. The run already knows; the recorder now reads it.
+newrepo
+cp "$PLUGIN/templates/WORK.md" WORK.md
+BLOCKED='{"campaign":"c","outcome":"COMPLETE","contracts":{"gate":"HarnessCheckV1","rt":"RedTeamV1"},
+ "results":{"gate":{"exit":0},"rt":{"verdict":"BLOCK","findings":[{"severity":"HIGH"}]}},
+ "provenance":[{"node":"gate","status":"OK"},{"node":"rt","status":"OK"}]}'
+printf '%s' "$BLOCKED" | python3 "$PLUGIN/scripts/record-run.py" --run-id wf_b1 >/dev/null
+contains "BLOCK verdict degrades the outcome" "| wf_b1 | BLOCKED-REDTEAM |" WORK.md
+contains "BLOCK verdict is named in the claim" "red-team returned BLOCK — not shippable" WORK.md
+contains "verdict derived into the proof column" "red-team BLOCK" WORK.md
+check "artifact records the derived verdict" "BLOCK" \
+  "$(python3 -c "import json;print(json.load(open('.claude/fluxpoint/runs/wf_b1.json'))['redTeam'])")"
+
+# A flag that disagrees with the run does not get to win.
+newrepo
+cp "$PLUGIN/templates/WORK.md" WORK.md
+printf '%s' "$BLOCKED" | python3 "$PLUGIN/scripts/record-run.py" --run-id wf_b2 \
+  --harness 0 --red-team SHIP >/dev/null
+contains "a SHIP flag cannot override a BLOCK in the run" "| wf_b2 | BLOCKED-REDTEAM |" WORK.md
+
+# Worst exit wins: one red harness node is the campaign's answer.
+newrepo
+cp "$PLUGIN/templates/WORK.md" WORK.md
+TWOGATES='{"campaign":"c","outcome":"COMPLETE","contracts":{"g1":"HarnessCheckV1","g2":"HarnessCheckV1"},
+ "results":{"g1":{"exit":0},"g2":{"exit":2}},"provenance":[{"node":"g1","status":"OK"}]}'
+printf '%s' "$TWOGATES" | python3 "$PLUGIN/scripts/record-run.py" --run-id wf_b3 --harness 0 >/dev/null
+contains "a red harness node beats a green one" "harness exit 2" WORK.md
+
+# A run from before contracts were emitted still gets read.
+newrepo
+cp "$PLUGIN/templates/WORK.md" WORK.md
+OLD='{"campaign":"c","outcome":"COMPLETE","results":{"rt":{"verdict":"BLOCK","findings":[]}},
+ "provenance":[{"node":"rt","status":"OK"}]}'
+printf '%s' "$OLD" | python3 "$PLUGIN/scripts/record-run.py" --run-id wf_b4 >/dev/null
+contains "no contracts map: falls back to result shape" "| wf_b4 | BLOCKED-REDTEAM |" WORK.md
+
+# A campaign with neither node keeps the flags as the fallback they are.
+newrepo
+cp "$PLUGIN/templates/WORK.md" WORK.md
+printf '%s' "$RESULT" | python3 "$PLUGIN/scripts/record-run.py" --run-id wf_b5 \
+  --harness 0 --red-team SHIP >/dev/null
+contains "no gate node: the flag is still used" "harness exit 0; red-team SHIP" WORK.md
+contains "no gate node: outcome untouched" "| wf_b5 | COMPLETE |" WORK.md
+
 # --- 3. legacy 7-column GRAPH.md table still works (mid-migration repo) ---
 newrepo
 { printf '## Evidence\n\n'
@@ -81,7 +128,14 @@ out="$(printf '{"session_id":"s","cwd":"%s"}' "$ROOT/r" | bash "$PLUGIN/scripts/
 printf '%s' "$out" >"$ROOT/inject.txt"
 contains "inject: harness verdict" "Last recorded harness verdict: PASS" "$ROOT/inject.txt"
 contains "inject: last graph run" "Last graph run: wf_s1 COMPLETE" "$ROOT/inject.txt"
-contains "inject: WORK.md head" "WORK.md (first 80 lines)" "$ROOT/inject.txt"
+contains "inject: names the state file" "WORK.md (sections that matter" "$ROOT/inject.txt"
+# The point of section-aware extraction: in the shipped 90-line template the
+# Evidence header sits at 85 and Notes at 88, so a fixed 80-line window hid
+# the row record-run.py had just written.
+contains "inject: shows the Evidence row it just wrote" "wf_s1" "$ROOT/inject.txt"
+contains "inject: shows the Notes section" "## Notes" "$ROOT/inject.txt"
+contains "inject: shows open Plan items" "## Plan —" "$ROOT/inject.txt"
+contains "inject: shows unmet DoD" "## Definition of Done —" "$ROOT/inject.txt"
 
 # --- 6. legacy repo: LOOP.md injected AND migrate hint shown ---
 newrepo
@@ -90,7 +144,7 @@ mkdir -p .claude/fluxpoint-loop; printf 'FAIL 2026-01-01T00:00:00Z\n' >.claude/f
 out="$(printf '{"session_id":"s","cwd":"%s"}' "$ROOT/r" | bash "$PLUGIN/scripts/inject-state.sh")"
 printf '%s' "$out" >"$ROOT/inject2.txt"
 contains "legacy: reads pre-1.0 state dir" "Last recorded harness verdict: FAIL" "$ROOT/inject2.txt"
-contains "legacy: injects LOOP.md" "LOOP.md (first 80 lines)" "$ROOT/inject2.txt"
+contains "legacy: injects LOOP.md" "LOOP.md (sections that matter" "$ROOT/inject2.txt"
 contains "legacy: suggests migrate" "/fluxpoint:migrate" "$ROOT/inject2.txt"
 
 cd /; rm -rf "$ROOT"

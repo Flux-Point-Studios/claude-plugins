@@ -4,8 +4,17 @@ Each iteration of this loop starts with a fresh context. Work exactly one
 slice per iteration, and a slice is not finished until it is shipped or
 explicitly parked:
 
-1. Pick the first unchecked item under Plan. If Plan is empty, derive the
-   next smallest slice from the Definition of Done and add it first.
+1. Pick the first unchecked item under Plan. **Skip any item marked
+   `- [~]`** — that is parked on someone who is not you, and its
+   `blockedOn:` names who. Re-picking a blocked slice every iteration is
+   how a 72h wait spends a whole iteration budget in minutes and produces
+   nothing. If every remaining item is `- [~]`, stop and say so rather
+   than burning the budget; that is a checkpoint, not a failure. If Plan
+   is empty, derive the next smallest slice from the Definition of Done
+   and add it first.
+   If the slice you are on turns out to need someone else — a signature,
+   a third party, a timelock — mark it `- [~] <item> — blockedOn: <who,
+   and what would unblock it>` and move to the next unblocked one.
 2. TDD, strictly: write the failing test, run it, confirm the exact
    expected failure, then write the minimum code to flip it green.
 3. Run scripts/harness.sh --full. Red output is the work list; fix it.

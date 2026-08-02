@@ -6,6 +6,16 @@ argument-hint: [none]
 Report the state of this repo's work, concisely. Read-only; change
 nothing.
 
+0. **Lead with what is blocked on a person.**
+   `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/inbox.py" --list`. If anything
+   is open, the report opens with a **BLOCKED ON YOU** section listing each
+   item and how to clear it (`/fluxpoint:release <node>` for a parked node,
+   a named confirmation for a refused irreversible one). This goes first
+   even when everything else is green: a campaign that parks instead of
+   halting is only an improvement if somebody finds out, and an unread
+   block is a quieter failure than the halt it replaced. Then
+   `bash "${CLAUDE_PLUGIN_ROOT}/scripts/wake-check.sh"` if
+   `.claude/fluxpoint/waits/` exists, and report anything READY or EXPIRED.
 1. Read `.claude/fluxpoint/`: `last-harness`, any `*.blocks` counters, any
    `*.dirty` markers, and every `runs/*.json` (newest first). If the repo
    still has `.claude/fluxpoint-loop/` or `.claude/fluxpoint-graph/`, note

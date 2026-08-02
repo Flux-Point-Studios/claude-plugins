@@ -232,7 +232,8 @@ that exit 0 does not mean what it looks like: every proof assistant ships a
 way to make a goal go away without proving it, and an agent told to "make
 it pass" will find it.
 
-Three mechanisms, in `scripts/harness.sh` and `scripts/proof-guard.py`:
+Four mechanisms, in `scripts/harness.sh`, `scripts/proof-guard.py` and
+`scripts/plutus-budget.py`:
 
 1. The scaffolded harness invokes the prover in **`--full`**, not only in
    the per-file `--changed` path. A gate that decides "done" without
@@ -245,20 +246,40 @@ Three mechanisms, in `scripts/harness.sh` and `scripts/proof-guard.py`:
    `.fluxpoint-proof-baseline.json`. `--check` fails when any category
    rises. Proving something you previously assumed lowers the count and is
    always welcome; raising one becomes a diff a human has to justify.
-3. **`/fluxpoint:proof-audit`** adds the semantic pass a counter cannot do,
+3. **The on-chain budget gate (Cardano).** `plutus-budget.py` runs after
+   `aiken build` and measures `compiledCode` out of the plutus.json
+   blueprint, because correct and submittable are different properties and
+   only one of them has a prover. The protocol `maxTxSize` fails
+   unconditionally — a script that exceeds it cannot go on chain no matter
+   how well it is proved — while headroom is yours to set in
+   `.fluxpoint-budget.json`, and `--params` reads real `cardano-cli query
+   protocol-parameters` output so the constants in the script are a
+   fallback, not the authority. Execution units are a property of
+   evaluating a script against a transaction, not of the artifact, so
+   measured values live in the same file and an absent one is reported
+   unmeasured rather than passed.
+4. **`/fluxpoint:proof-audit`** adds the semantic pass a counter cannot do,
    via the `proof-auditor` agent: a theorem whose statement lost a
    conjunct, a property proved about an unreachable state, an Aiken `test`
-   that cannot fail, a validator with no test at all, a solver `unknown`
-   read as success, and — for Cardano — script size and execution-unit
-   budgets, since a proved-correct validator that cannot be submitted is
-   not done.
+   that cannot fail, a negative test that trips an earlier guard than the
+   one it is named for, a validator with no test at all, a solver `unknown`
+   read as success. When the prover is not installed it says so and caps
+   its verdict at `UNPROVEN` rather than reporting a static read as sound.
 
-Gutting a test adds no escape hatch, so Aiken tests that cannot fail — a
-bare boolean body, a self-comparison, an empty body — are counted
-structurally rather than by line match, with false positives treated as
-worse than misses. The ratchet is still deliberately a floor: a theorem
-that lost a conjunct, or a property proved about an unreachable state,
-leaves every count unchanged, which is why the second pass exists.
+Two weakenings add no escape hatch, so both are counted structurally
+rather than by line match: Aiken tests that cannot fail (a bare boolean
+body, a self-comparison, an empty body) and predicates that decide nothing
+(`fn credential_matches(..) -> Bool { True }`, where the call site still
+reads as a checked conjunction). They cover the same trade — replacing a
+`todo` with `True` drives `aiken.todo` to zero and looks like progress.
+False positives are treated as worse than misses, and a constant that
+predates the baseline is absorbed rather than held against the repo.
+
+The ratchet is still deliberately a floor. A theorem that lost a conjunct,
+a property proved about an unreachable state, or a `fail` test that trips
+an earlier guard than the one it is named for — `cannot_underpay` built
+with the wrong signer fails on the signature check and covers nothing —
+leave every count unchanged, which is why the second pass exists.
 
 ## Treating WORK.md as untrusted input
 

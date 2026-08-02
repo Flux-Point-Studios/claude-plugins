@@ -55,8 +55,9 @@ Uses the loop side of the plugin: the gate resolves `red-team-reviewer` via
       "id": "choose",
       "phase": "Council",
       "after": "design",
-      "prompt": "Judge these candidate designs side by side for the goal \"{{A.goal}}\" on TDD-ability, blast radius, fit with the Definition of Done in WORK.md, and honesty of their risks. Candidates: {{prev}}. Return the single strongest design, grafting in the best ideas from the runners-up. Barrier justified: judging requires all candidates at once.",
-      "contract": "DesignV1",
+      "prompt": "Judge these candidate designs side by side for the goal \"{{A.goal}}\" on TDD-ability, blast radius, fit with the Definition of Done in WORK.md, and honesty of their risks. Candidates: {{prev}}. Return a DecisionV1: the question you actually settled, every candidate with who argued it and the strongest objection to it — including the one you chose — the choice, and why it beat the others. Say plainly whether this overturns what the campaign assumed going in, and name the node that freezes it. Barrier justified: judging requires all candidates at once.",
+      "contract": "DecisionV1",
+      "decides": "implementation-approach",
       "effort": "high",
       "verify": "schema-only",
       "onRed": "halt"
@@ -67,7 +68,8 @@ Uses the loop side of the plugin: the gate resolves `red-team-reviewer` via
       "role": "builder",
       "after": "choose",
       "mutates": true,
-      "prompt": "Implement exactly this design as one loop slice: {{prev}}. Goal: \"{{A.goal}}\". Constraints: {{A.constraints}}. Work TDD strictly per WORK_PROMPT.md: failing test first, minimum code to green, scripts/harness.sh --changed <file> after each edit. Create and commit on a branch named claude/graph-<short-slug-of-goal>, test and code together. Run scripts/harness.sh --full and report its real exit code; never weaken the harness or delete tests to reach green. Evidence entries are command + observed result.",
+      "honors": ["implementation-approach"],
+      "prompt": "Implement exactly this design as one loop slice: {{prev}}. The frozen decision that binds this work is {{decisions.implementation-approach}} — if the implementation cannot honor it, stop and say so rather than quietly choosing differently. Goal: \"{{A.goal}}\". Constraints: {{A.constraints}}. Work TDD strictly per WORK_PROMPT.md: failing test first, minimum code to green, scripts/harness.sh --changed <file> after each edit. Create and commit on a branch named claude/graph-<short-slug-of-goal>, test and code together. Run scripts/harness.sh --full and report its real exit code; never weaken the harness or delete tests to reach green. Evidence entries are command + observed result.",
       "contract": "SliceV1",
       "verify": "schema-only",
       "onRed": "halt"
@@ -92,6 +94,8 @@ Uses the loop side of the plugin: the gate resolves `red-team-reviewer` via
       "prompt": "Red-team the diff of the branch implemented in this campaign against the default branch. Apply your full adversarial checklist. Context: {{prev}}",
       "contract": "RedTeamV1",
       "verify": "schema-only",
+      "haltWhen": "verdict == 'BLOCK'",
+      "haltReason": "red-team blocked the diff; a BLOCK verdict is harness-red and the campaign does not ship over it",
       "onRed": "halt"
     }
   ]
@@ -105,7 +109,10 @@ Uses the loop side of the plugin: the gate resolves `red-team-reviewer` via
 - `gate`: the only node whose exit code the campaign trusts. It never
   wrote the code. `haltWhen: exit != 0` stops the campaign before
   red-team burns tokens on a red branch.
-- `red-team`: `VERDICT: BLOCK` is harness-red; fix findings before merge.
+- `red-team`: `VERDICT: BLOCK` is harness-red, and `haltWhen` makes that
+  structural. A verdict this node collects but nothing reads is the exact
+  smell `graph-auditor` hunts — and being the terminal node is what makes
+  it dangerous, because falling through lands on `summary('COMPLETE')`.
 - Terminal: merge happens outside the graph, per WORK.md Merge policy,
   with the harness as a required CI check.
 
@@ -115,7 +122,16 @@ Uses the loop side of the plugin: the gate resolves `red-team-reviewer` via
 - Dead council seats drop and log; the campaign proceeds if at least one
   design survives.
 - Budget: 20 planned agent calls, verification floor 50k tokens.
-- Halt condition a human can name: independent harness exit != 0.
+- Halt conditions a human can name: independent harness exit != 0, and a
+  red-team verdict of BLOCK.
+
+## Decisions
+Appended automatically by `scripts/record-run.py` — do not hand-edit.
+A decision that overturned the prior is the one a fresh context will
+silently re-decide the other way.
+
+| When (UTC) | Decision | Chosen | Overturned prior | Frozen by | Rationale |
+|---|---|---|---|---|---|
 
 ## Evidence
 Appended automatically by `scripts/record-run.py` — do not hand-edit.

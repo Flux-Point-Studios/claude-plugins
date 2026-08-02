@@ -33,4 +33,11 @@ for ((i = 1; i <= MAX_ITER; i++)); do
   fi
 done
 echo "loop: iteration budget exhausted, harness red or STATUS still ACTIVE. Checkpoint." >&2
+# An unattended run that gives up silently is a run nobody learns about
+# until they wonder why nothing shipped.
+ib="$(find "$HOME/.claude/plugins" -type f -name inbox.py 2>/dev/null | head -1)"
+[ -n "${FPL_PLUGIN_ROOT:-}" ] && [ -f "$FPL_PLUGIN_ROOT/scripts/inbox.py" ] \
+  && ib="$FPL_PLUGIN_ROOT/scripts/inbox.py"
+[ -n "$ib" ] && python3 "$ib" --add --kind budget-exhausted \
+  --detail "outer loop spent its iteration budget with the harness red or STATUS not DONE" >/dev/null 2>&1
 exit 1

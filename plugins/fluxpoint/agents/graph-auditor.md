@@ -55,6 +55,23 @@ Audit checklist, in priority order:
 - Composition: graph output treated as overriding the Stop-hook DoD gate;
   a campaign that ends at "PR opened" rather than merged or explicitly
   parked; red-team verdict collected but not gating anything.
+- Parking that is really laziness: an `actor: human` or `third-party` node
+  whose work an agent could actually do. Read `release.whyNotAgent` and
+  attack it — a CLI, an API, a headless browser, a read-only query, or a
+  file the human only has to sign covers most of what feels human-only.
+  Genuine blockers are narrow: key material an agent must not hold, legal
+  authority, physical possession, another party's own action. **HIGH** when
+  the stated reason does not survive contact with the repo's own tooling,
+  because every unnecessary park is a person waiting on work that could
+  have been finished.
+- Irreversibility: an effect that cannot be undone — a mainnet submission,
+  a one-shot mint, a published release, a destructive migration — carrying
+  only `mutates: true`. That buys worktree isolation, which is containment
+  for a filesystem write and nothing at all for a chain write. It must be
+  `irreversible: true`. **CRITICAL** whenever such a node sits on a path
+  something can start unattended: a Routine, `loop.sh`, or any resume that
+  replays a prefix. Read the rehearsal too — a dry run whose gate can pass
+  while the real submission would fail is a gate in name only.
 
 Report format, nothing else:
 

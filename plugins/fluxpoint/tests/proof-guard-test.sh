@@ -81,15 +81,36 @@ printf '\nfn h() -> Bool {\n  todo @"later"\n}\n' >>validators/vault.ak
 commit base
 $PG "$ROOT/r" --baseline >/dev/null 2>&1
 python3 - <<'PY'
-import re, pathlib
+import pathlib
 p = pathlib.Path("validators/vault.ak")
-p.write_text(p.read_text().replace('todo @"later"', "True"))
+# Discharged with an actual argument, not a substituted constant — see the
+# next case for why that distinction is load-bearing.
+p.write_text(p.read_text().replace(
+    'todo @"later"', "list.all(tx.outputs, fn(o) { lovelace_of(o.value) >= min_ada })"))
 PY
 commit proved
 out="$($PG "$ROOT/r" --check 2>&1)"; rc=$?
 check "falling count passes" 0 "$rc"
 case "$out" in *"stronger than the baseline"*) ok "falling count is called out" "reported" ;;
   *) bad "falling count is called out" "$out" ;; esac
+
+# Swapping a `todo` for a bare `True` lowers aiken.todo to zero and looks
+# like progress on every line-based count. It is the same hole with the
+# label removed, so the structural category has to catch the trade.
+mkrepo; write_aiken
+printf '\nfn h() -> Bool {\n  todo @"later"\n}\n' >>validators/vault.ak
+commit base
+$PG "$ROOT/r" --baseline >/dev/null 2>&1
+python3 -c "
+import pathlib
+p = pathlib.Path('validators/vault.ak')
+p.write_text(p.read_text().replace('todo @\"later\"', 'True'))
+"
+commit laundered
+err="$($PG "$ROOT/r" --check 2>&1 >/dev/null)"; rc=$?
+check "todo swapped for True does not read as progress" 1 "$rc"
+case "$err" in *aiken.constant_predicate*) ok "the trade is named as a constant predicate" "reported" ;;
+  *) bad "the trade is named as a constant predicate" "${err:0:70}" ;; esac
 
 # ================= 4. every other prover's escape hatch ===================
 probe() { # suffix, content, expected category
@@ -234,6 +255,63 @@ case "$out" in *truly_empty*) ok "an empty test body is caught" "caught" ;;
 case "$out" in *single_arm_returning_true*)
     bad "known miss is still a miss (boundary moved)" "now flagged — update the docs" ;;
   *) ok "known miss recorded: when-with-one-True-arm" "not claimed" ;; esac
+
+# ========= 6d. conditions discharged by fiat in a helper ==================
+# The call site is the disguise: `signed_by(..) && credential_matches(..)`
+# reads as a checked conjunction, and the helper is where the obligation
+# went. No hatch is added, so this needs the same structural treatment as a
+# gutted test.
+mkrepo; mkdir -p validators
+cat >validators/preds.ak <<'PREDEOF'
+pub fn signed_by(tx: Transaction, key: ByteArray) -> Bool {
+  list.has(tx.extra_signatories, key)
+}
+
+pub fn after_deadline(tx: Transaction, deadline: Int) -> Bool {
+  when tx.validity_range.lower_bound.bound_type is {
+    Finite(t) -> t >= deadline
+    _ -> False
+  }
+}
+
+fn fee_cap() -> Int {
+  2_000_000
+}
+
+fn untyped_helper() {
+  True
+}
+PREDEOF
+commit preds
+out="$($PG "$ROOT/r" --scan 2>&1)"
+case "$out" in *constant_predicate*) bad "real predicates are not flagged" "flagged one" ;;
+  *) ok "real predicates are not flagged" "clean" ;; esac
+case "$out" in *fee_cap*) bad "a non-Bool constant is not a predicate" "flagged" ;;
+  *) ok "a non-Bool constant is not a predicate" "clean" ;; esac
+# KNOWN MISS, pinned: without a declared `-> Bool` this cannot be told from
+# a constructor, and guessing would cost false positives.
+case "$out" in *untyped_helper*) bad "known miss moved (untyped helper now flagged)" "update the docs" ;;
+  *) ok "known miss recorded: helper with no declared return type" "not claimed" ;; esac
+
+$PG "$ROOT/r" --baseline >/dev/null 2>&1
+printf '\npub fn credential_matches(_o: Output, _k: ByteArray) -> Bool {\n  True\n}\n' \
+  >>validators/preds.ak
+commit fiat
+err="$($PG "$ROOT/r" --check 2>&1 >/dev/null)"; rc=$?
+check "a helper that always agrees fails the ratchet" 1 "$rc"
+case "$err" in *"decides nothing"*) ok "constant predicate: says why it is a hole" "reported" ;;
+  *) bad "constant predicate: says why it is a hole" "${err:0:70}" ;; esac
+case "$err" in *aiken.expect*) bad "constant predicate: no hatch was added" "misattributed" ;;
+  *) ok "constant predicate: caught with no hatch added" "structural" ;; esac
+
+# A pre-existing constant is absorbed by the baseline: this ratchets the
+# diff that introduces one, it does not indict a repo that already had one.
+mkrepo; mkdir -p validators
+printf 'pub fn flag() -> Bool {\n  True\n}\n' >validators/flag.ak
+commit base
+$PG "$ROOT/r" --baseline >/dev/null 2>&1
+$PG "$ROOT/r" --check >/dev/null 2>&1
+check "a pre-existing constant predicate is not retroactive" 0 "$?"
 
 # ========= 7. untracked and build output are out of scope =================
 mkrepo; write_aiken; commit base

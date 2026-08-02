@@ -66,9 +66,129 @@ compiler rejects, at compile time:
 - planned agent calls exceeding `budget.maxNodes`, or no ceiling at all —
   and rounds are priced in, so a four-round discovery loop is costed at
   four rounds, not one
+- `irreversible: true` without `confirm` in `requiredArgs`, without an
+  earlier `independent` node carrying a `haltWhen`, or combined with
+  `foreach`/`repeat`
 
 Those are structural. `/fluxpoint:graph-audit` judges what is left:
 scoping, tier-vs-stakes, prompt quality.
+
+## Work nobody on the graph can do
+
+The engine used to have two answers for a node it could not complete: halt
+the whole campaign, or drop the item and continue with a `null`. Neither is
+*"this one is blocked, work the other branches"* — and real deliveries
+guarantee that third case. 2-of-3 hardware signing. A withdrawal only an
+external counterparty can perform. A 72-hour governance timelock. An
+operator wallet with nothing spendable until someone tops it up.
+
+**Park last, not first.** Most work that feels human-only is not: a CLI, an
+API, a headless browser, a read-only query, or a generated file the person
+only has to sign. Genuine blockers are narrow — key material an agent must
+not hold, legal authority, physical possession, another party's own action.
+So `release.whyNotAgent` is required and has to name what was ruled out;
+`graph-auditor` treats a reason that does not survive contact with the
+repo's own tooling as HIGH. Every unnecessary park is a person waiting on
+work that could have been finished.
+
+**A block never arrives empty.** When a node does park, the graph spawns one
+advisor first, contracted to `DecisionV1` — so a bare "ask the operator"
+cannot satisfy it. The advisor is told to attack `whyNotAgent` before
+accepting it, and if the step turns out to be automatable its recommendation
+*is* that concrete path and the tooling it needs. Otherwise it returns the
+best available course of action with the alternatives it rejected and the
+strongest objection to each, including to the one it recommends. That lands
+in the provenance, the inbox row, and `/fluxpoint:status`, so what reaches a
+person is a recommendation with reasoning attached, not a hand-off. The
+advisor costs one agent call per parked node and is priced into
+`budget.maxNodes`; if the floor declines it, the block says so explicitly
+rather than quietly arriving bare.
+
+Mark those `actor: human` or `actor: third-party` with a `release` block:
+
+```json
+{ "id": "sign", "actor": "human", "contract": "HarnessCheckV1",
+  "release": { "instructions": "Sign with 2 of the 3 hardware keys and paste the cardano-cli output.",
+               "whyNotAgent": "the keys live on hardware devices held by three people; an agent may never hold them. The unsigned body IS built headlessly by the previous node.",
+               "proofContract": "HarnessCheckV1" },
+  "wake": { "check": "cardano-cli query tip --mainnet", "everyMinutes": 30 } }
+```
+
+The compiler emits **no spawn** for that node. It reads a release file; if
+there is none it reports `BLOCKED` with those instructions, sets the run
+`INCOMPLETE`, and keeps going. `instructions` is the entire message the
+blocked person gets, so write it for someone with no context — the
+compiler rejects an empty one, and rejects a `proofContract` that differs
+from the node's contract, because the node yields exactly what was pasted.
+
+Four consequences worth knowing:
+
+- **Blocked is inherited.** A node whose `after` is blocked is blocked too,
+  not handed the `null` that reads like a failure. A dependent chain parks
+  as a unit; unrelated branches finish.
+- **A parked run can never read COMPLETE.** It is `INCOMPLETE`, and the
+  Evidence row names the blocked nodes.
+- **Releases are proof, not assent.** `/fluxpoint:release` validates what
+  the operator pastes against `proofContract` and refuses an adjective. The
+  campaign resumes on the strength of that file; one that resumes on
+  recollection will eventually resume on a mistake. Never write a release
+  on someone's behalf — a fabricated release is strictly worse than a
+  stalled campaign, because the stall is visible.
+- **Nothing is waiting silently.** Every block, expired wake, and refused
+  confirmation lands in `.claude/fluxpoint/inbox.jsonl`;
+  `/fluxpoint:status` leads with it and SessionStart injects the count.
+
+`wake` parks a predicate rather than a person: `scripts/wake-check.sh`,
+driven by a Routine or by `loop.sh`, runs the due checks and reports which
+campaigns can resume. It deliberately does not resume them itself —
+re-invoking a graph spends budget and may sit upstream of an irreversible
+node, so a human or an explicitly configured Routine makes that call.
+
+In loop mode the same idea is a Plan marker: `- [~] <item> — blockedOn:
+<who>`, which the loop skips. Without it, step 1's "pick the first
+unchecked item" re-picks a human-blocked slice every iteration and a
+72-hour wait spends the entire iteration budget in minutes.
+
+**This is not a scheduler, on purpose.** There is no ready-set, no
+topological sort, no `needs`/`priority`. Declaration order plus
+park-and-skip-dependents covers a largely serial critical path with
+independent slices hanging off it, which is what campaigns actually look
+like. A DAG scheduler is the right answer to a problem no graph here has
+had yet; build it when one does, not before.
+
+## Effects that cannot be undone
+
+`mutates: true` buys `isolation: 'worktree'`. That is real containment for
+a filesystem write and none whatsoever for a chain write, a published
+release, or a destructive migration — the same marker on both reads as
+protection it does not provide.
+
+Mark those `irreversible: true`. Three things follow, and the second is
+the one that matters:
+
+1. The node refuses to fire unless a human named it in `confirm`. Naming
+   the campaign is not naming the effect, so a blanket "yes" carries
+   nothing along with it, and refusal is its own outcome
+   (`CONFIRM-REQUIRED`), never a warning in a log.
+2. **Resume stops double-firing.** Repair-one-node-and-resume is the
+   recovery path this skill prescribes, and it is also the operation that
+   mints twice: every node after the repair re-runs. Before each
+   irreversible spawn the compiled graph checks a committed ledger keyed by
+   campaign, node, and prompt hash; a hit restores the recorded result and
+   logs `REPLAYED-FROM-LEDGER` instead of performing the effect. A replayed
+   node is filed `REPLAYED`, never `OK` — a ceremony that did not happen
+   must not read like one that did.
+3. The gate must be *ordered before* the effect. The compiler requires an
+   earlier `independent` node with a `haltWhen`, because a verifier that
+   runs afterwards cannot un-mint an NFT.
+
+Two limits, stated rather than papered over. The sandbox running the
+compiled graph has no filesystem, so the ledger row is written from the run
+summary afterwards — a crash between the effect landing and the run ending
+leaves no record, and the confirm gate is what stands in that window.
+And editing a ceremony's prompt changes its key, which re-arms it; that is
+deliberate (a different effect deserves a different record) and is the
+second reason a human has to name the node every time.
 
 ## Choosing a verification tier
 

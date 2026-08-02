@@ -19,6 +19,10 @@ needs a row in Evidence.
 - [ ] Diff carries no single-caller abstractions and no dead code
 
 ## Plan
+<!-- `- [ ]` todo · `- [x]` done · `- [~] <item> — blockedOn: <who>`
+     parked on someone who is not the loop. The loop skips `[~]`;
+     re-picking a blocked slice spends the iteration budget on nothing. -->
+
 Loop slices, worked one per iteration per `WORK_PROMPT.md`.
 
 - [ ] <failing test for the first behavior>
@@ -76,6 +80,14 @@ for a worked council → build → independently-gated campaign.
 - Merge-triggers-deploy repos: <park for human | proceed>.
 - Standing authorizations: <e.g. starting scripts/loop.sh for Plan items
   in this file needs no further approval>.
+
+## Decisions
+Appended automatically by `scripts/record-run.py` — do not hand-edit.
+A decision that overturned the prior is the one a fresh context will
+silently re-decide the other way.
+
+| When (UTC) | Decision | Chosen | Overturned prior | Frozen by | Rationale |
+|---|---|---|---|---|---|
 
 ## Evidence
 One table for both modes. Graph rows are appended automatically by

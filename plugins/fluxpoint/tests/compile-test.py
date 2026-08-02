@@ -297,6 +297,69 @@ for needle, why in [
     print(f"{'PASS' if ok else 'FAIL'}  single-node tier: {why:<38} -> {'found' if ok else 'MISSING'}")
     passed, failed = (passed + ok, failed + (not ok))
 
+# Irreversible effects. `mutates` bought worktree isolation and nothing else,
+# so the same marker covered editing a test file and minting a one-shot NFT.
+# The failure that matters is not the first run — it is resume, which this
+# plugin actively prescribes and which re-fires everything after the repair.
+IRREV = copy.deepcopy(BASE)
+IRREV["requiredArgs"] = ["confirm"]
+IRREV["nodes"] = [
+    {"id": "dry-run", "phase": "Rehearse", "prompt": "build the tx without submitting",
+     "contract": "HarnessCheckV1"},
+    {"id": "check", "phase": "Rehearse", "prompt": "independently re-derive: {{prev}}",
+     "after": "dry-run", "contract": "HarnessCheckV1", "independent": True,
+     "verifies": "dry-run", "haltWhen": "exit != 0"},
+    {"id": "genesis", "phase": "Ceremony", "prompt": "submit the one-shot mint",
+     "contract": "HarnessCheckV1", "irreversible": True},
+]
+
+
+def irrev_case(name, mutate, want):
+    ir = copy.deepcopy(IRREV)
+    mutate(ir)
+    case(name, lambda _ir: _ir.update(ir), want)
+
+
+case("irreversible graph accepted", lambda ir: ir.update(copy.deepcopy(IRREV)), None)
+irrev_case("irreversible without a confirm arg",
+           lambda ir: ir.pop("requiredArgs"), "requires 'confirm' in requiredArgs")
+irrev_case("irreversible with no gate before it",
+           lambda ir: ir["nodes"].__setitem__(1, {**ir["nodes"][1], "haltWhen": None}),
+           "gate must be ordered before the effect")
+irrev_case("irreversible with the gate ordered after it",
+           lambda ir: ir["nodes"].reverse(), "gate must be ordered before the effect")
+irrev_case("irreversible fan-out",
+           lambda ir: ir["nodes"][2].update(foreach="dims",
+                                            prompt="mint for {{item.brief}}"),
+           "cannot be combined with foreach")
+irrev_case("irreversible discovery loop",
+           lambda ir: ir["nodes"][2].update(
+               contract="FindingsV1", verify="skeptic:1", verifyOver="findings",
+               repeat={"untilDryRounds": 2, "maxRounds": 4, "dedupeBy": ["file"]}),
+           "cannot be combined with repeat")
+
+irrev_js = cg.emit(copy.deepcopy(IRREV), CONTRACTS)
+for needle, why in [
+    ("throw new Error('this graph has irreversible nodes but no ledger",
+     "an absent ledger fails loudly rather than disarming the guard"),
+    ("in LEDGER", "the ledger is consulted before the effect"),
+    ("REPLAYED-FROM-LEDGER", "a hit is reported, not silently skipped"),
+    ("if (!confirmed(\"genesis\"))", "the node refuses unless a human named it"),
+    ("CONFIRM-REQUIRED", "refusal is an outcome, not a warning"),
+    ("LEDGER_WRITES.push(", "a performed effect is recorded for the next run"),
+    ("ledger: LEDGER_WRITES", "the records ride out in the summary"),
+]:
+    ok = needle in irrev_js
+    print(f"{'PASS' if ok else 'FAIL'}  irreversible: {why:<42} -> {'found' if ok else 'MISSING'}")
+    passed, failed = (passed + ok, failed + (not ok))
+
+# The guard must not leak into graphs that declare no irreversible node.
+plain_js = cg.emit(copy.deepcopy(BASE), CONTRACTS)
+ok = "LEDGER" not in plain_js
+print(f"{'PASS' if ok else 'FAIL'}  irreversible: {'no ledger code without the field':<42} "
+      f"-> {'clean' if ok else 'LEAKED'}")
+passed, failed = (passed + ok, failed + (not ok))
+
 # Emission smoke: the sound graph produces JS containing its guarantees.
 js = cg.emit(BASE, CONTRACTS)
 for needle, why in [
@@ -308,6 +371,11 @@ for needle, why in [
     ("PROVENANCE", "provenance recorded"),
     ("const MAX_NODES", "the ceiling exists at run time, not only at compile time"),
     ("async function spawn(", "agents are spawned through one counted helper"),
+    # A consumer that has to infer a result's type from its shape will
+    # eventually file a harness exit code as a red-team verdict. The
+    # compiler knows the declared contract; it says so.
+    ("const CONTRACTS = {", "nodeId -> contract is emitted, not left to be sniffed"),
+    ("contracts: CONTRACTS", "the contract map rides out in the summary"),
 ]:
     ok = needle in js
     print(f"{'PASS' if ok else 'FAIL'}  emitted JS: {why:<42} -> {'found' if ok else 'MISSING'}")

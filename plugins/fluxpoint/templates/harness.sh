@@ -33,6 +33,16 @@ run_script_if_present() {
   fi
 }
 
+# Locate a script shipped with the plugin. Prints nothing when the plugin is
+# not installed, so a repo carrying this harness stays runnable without it.
+plugin_script() {
+  if [ -n "${FPL_PLUGIN_ROOT:-}" ] && [ -f "$FPL_PLUGIN_ROOT/scripts/$1" ]; then
+    printf '%s\n' "$FPL_PLUGIN_ROOT/scripts/$1"
+  else
+    find "$HOME/.claude/plugins" -type f -name "$1" 2>/dev/null | head -1
+  fi
+}
+
 changed() {
   case "$file" in
     *.ak)
@@ -63,9 +73,12 @@ full() {
     # on-chain artifact, and it can fail where check passes. A validator that
     # will not build is not done.
     aiken build
-    # Worth adding once you know your limits: parse plutus.json and fail if a
-    # validator exceeds your script-size or ex-unit budget. A proof of
-    # correctness does not help if the script cannot be submitted.
+    # Correct and submittable are different properties. A validator larger
+    # than maxTxSize cannot go on chain at all, and the prover has nothing
+    # to say about it. Protocol limits are enforced unconditionally; set a
+    # headroom target in .fluxpoint-budget.json when you want one.
+    pb="$(plugin_script plutus-budget.py)"
+    [ -n "$pb" ] && python3 "$pb" --check ${FPL_PROTOCOL_PARAMS:+--params "$FPL_PROTOCOL_PARAMS"}
   fi
   # Provers run in --full, not only per-file. A gate that decides "done"
   # without invoking the prover is not a gate.
@@ -96,12 +109,13 @@ full() {
   # Proof-strength ratchet. A prover exits 0 on an assumed lemma exactly as it
   # does on a proved one, so the count of escape hatches may fall but never
   # rise. Dormant in repos with no proof-language files.
-  if [ -n "${FPL_PLUGIN_ROOT:-}" ] && [ -f "$FPL_PLUGIN_ROOT/scripts/proof-guard.py" ]; then
-    python3 "$FPL_PLUGIN_ROOT/scripts/proof-guard.py" --check
-  else
-    pg="$(find "$HOME/.claude/plugins" -type f -name proof-guard.py 2>/dev/null | head -1)"
-    [ -n "$pg" ] && python3 "$pg" --check
-  fi
+  pg="$(plugin_script proof-guard.py)"
+  [ -n "$pg" ] && python3 "$pg" --check
+  # Relation gate. Every check above measures one artifact; the defects that
+  # cost the most are relationships between two, and a suite stays green
+  # because each half is individually correct. Dormant without a manifest.
+  pr="$(plugin_script pair-guard.py)"
+  [ -n "$pr" ] && python3 "$pr" --check ${FPL_PAIR_AGAINST:+--against "$FPL_PAIR_AGAINST"}
 }
 
 case "$mode" in
