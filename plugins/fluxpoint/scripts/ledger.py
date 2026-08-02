@@ -51,7 +51,7 @@ def read(root):
     if not os.path.exists(p):
         return []
     out = []
-    with open(p) as fh:
+    with open(p, encoding="utf-8") as fh:
         for i, line in enumerate(fh, 1):
             line = line.strip()
             if not line:
@@ -98,7 +98,7 @@ def append_from_summary(root, summary, run_id):
     written = []
     p = path_for(root)
     os.makedirs(os.path.dirname(p), exist_ok=True)
-    with open(p, "a") as fh:
+    with open(p, "a", encoding="utf-8", newline="\n") as fh:
         for r in rows:
             key = r.get("key")
             if not key or key in known:
@@ -152,7 +152,7 @@ def main():
             print(f"      run {r.get('runId')}  {r.get('evidence')}")
         return 0
 
-    raw = open(a.result).read() if a.result else sys.stdin.read()
+    raw = open(a.result, encoding="utf-8").read() if a.result else sys.stdin.read()
     try:
         summary = json.loads(raw)
     except json.JSONDecodeError as e:

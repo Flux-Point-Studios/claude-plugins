@@ -7,8 +7,22 @@
 # the ratchet catches a rise, permits a fall, and stays out of the way in a
 # repo that does no verification at all.
 set -uo pipefail
+
+# Interpreter name differs by platform: `python3` on Linux/macOS, `python` on a
+# standard Windows install. Resolve once rather than hardcoding either.
+if [ -z "${FPL_PY:-}" ]; then
+  if command -v python3 >/dev/null 2>&1; then FPL_PY=python3
+  elif command -v python >/dev/null 2>&1; then FPL_PY=python
+  else echo "fluxpoint: no python interpreter on PATH" >&2; exit 127
+  fi
+fi
+# Force UTF-8 on every embedded interpreter's stdio. Without it Windows writes
+# cp1252, so a header like "## Plan --" emitted with an em-dash comes back as
+# 0x97 and every consumer that greps for the UTF-8 bytes silently misses it.
+export PYTHONIOENCODING=utf-8
+
 PLUGIN="$(cd "$(dirname "$0")/.." && pwd)"
-PG="python3 $PLUGIN/scripts/proof-guard.py --root"
+PG=""$FPL_PY" $PLUGIN/scripts/proof-guard.py --root"
 ROOT="$(mktemp -d)"
 pass=0; fail=0
 
@@ -80,7 +94,7 @@ mkrepo; write_aiken
 printf '\nfn h() -> Bool {\n  todo @"later"\n}\n' >>validators/vault.ak
 commit base
 $PG "$ROOT/r" --baseline >/dev/null 2>&1
-python3 - <<'PY'
+"$FPL_PY" - <<'PY'
 import pathlib
 p = pathlib.Path("validators/vault.ak")
 # Discharged with an actual argument, not a substituted constant — see the
@@ -101,7 +115,7 @@ mkrepo; write_aiken
 printf '\nfn h() -> Bool {\n  todo @"later"\n}\n' >>validators/vault.ak
 commit base
 $PG "$ROOT/r" --baseline >/dev/null 2>&1
-python3 -c "
+"$FPL_PY" -c "
 import pathlib
 p = pathlib.Path('validators/vault.ak')
 p.write_text(p.read_text().replace('todo @\"later\"', 'True'))
@@ -160,7 +174,7 @@ case "$out" in *"spend_allows_owner"*) bad "a real test body is not vacuous" "fl
   *) ok "a real test body is not vacuous" "clean" ;; esac
 
 # Gut the negative test: body becomes a bare True. No hatch is added.
-python3 -c "
+"$FPL_PY" -c "
 import pathlib
 p = pathlib.Path('validators/vault.ak')
 t = p.read_text().replace(

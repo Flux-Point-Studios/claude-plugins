@@ -58,7 +58,7 @@ def load_limits(params_path):
     source = "mainnet defaults"
     if not params_path:
         return limits, source
-    with open(params_path) as fh:
+    with open(params_path, encoding="utf-8") as fh:
         p = json.load(fh)
     if "maxTxSize" in p:
         limits["maxTxSize"] = int(p["maxTxSize"])
@@ -100,7 +100,7 @@ def load_budget(root):
     path = os.path.join(root, BUDGET_FILE)
     if not os.path.exists(path):
         return {}
-    with open(path) as fh:
+    with open(path, encoding="utf-8") as fh:
         return json.load(fh)
 
 
@@ -109,7 +109,7 @@ def check(root, params_path, report_only):
     if not os.path.exists(bp_path):
         print("plutus-budget: no plutus.json — nothing built to measure")
         return 0
-    with open(bp_path) as fh:
+    with open(bp_path, encoding="utf-8") as fh:
         blueprint = json.load(fh)
 
     limits, source = load_limits(params_path)

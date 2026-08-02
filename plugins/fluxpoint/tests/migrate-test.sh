@@ -7,8 +7,22 @@
 # prose. Evidence rows are counted before and after, because the one thing a
 # migration must never do is lose the record.
 set -uo pipefail
+
+# Interpreter name differs by platform: `python3` on Linux/macOS, `python` on a
+# standard Windows install. Resolve once rather than hardcoding either.
+if [ -z "${FPL_PY:-}" ]; then
+  if command -v python3 >/dev/null 2>&1; then FPL_PY=python3
+  elif command -v python >/dev/null 2>&1; then FPL_PY=python
+  else echo "fluxpoint: no python interpreter on PATH" >&2; exit 127
+  fi
+fi
+# Force UTF-8 on every embedded interpreter's stdio. Without it Windows writes
+# cp1252, so a header like "## Plan --" emitted with an em-dash comes back as
+# 0x97 and every consumer that greps for the UTF-8 bytes silently misses it.
+export PYTHONIOENCODING=utf-8
+
 PLUGIN="$(cd "$(dirname "$0")/.." && pwd)"
-MIG="python3 $PLUGIN/scripts/migrate.py --root"
+MIG=""$FPL_PY" $PLUGIN/scripts/migrate.py --root"
 ROOT="$(mktemp -d)"
 pass=0; fail=0
 
@@ -146,7 +160,7 @@ grep -q '.claude/fluxpoint/' .gitignore && ! grep -q 'fluxpoint-loop' .gitignore
 grep -q '.claude/worktrees/' .gitignore \
   && ok "apply: worktrees ignored (mutating nodes)" "added" \
   || bad "apply: worktrees ignored (mutating nodes)" "missing"
-python3 -c "
+"$FPL_PY" -c "
 import json;d=json.load(open('.claude/settings.json'))
 assert d['enabledPlugins']=={'fluxpoint@fluxpoint':True}, d
 assert d['env']=={'KEEP':'me'}, d" 2>/dev/null \
@@ -154,7 +168,7 @@ assert d['env']=={'KEEP':'me'}, d" 2>/dev/null \
   || bad "apply: settings rewired, other keys preserved" "wrong"
 
 # WORK.md must actually compile now.
-python3 "$PLUGIN/scripts/compile-graph.py" WORK.md --check >/dev/null 2>&1
+"$FPL_PY" "$PLUGIN/scripts/compile-graph.py" WORK.md --check >/dev/null 2>&1
 check "apply: migrated WORK.md compiles" 0 "$?"
 
 $MIG "$ROOT/r" --apply >/dev/null 2>&1
@@ -168,7 +182,7 @@ check "finalize: exits 0" 0 "$?"
 # ================= 2. evidence loss is refused =============================
 mkrepo; write_loop; write_graph_ir; setup_common
 $MIG "$ROOT/r" --apply >/dev/null 2>&1
-python3 - <<'PY'
+"$FPL_PY" - <<'PY'
 import re
 t = open('WORK.md').read()
 t = re.sub(r'^\| 2026.*\n', '', t, count=2, flags=re.M)   # drop rows by hand
@@ -208,7 +222,7 @@ case "$out" in *"predates the IR"*) ok "pre-0.2: plan flags the hand conversion"
 $MIG "$ROOT/r" --apply >/dev/null 2>&1
 has WORK.md "MIGRATION: the previous GRAPH.md predates the IR" "pre-0.2: marker left in Campaign"
 has WORK.md "| 1 | find | findings | panel |"                 "pre-0.2: prose work graph preserved"
-python3 "$PLUGIN/scripts/compile-graph.py" WORK.md --check >/dev/null 2>&1
+"$FPL_PY" "$PLUGIN/scripts/compile-graph.py" WORK.md --check >/dev/null 2>&1
 check "pre-0.2: does not pretend to compile" 1 "$?"
 
 # ========= 5. bad settings.json must not leave a half-migration ============
@@ -229,7 +243,7 @@ mkrepo; write_loop; setup_common
 printf '{"enabledPlugins":["fluxpoint-loop@fluxpoint","fluxpoint-graph@fluxpoint"],"env":{"KEEP":"me"}}\n' \
   >.claude/settings.json
 $MIG "$ROOT/r" --apply >/dev/null 2>&1
-python3 -c "
+"$FPL_PY" -c "
 import json,sys;d=json.load(open('.claude/settings.json'))
 ep=d['enabledPlugins']
 assert ep==['fluxpoint@fluxpoint'], ep

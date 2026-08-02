@@ -19,6 +19,20 @@
 # check that is simply not ready yet is not an error.
 set -uo pipefail
 
+
+# Interpreter name differs by platform: `python3` on Linux/macOS, `python` on a
+# standard Windows install. Resolve once rather than hardcoding either.
+if [ -z "${FPL_PY:-}" ]; then
+  if command -v python3 >/dev/null 2>&1; then FPL_PY=python3
+  elif command -v python >/dev/null 2>&1; then FPL_PY=python
+  else echo "fluxpoint: no python interpreter on PATH" >&2; exit 127
+  fi
+fi
+# Force UTF-8 on every embedded interpreter's stdio. Without it Windows writes
+# cp1252, so a header like "## Plan --" emitted with an em-dash comes back as
+# 0x97 and every consumer that greps for the UTF-8 bytes silently misses it.
+export PYTHONIOENCODING=utf-8
+
 ROOT="${FPL_ROOT:-.}"
 WAITS="$ROOT/.claude/fluxpoint/waits"
 ALL=0
@@ -33,7 +47,7 @@ for f in "$WAITS"/*.json; do
   [ -e "$f" ] || continue
   # Unit-separated, so a check command containing spaces survives the read.
   IFS=$'\x1f' read -r node check every deadline last runid campaign < <(
-    python3 - "$f" <<'PY'
+    "$FPL_PY" - "$f" <<'PY'
 import json, sys
 w = json.load(open(sys.argv[1]))
 print(w.get("node",""), w.get("check",""), w.get("everyMinutes",60),
@@ -46,7 +60,7 @@ PY
     dl=$(date -u -d "$deadline" +%s 2>/dev/null || echo 0)
     if [ "$dl" -gt 0 ] && [ "$now" -gt "$dl" ]; then
       echo "wake-check: EXPIRED  $campaign / $node — deadline $deadline passed"
-      python3 "$(dirname "$0")/inbox.py" --root "$ROOT" --add \
+      "$FPL_PY" "$(dirname "$0")/inbox.py" --root "$ROOT" --add \
         --kind wake-expired --node "$node" --campaign "$campaign" \
         --detail "wake deadline $deadline passed with the condition unmet" \
         >/dev/null 2>&1
@@ -64,7 +78,7 @@ PY
   if sh -c "$check" >/dev/null 2>&1; then
     echo "wake-check: READY    $campaign / $node"
     echo "    resume: /fluxpoint:graph-run  (resumeFromRunId $runid)"
-    python3 "$(dirname "$0")/inbox.py" --root "$ROOT" --add \
+    "$FPL_PY" "$(dirname "$0")/inbox.py" --root "$ROOT" --add \
       --kind wake-ready --node "$node" --campaign "$campaign" \
       --detail "wake condition met; campaign can resume from $runid" \
       >/dev/null 2>&1
@@ -72,7 +86,7 @@ PY
   else
     waiting=$((waiting+1))
   fi
-  python3 - "$f" "$now" <<'PY'
+  "$FPL_PY" - "$f" "$now" <<'PY'
 import json, sys
 p, now = sys.argv[1], int(sys.argv[2])
 w = json.load(open(p)); w["lastChecked"] = now

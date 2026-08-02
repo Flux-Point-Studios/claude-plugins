@@ -7,6 +7,20 @@
 # real build, tests, property tests, formal checks, and preview-net
 # exercises.
 set -euo pipefail
+
+# Interpreter name differs by platform: `python3` on Linux/macOS, `python` on a
+# standard Windows install. Resolve once rather than hardcoding either.
+if [ -z "${FPL_PY:-}" ]; then
+  if command -v python3 >/dev/null 2>&1; then FPL_PY=python3
+  elif command -v python >/dev/null 2>&1; then FPL_PY=python
+  else echo "fluxpoint: no python interpreter on PATH" >&2; exit 127
+  fi
+fi
+# Force UTF-8 on every embedded interpreter's stdio. Without it Windows writes
+# cp1252, so a header like "## Plan --" emitted with an em-dash comes back as
+# 0x97 and every consumer that greps for the UTF-8 bytes silently misses it.
+export PYTHONIOENCODING=utf-8
+
 mode="${1:---full}"
 file="${2:-}"
 
@@ -78,7 +92,7 @@ full() {
     # to say about it. Protocol limits are enforced unconditionally; set a
     # headroom target in .fluxpoint-budget.json when you want one.
     pb="$(plugin_script plutus-budget.py)"
-    [ -n "$pb" ] && python3 "$pb" --check ${FPL_PROTOCOL_PARAMS:+--params "$FPL_PROTOCOL_PARAMS"}
+    [ -n "$pb" ] && "$FPL_PY" "$pb" --check ${FPL_PROTOCOL_PARAMS:+--params "$FPL_PROTOCOL_PARAMS"}
   fi
   # Provers run in --full, not only per-file. A gate that decides "done"
   # without invoking the prover is not a gate.
@@ -110,12 +124,12 @@ full() {
   # does on a proved one, so the count of escape hatches may fall but never
   # rise. Dormant in repos with no proof-language files.
   pg="$(plugin_script proof-guard.py)"
-  [ -n "$pg" ] && python3 "$pg" --check
+  [ -n "$pg" ] && "$FPL_PY" "$pg" --check
   # Relation gate. Every check above measures one artifact; the defects that
   # cost the most are relationships between two, and a suite stays green
   # because each half is individually correct. Dormant without a manifest.
   pr="$(plugin_script pair-guard.py)"
-  [ -n "$pr" ] && python3 "$pr" --check ${FPL_PAIR_AGAINST:+--against "$FPL_PAIR_AGAINST"}
+  [ -n "$pr" ] && "$FPL_PY" "$pr" --check ${FPL_PAIR_AGAINST:+--against "$FPL_PAIR_AGAINST"}
 }
 
 case "$mode" in

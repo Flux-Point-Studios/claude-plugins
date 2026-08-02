@@ -6,8 +6,22 @@
 # limit that is not enforced and a limit that is silently assumed met. Both
 # get cases here.
 set -uo pipefail
+
+# Interpreter name differs by platform: `python3` on Linux/macOS, `python` on a
+# standard Windows install. Resolve once rather than hardcoding either.
+if [ -z "${FPL_PY:-}" ]; then
+  if command -v python3 >/dev/null 2>&1; then FPL_PY=python3
+  elif command -v python >/dev/null 2>&1; then FPL_PY=python
+  else echo "fluxpoint: no python interpreter on PATH" >&2; exit 127
+  fi
+fi
+# Force UTF-8 on every embedded interpreter's stdio. Without it Windows writes
+# cp1252, so a header like "## Plan --" emitted with an em-dash comes back as
+# 0x97 and every consumer that greps for the UTF-8 bytes silently misses it.
+export PYTHONIOENCODING=utf-8
+
 PLUGIN="$(cd "$(dirname "$0")/.." && pwd)"
-PB="python3 $PLUGIN/scripts/plutus-budget.py --root"
+PB=""$FPL_PY" $PLUGIN/scripts/plutus-budget.py --root"
 ROOT="$(mktemp -d)"
 pass=0; fail=0
 
@@ -17,7 +31,7 @@ check(){ [ "$2" = "$3" ] && ok "$1" "$3" || bad "$1" "$3 (wanted $2)"; }
 
 # A blueprint with one validator of exactly N bytes of compiled code.
 blueprint() { # bytes [second_bytes]
-  python3 - "$@" <<'PY'
+  "$FPL_PY" - "$@" <<'PY'
 import json, sys
 def v(title, nbytes, fill="ab"):
     return {"title": title, "compiledCode": fill * nbytes,
@@ -64,7 +78,7 @@ case "$err" in *vault.spend*) ok "names the validator" "reported" ;;
 # Aiken repeats the same compiledCode per purpose. Counting those separately
 # would report a validator twice and imply a size that never goes on chain.
 mkrepo
-python3 - <<'PY'
+"$FPL_PY" - <<'PY'
 import json
 code = "ab" * 5000
 vs = [{"title": f"vault.{p}", "compiledCode": code, "hash": "00" * 28}

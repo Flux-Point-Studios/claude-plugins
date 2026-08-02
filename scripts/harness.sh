@@ -10,6 +10,20 @@
 #
 # exit 0 = green.
 set -uo pipefail
+
+# Interpreter name differs by platform: `python3` on Linux/macOS, `python` on a
+# standard Windows install. Resolve once rather than hardcoding either.
+if [ -z "${FPL_PY:-}" ]; then
+  if command -v python3 >/dev/null 2>&1; then FPL_PY=python3
+  elif command -v python >/dev/null 2>&1; then FPL_PY=python
+  else echo "fluxpoint: no python interpreter on PATH" >&2; exit 127
+  fi
+fi
+# Force UTF-8 on every embedded interpreter's stdio. Without it Windows writes
+# cp1252, so a header like "## Plan --" emitted with an em-dash comes back as
+# 0x97 and every consumer that greps for the UTF-8 bytes silently misses it.
+export PYTHONIOENCODING=utf-8
+
 cd "$(dirname "$0")/.."
 PLUGIN="plugins/fluxpoint"
 fail=0
@@ -25,9 +39,9 @@ step() { # name, then command
   fi
 }
 
-check_json() { python3 -m json.tool "$1" >/dev/null; }
+check_json() { "$FPL_PY" -m json.tool "$1" >/dev/null; }
 check_sh()   { bash -n "$1"; }
-check_py()   { python3 -m py_compile "$1"; }
+check_py()   { "$FPL_PY" -m py_compile "$1"; }
 
 compile_templates() {
   local t n=0
@@ -35,7 +49,7 @@ compile_templates() {
     [ -f "$t" ] || continue
     grep -q '```json graph-ir' "$t" || continue
     n=$((n + 1))
-    python3 "$PLUGIN/scripts/compile-graph.py" "$t" -o /tmp/fpl-compiled.js || return 1
+    "$FPL_PY" "$PLUGIN/scripts/compile-graph.py" "$t" -o /tmp/fpl-compiled.js || return 1
     # Generated scripts must be syntactically valid under the runtime's
     # async wrapper, or the graph fails at launch instead of at compile.
     {
@@ -84,17 +98,17 @@ case "${1:---full}" in
     done
     step "manifests validate" claude plugin validate .
     step "templates compile + emit valid JS" compile_templates
-    step "compiler invariants" python3 "$PLUGIN/tests/compile-test.py"
-    step "emission coverage" python3 "$PLUGIN/tests/emission-test.py"
-    step "codegen injection + red-team regressions" python3 "$PLUGIN/tests/security-test.py"
+    step "compiler invariants" "$FPL_PY" "$PLUGIN/tests/compile-test.py"
+    step "emission coverage" "$FPL_PY" "$PLUGIN/tests/emission-test.py"
+    step "codegen injection + red-team regressions" "$FPL_PY" "$PLUGIN/tests/security-test.py"
     step "stop-gate regression" bash "$PLUGIN/tests/gate-test.sh"
     step "hook wiring + PostToolUse" bash "$PLUGIN/tests/hooks-test.sh"
     step "migration against pre-1.0 fixtures" bash "$PLUGIN/tests/migrate-test.sh"
     step "proof-strength ratchet" bash "$PLUGIN/tests/proof-guard-test.sh"
     step "on-chain budget gate" bash "$PLUGIN/tests/budget-test.sh"
-    step "once-only ledger (executed)" python3 "$PLUGIN/tests/ledger-test.py"
+    step "once-only ledger (executed)" "$FPL_PY" "$PLUGIN/tests/ledger-test.py"
     step "relation gate" bash "$PLUGIN/tests/pair-test.sh"
-    step "park layer (executed)" python3 "$PLUGIN/tests/park-test.py"
+    step "park layer (executed)" "$FPL_PY" "$PLUGIN/tests/park-test.py"
     step "unified state + compatibility" bash "$PLUGIN/tests/unify-test.sh"
     ;;
   *)

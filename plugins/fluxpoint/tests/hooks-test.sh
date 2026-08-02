@@ -9,6 +9,20 @@
 #
 # It also covers verify-changed.sh, which had no test at all.
 set -uo pipefail
+
+# Interpreter name differs by platform: `python3` on Linux/macOS, `python` on a
+# standard Windows install. Resolve once rather than hardcoding either.
+if [ -z "${FPL_PY:-}" ]; then
+  if command -v python3 >/dev/null 2>&1; then FPL_PY=python3
+  elif command -v python >/dev/null 2>&1; then FPL_PY=python
+  else echo "fluxpoint: no python interpreter on PATH" >&2; exit 127
+  fi
+fi
+# Force UTF-8 on every embedded interpreter's stdio. Without it Windows writes
+# cp1252, so a header like "## Plan --" emitted with an em-dash comes back as
+# 0x97 and every consumer that greps for the UTF-8 bytes silently misses it.
+export PYTHONIOENCODING=utf-8
+
 PLUGIN="$(cd "$(dirname "$0")/.." && pwd)"
 export CLAUDE_PLUGIN_ROOT="$PLUGIN"
 ROOT="$(mktemp -d)"
@@ -20,7 +34,7 @@ check(){ [ "$2" = "$3" ] && ok "$1" "$3" || bad "$1" "$3 (wanted $2)"; }
 
 # The command strings the runtime actually executes.
 hook_cmd() {
-  python3 - "$PLUGIN/hooks/hooks.json" "$1" <<'PY'
+  "$FPL_PY" - "$PLUGIN/hooks/hooks.json" "$1" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
 for group in d["hooks"].get(sys.argv[2], []):
@@ -30,7 +44,7 @@ for group in d["hooks"].get(sys.argv[2], []):
 PY
 }
 hook_matcher() {
-  python3 - "$PLUGIN/hooks/hooks.json" "$1" <<'PY'
+  "$FPL_PY" - "$PLUGIN/hooks/hooks.json" "$1" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
 for group in d["hooks"].get(sys.argv[2], []):

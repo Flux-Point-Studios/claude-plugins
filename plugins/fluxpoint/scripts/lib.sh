@@ -1,7 +1,21 @@
 #!/usr/bin/env bash
 # Shared helpers for fluxpoint hooks. Sourced, never executed.
-# JSON handling prefers jq and falls back to python3 so the hooks work on
+# JSON handling prefers jq and falls back to "$FPL_PY" so the hooks work on
 # machines without jq installed.
+
+
+# Interpreter name differs by platform: `python3` on Linux/macOS, `python` on a
+# standard Windows install. Resolve once rather than hardcoding either.
+if [ -z "${FPL_PY:-}" ]; then
+  if command -v python3 >/dev/null 2>&1; then FPL_PY=python3
+  elif command -v python >/dev/null 2>&1; then FPL_PY=python
+  else echo "fluxpoint: no python interpreter on PATH" >&2; exit 127
+  fi
+fi
+# Force UTF-8 on every embedded interpreter's stdio. Without it Windows writes
+# cp1252, so a header like "## Plan --" emitted with an em-dash comes back as
+# 0x97 and every consumer that greps for the UTF-8 bytes silently misses it.
+export PYTHONIOENCODING=utf-8
 
 fpl_state_dir() {
   printf '%s/.claude/fluxpoint' "${CLAUDE_PROJECT_DIR:-$PWD}"
@@ -27,7 +41,7 @@ fpl_run_summary() {
   if command -v jq >/dev/null 2>&1; then
     jq -r '"\(.runId) \(.outcome), nodes \(.nodesOk)/\(.nodesDead) dead, \(.findings) finding(s), harness \(.harnessExit), red-team \(.redTeam)"' "$1" 2>/dev/null
   else
-    python3 -c '
+    "$FPL_PY" -c '
 import json, sys
 try:
     d = json.load(open(sys.argv[1]))
@@ -45,7 +59,7 @@ fpl_json_get() {
   if command -v jq >/dev/null 2>&1; then
     jq -r --arg k "$1" 'getpath($k / ".") // empty' 2>/dev/null
   else
-    python3 -c '
+    "$FPL_PY" -c '
 import json, sys
 try:
     d = json.load(sys.stdin)
@@ -72,7 +86,7 @@ fpl_json_obj() {
     done
     jq -cn "${args[@]}" "${filter%,}}"
   else
-    python3 -c '
+    "$FPL_PY" -c '
 import json, sys
 a = sys.argv[1:]
 print(json.dumps(dict(zip(a[::2], a[1::2]))))' "$@"

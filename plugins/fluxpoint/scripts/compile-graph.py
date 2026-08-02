@@ -94,7 +94,7 @@ def load_contracts(contracts_dir):
         return out
     for fn in sorted(os.listdir(contracts_dir)):
         if fn.endswith(".schema.json"):
-            with open(os.path.join(contracts_dir, fn)) as fh:
+            with open(os.path.join(contracts_dir, fn), encoding="utf-8") as fh:
                 schema = json.load(fh)
             out[schema.get("$id", fn.split(".")[0])] = schema
     return out
@@ -1217,7 +1217,7 @@ def main():
     contracts_dir = args.contracts or os.path.join(os.path.dirname(here), "contracts")
 
     try:
-        with open(args.graph) as fh:
+        with open(args.graph, encoding="utf-8") as fh:
             ir = extract_ir(fh.read())
     except (OSError, GraphError) as e:
         print(f"graph-compile: {e}", file=sys.stderr)
@@ -1250,7 +1250,7 @@ def main():
     js = emit(ir, contracts)
     if args.out:
         os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
-        with open(args.out, "w") as fh:
+        with open(args.out, "w", encoding="utf-8", newline="\n") as fh:
             fh.write(js)
         print(f"graph-compile: wrote {args.out} — {len(ir['nodes'])} node(s), "
               f"{planned} planned agent call(s)")
