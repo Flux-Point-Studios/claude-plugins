@@ -208,6 +208,8 @@ for needle, why in [
     ("!seen_n_find.has(key_n_find(it))", "dedup happens before verification"),
     ("dry_n_find = 0", "a productive round resets the dry counter"),
     ("discovery INCOMPLETE, not exhausted", "hitting the ceiling is never called exhaustion"),
+    ("INCOMPLETE = true", "a ceilinged sweep marks the whole campaign incomplete"),
+    ("outcome === 'COMPLETE' && INCOMPLETE ? 'INCOMPLETE'", "a partial run cannot report COMPLETE"),
     ("seenList_n_find.join", "later rounds are told what earlier rounds found"),
 ]:
     ok = needle in disc_js

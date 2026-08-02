@@ -332,8 +332,14 @@ def emit(ir, contracts):
     a("const RESULTS = {}")
     a("const PROVENANCE = []")
     a("function note(id, status, detail) { PROVENANCE.push({ node: id, status, detail: detail || '' }) }")
+    a("// Set whenever the campaign covered less ground than it set out to —")
+    a("// budget declined work, or a sweep ended on its ceiling with more to")
+    a("// find. It rides all the way out to the Evidence row, so a partial run")
+    a("// can never be read as a clean one.")
+    a("let INCOMPLETE = false")
     a("function summary(outcome) {")
-    a("  return { campaign, outcome, results: RESULTS, provenance: PROVENANCE }")
+    a("  const final = outcome === 'COMPLETE' && INCOMPLETE ? 'INCOMPLETE' : outcome")
+    a("  return { campaign, outcome: final, results: RESULTS, provenance: PROVENANCE }")
     a("}")
     a("")
     budget_cfg = ir.get("budget") or {}
@@ -348,6 +354,7 @@ def emit(ir, contracts):
     a("  const rem = budget.remaining()")
     a("  if (rem < NODE_FLOOR) {")
     a("    log(`budget floor: ${label} NOT RUN — ${Math.round(rem / 1000)}k remaining < ${Math.round(NODE_FLOOR / 1000)}k floor`)")
+    a("    INCOMPLETE = true")
     a("    return false")
     a("  }")
     a("  return true")
@@ -555,9 +562,13 @@ def emit_repeat(n, ir, prompt, phase, panel, over):
     a(f"  note({js_str(nid)}, 'OK', `round ${{round_{var}}}: ${{kept_{var}.length}} kept "
       f"of ${{fresh_{var}.length}} new`)")
     a("}")
-    a(f"if (round_{var} >= {max_rounds} && dry_{var} < {dry_target}) log(")
-    a(f"  `{nid}: hit maxRounds {max_rounds} while still finding new items — "
+    a(f"if (round_{var} >= {max_rounds} && dry_{var} < {dry_target}) {{")
+    a(f"  log(`{nid}: hit maxRounds {max_rounds} while still finding new items — "
       f"discovery INCOMPLETE, not exhausted`)")
+    a(f"  note({js_str(nid)}, 'INCOMPLETE', `ended on the {max_rounds}-round ceiling "
+      f"with new items still arriving; the sweep is not exhaustive`)")
+    a("  INCOMPLETE = true")
+    a("}")
     a(f"log(`{nid}: ${{{var}.length}} item(s) kept across ${{round_{var}}} round(s)`)")
     return "\n".join(L)
 
