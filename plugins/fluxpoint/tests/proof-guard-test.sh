@@ -192,6 +192,49 @@ out="$($PG "$ROOT/r" --scan 2>&1)"
 case "$out" in *looks_like_an_assertion*) ok "self-comparison counts as vacuous" "caught" ;;
   *) bad "self-comparison counts as vacuous" "missed" ;; esac
 
+# ========= 6c. the conservative boundary, pinned deliberately ==============
+# Nested braces must not confuse the brace matcher, and the known misses are
+# recorded here rather than assumed covered. Missing a vacuous test is a
+# cost we accept; flagging a real one is not, because an ignored ratchet is
+# worse than no ratchet.
+mkrepo; mkdir -p validators
+cat >validators/nested.ak <<'NESTEOF'
+test real_when_block() {
+  when parse(datum) is {
+    Some(d) -> d.owner == expected
+    None -> False
+  }
+}
+
+test deeply_nested_but_real() {
+  let outer = when a is { Some(b) -> b > 0; None -> False }
+  outer
+}
+
+test single_arm_returning_true() {
+  when x is {
+    _ -> True
+  }
+}
+
+test truly_empty() {
+}
+NESTEOF
+commit nested
+out="$($PG "$ROOT/r" --scan 2>&1)"
+case "$out" in *real_when_block*) bad "nested braces: real when-block not flagged" "flagged" ;;
+  *) ok "nested braces: real when-block not flagged" "clean" ;; esac
+case "$out" in *deeply_nested_but_real*) bad "nested braces: deep real body not flagged" "flagged" ;;
+  *) ok "nested braces: deep real body not flagged" "clean" ;; esac
+case "$out" in *truly_empty*) ok "an empty test body is caught" "caught" ;;
+  *) bad "an empty test body is caught" "missed" ;; esac
+# KNOWN MISS, pinned so nobody assumes it is covered: a single catch-all arm
+# returning True is vacuous, but recognising it needs real expression
+# analysis. The proof-auditor covers it; this ratchet does not claim to.
+case "$out" in *single_arm_returning_true*)
+    bad "known miss is still a miss (boundary moved)" "now flagged — update the docs" ;;
+  *) ok "known miss recorded: when-with-one-True-arm" "not claimed" ;; esac
+
 # ========= 7. untracked and build output are out of scope =================
 mkrepo; write_aiken; commit base
 $PG "$ROOT/r" --baseline >/dev/null 2>&1

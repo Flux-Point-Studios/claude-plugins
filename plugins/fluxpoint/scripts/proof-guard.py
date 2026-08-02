@@ -29,6 +29,10 @@ test's braces and reading its body — but only where it is unambiguous
 (a bare boolean, a value compared to itself, an empty body), because a
 false positive here would train people to ignore the ratchet.
 
+Known misses are pinned by tests rather than assumed covered — a `when x
+is { _ -> True }` is vacuous but needs real expression analysis to see, so
+this does not claim it.
+
 What remains beyond counting: a theorem whose statement lost a conjunct, a
 property proved about an unreachable state, a generator that cannot produce
 the interesting case, a solver `unknown` read as success. Those need
