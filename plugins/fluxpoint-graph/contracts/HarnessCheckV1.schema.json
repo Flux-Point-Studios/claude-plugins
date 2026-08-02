@@ -1,0 +1,10 @@
+{
+  "$id": "HarnessCheckV1",
+  "type": "object",
+  "required": ["exit", "command", "tail"],
+  "properties": {
+    "exit": { "type": "integer" },
+    "command": { "type": "string", "minLength": 1 },
+    "tail": { "type": "string" }
+  }
+}

@@ -35,15 +35,24 @@ restarts.
 
 | Piece | Mechanism | Behavior |
 |---|---|---|
-| Spec | `GRAPH.md` | Org graph (stable roles) + work graph (this campaign): every node a contract, every edge a named verifier, failure policy, evidence table. Sibling of `LOOP.md`. |
-| Executor | Claude Code Workflow tool | `/fluxpoint-graph:graph-run` compiles the spec to a `.graph.js` script — `pipeline()` wiring, JSON-Schema contracts on every node, worktree isolation for mutators — runs it, and on partial failure resumes from `runId` so only the repaired node onward re-runs. |
-| Review | `graph-auditor` agent, `/fluxpoint-graph:graph-audit` | Adversarial pass over the graph itself: vacuous contracts, self-reported verification, unjustified barriers, unbounded fan-out, silent caps, resume-breaking runtime calls. Ends `VERDICT: SOUND` or `VERDICT: REWIRE`. |
-| Method | `graph-engineering` skill + templates | Loop-vs-graph decision rule, the five primitives → Claude Code bindings, ten compile rules, canonical shapes: fan-out/verify (`review.graph.js`), council → loop → gate (`feature.graph.js`), advisor–orchestrator, zone defense, loop-until-dry. |
+| Spec | ```json graph-ir block in `GRAPH.md` | The single source of truth: nodes with named contracts, `foreach`/`after` edges, a verification tier per node, budget ceiling, failure policy. Prose explains intent; the IR decides what runs. |
+| Compiler | `scripts/compile-graph.py` (python3, stdlib) | Compiles the IR to a Workflow script **deterministically — no model transcribes it**, so spec and executor cannot drift. Rejects unsound graphs at compile time: missing/unknown contracts, even panels, `verifyOver` that is not a contract field, dangling `after`/`foreach`/`role`, `{{prev}}` without an edge, planned fan-out over `budget.maxNodes`, and any mutator with no independent node verifying it. |
+| Executor | Claude Code Workflow tool | `/fluxpoint-graph:graph-run` compiles, runs, and records. Generated code carries the guarantees: input normalization, worktree isolation for mutators, refuter panels that attack rather than confirm, a budget floor that logs whatever it leaves unverified. On partial failure, `resumeFromRunId` re-runs only the repaired node onward. |
+| Evidence | `scripts/record-run.py`, `/fluxpoint-graph:graph-status` | Provenance is a build artifact: `runs/<runId>.json` plus an auto-appended Evidence row (outcome, nodes OK/dead, findings, harness exit, red-team verdict). Nothing is remembered by hand. |
+| Review | `graph-auditor` agent, `/fluxpoint-graph:graph-audit` | Semantic adversarial pass — stakes-vs-tier mismatches, vacuous contracts, context packets that paste transcripts, hidden coupling, ceilings that are not ceilings. Structure is the compiler's job. Ends `VERDICT: SOUND` or `VERDICT: REWIRE`. |
+| Method | `graph-engineering` skill + templates | Loop-vs-graph rule, five primitives → bindings, tier selection by stakes, canonical shapes: fan-out/verify (`GRAPH.md`), council → build → independently gated (`GRAPH.feature.md`), advisor–orchestrator, zone defense. |
 | Composition | no hooks of its own | Mutating nodes work fluxpoint-loop slices; `scripts/harness.sh` and the Stop-hook DoD gate keep final authority. Graph green ≠ done — campaigns still exit through the ship pipeline. |
 
-Requires a Claude Code version with the Workflow tool (`/workflows`
-resolves); where absent, the skill degrades to parallel subagent fan-out
-with the same contracts, recorded as degraded in Evidence.
+The invariant worth naming: **a node that writes to the tree may not
+certify its own work.** Mark it `mutates: true` and some later node with
+`independent: true` must re-derive the verdict by running the harness
+itself. The compiler refuses to build a graph that breaks this — it
+shipped as a real bug in v0.1, so it is now unexpressible.
+
+Requires `python3` and a Claude Code version with the Workflow tool
+(`/workflows` resolves); where absent, runs degrade to parallel subagent
+fan-out with the same contracts, recorded as `degraded-subagents` in
+Evidence.
 
 ## Install
 
@@ -96,11 +105,15 @@ For graph campaigns, layer on:
 /fluxpoint-graph:graph-init <one-line campaign goal>
 ```
 
-This copies `GRAPH.md` and the `.graph.js` templates into the repo, wires
-settings, then smokes the executor with a two-node ping graph. Drive a
-campaign with `/fluxpoint-graph:graph-design <goal>` (spec, audited to
-`VERDICT: SOUND`) followed by `/fluxpoint-graph:graph-run` (compile,
-execute, evidence row, targeted resume on partial failure).
+This copies the two campaign templates into the repo, wires settings, then
+proves the toolchain with a compile check and a two-node ping graph. Drive
+a campaign with `/fluxpoint-graph:graph-design <goal>` (author the IR;
+compile-check clean, then audited to `VERDICT: SOUND`) followed by
+`/fluxpoint-graph:graph-run` (compile, execute, record). Check in any time
+with `/fluxpoint-graph:graph-status`.
+
+Compiled `.graph.js` files land in `.claude/workflows/` and are build
+output — never hand-edit them; edit the IR and recompile.
 
 ## Drive a loop
 
@@ -184,6 +197,15 @@ built into the hooks.
   on the self-hosted outer loop.
 - The hygiene scan covers uncommitted and untracked code only; committed
   history is CI's job. Run the same harness script in CI.
+- The DoD gate arms on two independent signals: the PostToolUse marker
+  (`Write|Edit|MultiEdit`) and dirtiness re-derived from `git` at Stop
+  time. The second exists because the first cannot see source written
+  through the Bash tool (`cat >`, `sed -i`, `git apply`) — before v0.1.3
+  such a session could stop with the harness never run.
+  `plugins/fluxpoint-loop/tests/gate-test.sh` pins all seven cases.
+- A green produced by a working tree in which `scripts/harness.sh` itself
+  is modified or untracked is reported, not swallowed: the verdict is only
+  as trustworthy as the contract that produced it.
 
 ## Publishing this repo
 
@@ -211,11 +233,16 @@ plugins/fluxpoint-loop/
 ├── commands/           loop-init.md, loop-status.md, red-team.md
 ├── agents/             red-team-reviewer.md
 ├── skills/             loop-engineering/SKILL.md
+├── tests/              gate-test.sh
 └── templates/          harness.sh, LOOP.md, LOOP_PROMPT.md, loop.sh, settings.snippet.json
 plugins/fluxpoint-graph/
 ├── .claude-plugin/plugin.json
-├── commands/           graph-init.md, graph-design.md, graph-run.md, graph-audit.md
+├── scripts/            compile-graph.py, record-run.py
+├── contracts/          FindingsV1, VerdictV1, HarnessCheckV1, DesignV1, SliceV1, RedTeamV1
+├── commands/           graph-init.md, graph-design.md, graph-run.md, graph-audit.md, graph-status.md
 ├── agents/             graph-auditor.md
 ├── skills/             graph-engineering/SKILL.md
-└── templates/          GRAPH.md, review.graph.js, feature.graph.js, settings.snippet.json
+├── templates/          GRAPH.md, GRAPH.feature.md, settings.snippet.json
+├── tests/              compile-test.py
+└── DESIGN-NOTES.md
 ```

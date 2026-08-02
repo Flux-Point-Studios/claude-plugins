@@ -1,16 +1,17 @@
 ---
 name: graph-engineering
-description: How to run Graph Engineering at Flux Point — deciding when a loop must become a graph, specifying multi-agent campaigns in GRAPH.md as nodes with typed contracts and deterministically verified edges, compiling the spec to a Claude Code Workflow script, and repairing runs with targeted resume. Use whenever the user mentions graphs, graph engineering, multi-agent work, orchestration, councils, judge panels, fan-out, swarms, wiring or organizing subagents, GRAPH.md, workflow scripts, or asks to parallelize verified work across agents, even if they never say "graph engineering".
+description: How to run Graph Engineering at Flux Point — deciding when a loop must become a graph, specifying multi-agent campaigns as a declarative IR in GRAPH.md with typed contracts and verification tiers, compiling it deterministically to a Claude Code Workflow script, and repairing runs with targeted resume. Use whenever the user mentions graphs, graph engineering, multi-agent work, orchestration, councils, judge panels, fan-out, swarms, wiring or organizing subagents, GRAPH.md, workflow scripts, or asks to parallelize verified work across agents, even if they never say "graph engineering".
 ---
 
 # Graph Engineering
 
 Loops made one agent's behavior programmable; graphs make the organization
-of agents programmable. The graph is the artifact: a spec (`GRAPH.md`), a
-compiled executor (a Workflow script), and the same deterministic harness
-deciding green. A node is not a prompt — it is a loop-engineered unit with
-a scoped context packet in and a typed contract out. The rule that survives
-the upgrade unchanged: the agent never decides "done"; the harness does.
+of agents programmable. The graph is the artifact: a declarative IR
+(`GRAPH.md`), a compiler that turns it into a Workflow script with no model
+in the loop, and the same deterministic harness deciding green. A node is
+not a prompt — it is a loop-engineered unit with a scoped context packet in
+and a typed contract out. The rule that survives every upgrade: the agent
+never decides "done"; the harness does.
 
 ## Loop or graph
 
@@ -19,104 +20,116 @@ evidence. Escalate to a graph when two or more hold: independent subtasks
 that fail independently; a work-list to fan out over; claims that need
 adversarial verification from independent context; cross-zone ownership
 (validators vs off-chain vs infra); a budget worth isolating per node. A
-work graph whose edges do not fit in ten lines is scope creep — split the
-campaign. Never build a graph as ceremony around a single slice.
+work graph of more than ten nodes is scope creep — split the campaign.
+Never build a graph as ceremony around a single slice.
 
-## The five primitives and their Claude Code bindings
+## The five primitives and their bindings
 
-| Primitive | Meaning | Claude Code binding |
+| Primitive | Meaning | Binding |
 |---|---|---|
-| Node | one responsibility, its own context | `agent()` call in a Workflow script; stable roles as `agents/*.md` subagents via `agentType` |
-| Edge | explicit routing between nodes | deterministic JS in the script — `pipeline()`, `parallel()`, conditionals, loop-until-dry — never a model-improvised hand-off |
-| Contract | what a node must produce | `schema:` JSON Schema → validated structured output; malformed output retries at the tool layer, not in your prose |
-| Context packet | what a node may believe | the prompt you compose for it: exact spans, prior contracts, named commands — never the whole transcript |
-| Verification | who decides an edge is green | `scripts/harness.sh --changed\|--full` run inside verify nodes; refuter majorities for claims; red-team verdict before merge |
+| Node | one responsibility, its own context | an IR `nodes[]` entry → one `agent()` call; stable roles via `roles` → `agentType` |
+| Edge | explicit routing | IR `after` / `foreach`; the compiler derives `pipeline()`/`parallel()` — never a model-improvised hand-off |
+| Contract | what a node must produce | `contract: "NameV1"` → `contracts/NameV1.schema.json`, validated structured output |
+| Context packet | what a node may believe | the IR `prompt`, with `{{A.x}}` inputs, `{{item.*}}` fan-out, `{{prev}}` predecessor contract — never the transcript |
+| Verification | who decides an edge is green | the `verify` tier, plus `independent: true` nodes that re-derive gates |
 
 Durable coordination rides on the executor: every run has a `runId`,
-`journal.jsonl` records each node's actual return, and resume replays the
-longest unchanged prefix from cache.
+`journal.jsonl` records each node's actual return, resume replays the
+longest unchanged prefix, and `record-run.py` writes the provenance
+artifact and the Evidence row.
 
-## Compile rules (GRAPH.md → Workflow script)
+## The IR is the source of truth
 
-1. `export const meta` mirrors the work graph: pure literal, one `phases`
-   entry per phase, same titles as the `phase()` calls and `opts.phase`
-   strings.
-2. `pipeline()` is the default wiring. A barrier — `parallel()` before a
-   dependent stage — only where stage N needs ALL of stage N−1 (dedup,
-   zero-count early exit, judging candidates side by side). State the
-   reason in a comment or it is a finding.
-3. Every node gets `schema:`. A node returning prose is a node without a
-   contract. Write schemas a lazy output cannot satisfy: `required` fields,
-   `minLength`, enums for verdicts, exit codes as integers.
-4. Compose context packets from contracts, not transcripts: pass
-   `f.file`, `f.claim`, the exact spans. A verifier re-reads the code
-   itself; it never trusts the finder's summary.
-5. Mutating nodes take `isolation: 'worktree'` whenever two could touch
-   the same tree; merging their work is an explicit node, not an accident.
-6. Verify nodes run the harness themselves with Bash and return the real
-   exit code in their contract. The graph trusts exit codes, not
-   adjectives — and never a mutating node's own reported exit: the node
-   that wrote the code cannot be the node that grades whether it passed.
-   Re-derive every gate from an independent node.
-7. Failure isolation: a dead node returns null — `.filter(Boolean)` and
-   `log()` the drop. No silent caps: top-N, sampling, and no-retry each
-   get a `log()` line saying what was left on the floor.
-8. Bound every loop: `while (budget.total && budget.remaining() > floor)`
-   or a K-consecutive-dry-rounds counter. Dedup discovery against
-   everything seen, not everything confirmed, or the loop never converges.
-9. Model tiers per node (`opts.model`, `opts.effort`) only when confident:
-   cheap effort for mechanical stages, high effort for judges and
-   refuters. Default is inherit.
-10. No `Date.now()`, `Math.random()`, or argless `new Date()` in scripts —
-    they break resume. Stamp Evidence rows from the shell after the run.
-11. Normalize inputs and fail loudly. `args` may arrive as an object, a
-    JSON string, or a bare string; coerce all three, then `throw` on a
-    missing required field or `log()` the resolved value. A required input
-    that silently falls back to a default reviews or builds the wrong
-    thing — the most expensive failure a graph has, because it looks like
-    success.
+One ```json graph-ir fenced block in GRAPH.md. `graph-run` compiles it
+mechanically, so the spec cannot drift from the executor. **Never
+hand-edit a compiled `.graph.js`** — edit the IR and recompile. The
+compiler rejects, at compile time:
+
+- a node with no contract, or an unknown contract name
+- `verifyOver` that is not a field of the node's contract
+- an even panel (majority undefined) or a panel with no `verifyOver`
+- `mutates: true` with no `independent: true` node that `verifies` it
+- a node verifying itself, or a verifier not marked independent
+- `after`/`foreach`/`role` pointing at things that do not exist
+- `{{prev}}` with no `after` edge (hidden coupling)
+- planned agent calls exceeding `budget.maxNodes`, or no ceiling at all
+
+Those are structural. `/fluxpoint-graph:graph-audit` judges what is left:
+scoping, tier-vs-stakes, prompt quality.
+
+## Choosing a verification tier
+
+By stakes, never by habit. `schema-only` for cheap mechanical output whose
+consumer re-reads the source anyway. `harness` for anything claiming
+green. `skeptic:1` for low-severity claims. `panel:3` for findings that
+will cost someone real time. `panel:5` only for CRITICAL. Panels are odd
+so majority is defined; refuters are prompted to *refute*, default to
+refuted when uncertain, re-read the underlying code themselves, and run at
+low effort — cheap skeptics beat expensive believers.
+
+The expensive lesson: verification fan-out dominates cost. A three-finder
+review with `panel:3` on every finding is ~30 agent calls. Tier down and
+the same campaign costs a fraction with the same guarantees where they
+matter.
+
+## Never trust a self-report
+
+A node that writes to the tree may not certify its own work. Mark it
+`mutates: true` (which also worktree-isolates it) and give the gate to a
+node with `independent: true`, `verifies: "<id>"`, and a `haltWhen` on the
+real exit code. That node checks out the branch and re-runs the harness
+itself. This is a compiler-enforced invariant because it shipped as a bug
+once: the graph trusts exit codes it re-derived, not adjectives it was
+told.
 
 ## Canonical shapes
 
-- **Fan-out/verify** (review): dimensions → finders → per-finding refuter
-  panel. Odd panel, majority kills; refuters are prompted to refute, never
-  to confirm, and default to refuted when uncertain.
-- **Council** (design): N independent attempts from stated angles → judges
-  score → synthesize the winner, grafting the runners-up's best ideas.
-  For wide solution spaces; beats one-attempt-iterated.
+- **Fan-out/verify** (`templates/GRAPH.md`): dimensions → finders →
+  per-finding refuter panel. The default review campaign.
+- **Council → build → gate** (`templates/GRAPH.feature.md`): independent
+  designs from stated angles → one node judges them side by side
+  (`{{prev}}`, a justified barrier) → a mutator implements → an
+  independent node re-runs the harness → red-team.
 - **Advisor–orchestrator**: a planner node emits the work-list as a typed
-  contract (never prose); worker nodes execute it. The planner plans; it
-  does not also grade its own plan.
+  contract; worker nodes consume it. The planner never grades its own plan.
 - **Zone defense** (org graph): stable `agents/*.md` roles own domains —
-  red-team-reviewer owns the adversarial pass — and the work graph crosses
-  zones via `agentType`, not by re-prompting the zone's knowledge inline.
-- **Loop-until-dry**: unknown-size discovery ends after K consecutive
-  rounds finding nothing new, with a budget floor underneath.
+  `red-team-reviewer` owns the adversarial pass — referenced by
+  `agentType`, not re-prompted inline.
 - **Pipeline of loops**: each mutating node works one fluxpoint-loop slice
   — TDD, `--changed` green per edit, `--full` before returning. The graph
   sequences slices; it never replaces the gate.
 
+## Inputs, failure, budget
+
+Inputs are normalized by the generated code (object, JSON string, or bare
+string) and logged; required args throw. Declare optional inputs in
+`argDefaults` so a default is a stated decision, not a silent substitution
+— a wrong-target run looks exactly like a successful one, which makes it
+the most expensive failure a graph has.
+
+Failure is local: `onRed: drop+log` drops one item and says so; `halt`
+stops the campaign. Dead nodes land in provenance with a reason. Budget is
+a real ceiling (`budget.maxNodes` at compile time, `verifyFloorTokens` at
+run time), and anything skipped for budget is logged as UNVERIFIED. No
+silent caps.
+
 ## Running, repairing, evidence
 
-`/fluxpoint-graph:graph-run` compiles and executes; it is also the explicit
-authorization the Workflow tool requires. Watch with `/workflows`; never
-poll with sleep. Repair is targeted: fix the one red node (its prompt, its
-schema, or the code it touched), stop the run if still live, then re-invoke
-with `resumeFromRunId` — the unchanged prefix returns from cache and only
-the repaired node onward re-runs. Never restart a mostly-green graph from
-zero. Before diagnosing an empty result, read the run's `journal.jsonl` —
-it records what each node actually returned.
+`/fluxpoint-graph:graph-run` compiles, runs, and records. Watch with
+`/workflows`; never poll with sleep. Repair is targeted: fix the one red
+node in the IR, recompile, then re-invoke with `resumeFromRunId` — the
+unchanged prefix returns from cache and only the repaired node onward
+re-runs. Never restart a mostly-green graph from zero. Before diagnosing
+an empty result, read `journal.jsonl`.
 
-Every run appends a row to GRAPH.md's Evidence table: runId, nodes
-green/red, harness exit, verdicts. Graph green is not done. The campaign
-still exits through the loop-engineering ship pipeline — `harness.sh
---full`, red-team `VERDICT: SHIP`, the Merge policy in LOOP.md — and the
-Stop-hook DoD gate keeps final authority.
+Graph green is not done. The campaign still exits through the
+loop-engineering ship pipeline — `harness.sh --full`, red-team
+`VERDICT: SHIP`, the Merge policy in LOOP.md — and the Stop-hook DoD gate
+keeps final authority.
 
 ## Where the Workflow tool is unavailable
 
-Same GRAPH.md; compile the edges to parallel Agent-tool calls in a single
-message with the same schema-shaped prompts, sequence the stages yourself,
-and record in Evidence that the run was degraded: no journal, no cached
-resume. Do not silently downgrade — the Evidence row says which executor
-ran the graph.
+Same IR, same compiled script: run its nodes as parallel subagent calls
+with the same contracts, sequencing stages yourself, then record with
+`--executor degraded-subagents`. Do not silently downgrade — the Evidence
+row says which executor ran the graph.

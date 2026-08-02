@@ -1,8 +1,32 @@
-# fluxpoint-graph — design notes toward v0.2
+# fluxpoint-graph — design notes
 
 These notes record what the v0.1 smoke test proved and the redesign it
-points to. Not bound by the fluxpoint-loop conventions — the goal is the
+pointed to. Not bound by the fluxpoint-loop conventions — the goal is the
 best design, not symmetry with the loop plugin.
+
+## Status: recommendations 1–7 shipped in v0.2.0
+
+| # | Recommendation | Shipped as |
+|---|---|---|
+| 1 | Declarative graph IR | ```json graph-ir block in GRAPH.md + `scripts/compile-graph.py` |
+| 2 | Verification tiers | `verify: schema-only \| harness \| skeptic:N \| panel:N`, low-effort refuters, `verifyFloorTokens` |
+| 3 | No self-report gates | compile-time invariant: `mutates` requires an `independent` node that `verifies` it |
+| 4 | Named versioned contracts | `contracts/*.schema.json`, referenced by name, inlined at compile |
+| 5 | Provenance as build artifact | `scripts/record-run.py` → `runs/<runId>.json` + auto-appended Evidence row; `/graph-status` |
+| 6 | Org graph = real subagents | IR `roles` → `agentType`; `red-team-reviewer` wired in the feature campaign |
+| 7 | Budget declared and enforced | `budget.maxNodes` rejected at compile time; run-time verification floor logs what it skips |
+| 8 | Unify loop + graph into one plugin | **not done, deliberately** — see below |
+
+Recommendation 8 stays parked: merging the plugins changes install
+granularity for every consuming repo and would rewrite fluxpoint-loop's
+public surface (`LOOP.md` → `WORK.md`), which is a migration, not a
+refactor. The duplication it would remove is two settings snippets and
+some shared prose. Worth doing only if the two plugins start disagreeing
+about the ship pipeline; they do not today.
+
+Verified in v0.2: 22 compiler invariant tests (`tests/compile-test.py`),
+both canonical campaigns compile to syntactically valid Workflow scripts,
+and the provenance path writes a real artifact and Evidence row.
 
 ## What the smoke test established
 

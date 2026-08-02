@@ -19,7 +19,15 @@ sid="${sid:-nosession}"
 sd="$(fpl_state_dir)"
 dirty="$sd/$sid.dirty"
 counter="$sd/$sid.blocks"
-[ -f "$dirty" ] || exit 0
+# Two independent signals arm the gate. The PostToolUse marker records edits
+# that were later committed (git-clean but real work); fpl_code_dirty catches
+# everything the marker cannot see, because that hook only matches
+# Write|Edit|MultiEdit — source written through the Bash tool (cat >, sed -i,
+# git apply) would otherwise leave the gate disarmed and let the session stop
+# with the harness never run.
+if [ ! -f "$dirty" ] && ! fpl_code_dirty; then
+  exit 0
+fi
 mkdir -p "$sd"
 
 if [ ! -f scripts/harness.sh ]; then
@@ -43,6 +51,9 @@ ts="$(date -u +%FT%TZ)"
 if [ -z "$findings" ]; then
   printf 'PASS %s\n' "$ts" >"$sd/last-harness"
   rm -f "$dirty" "$counter"
+  if fpl_harness_modified; then
+    fpl_json_obj systemMessage "fluxpoint-loop: gate green, but scripts/harness.sh is itself modified or untracked in this working tree — this pass was produced by a changed contract. Review the harness diff before trusting it."
+  fi
   exit 0
 fi
 printf 'FAIL %s\n' "$ts" >"$sd/last-harness"

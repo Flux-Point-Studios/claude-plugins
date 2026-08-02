@@ -1,0 +1,21 @@
+{
+  "$id": "FindingsV1",
+  "type": "object",
+  "required": ["findings"],
+  "properties": {
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["file", "line", "claim", "failure_path", "severity"],
+        "properties": {
+          "file": { "type": "string", "minLength": 1 },
+          "line": { "type": "integer" },
+          "claim": { "type": "string", "minLength": 20 },
+          "failure_path": { "type": "string", "minLength": 20 },
+          "severity": { "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW"] }
+        }
+      }
+    }
+  }
+}

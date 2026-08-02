@@ -1,0 +1,21 @@
+{
+  "$id": "RedTeamV1",
+  "type": "object",
+  "required": ["verdict", "findings"],
+  "properties": {
+    "verdict": { "enum": ["SHIP", "BLOCK"] },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["severity", "finding", "exploit_path", "minimal_fix"],
+        "properties": {
+          "severity": { "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW"] },
+          "finding": { "type": "string" },
+          "exploit_path": { "type": "string" },
+          "minimal_fix": { "type": "string" }
+        }
+      }
+    }
+  }
+}
