@@ -153,6 +153,45 @@ def _irreversible(ir):
 
 probe("node", "irreversible", NODE_BASE, _irreversible)
 
+
+def _human(ir):
+    ir["nodes"][N].update(actor="human", release={
+        "instructions": "a person signs this one",
+        "proofContract": ir["nodes"][N]["contract"]})
+
+
+probe("node", "actor", NODE_BASE, _human)
+
+# release and wake are probed against a base that is already parked, so the
+# change measured is theirs rather than actor's leaking into both.
+PARK_BASE = copy.deepcopy(NODE_BASE)
+_human(PARK_BASE)
+WAKE = {"check": "cardano-cli query tip --mainnet", "everyMinutes": 30}
+probe("node", "release", PARK_BASE,
+      lambda ir: ir["nodes"][N]["release"].update(
+          instructions="materially different instructions for the blocked human"))
+probe("node", "wake", PARK_BASE,
+      lambda ir: ir["nodes"][N].update(wake=copy.deepcopy(WAKE)))
+
+# ---------------------------------------------------- release / wake fields
+probe("release", "instructions", PARK_BASE,
+      lambda ir: ir["nodes"][N]["release"].update(
+          instructions="the exact text the blocked human will read"))
+# proofContract must agree with the node's contract, so moving it alone is
+# a compile error — which is the effect, and the reason the field is not
+# merely decorative.
+probe("release", "proofContract", PARK_BASE,
+      lambda ir: ir["nodes"][N]["release"].update(proofContract="DesignV1"))
+
+WAKE_BASE = copy.deepcopy(PARK_BASE)
+WAKE_BASE["nodes"][N]["wake"] = copy.deepcopy(WAKE)
+probe("wake", "check", WAKE_BASE,
+      lambda ir: ir["nodes"][N]["wake"].update(check="cardano-cli query utxo --mainnet"))
+probe("wake", "everyMinutes", WAKE_BASE,
+      lambda ir: ir["nodes"][N]["wake"].update(everyMinutes=180))
+probe("wake", "deadline", WAKE_BASE,
+      lambda ir: ir["nodes"][N]["wake"].update(deadline="2030-06-01T00:00:00Z"))
+
 # ----------------------------------------------------------- repeat fields
 REPEAT_BASE = copy.deepcopy(NODE_BASE)
 REPEAT_BASE["nodes"][N].update(
@@ -204,9 +243,11 @@ probed = {
         "id", "phase", "prompt", "contract", "role", "effort", "model", "agentType",
         "foreach", "after", "mutates", "independent", "verifies", "verify",
         "verifyOver", "expectItems", "haltWhen", "haltReason", "onRed",
-        "isolation", "repeat", "irreversible",
+        "isolation", "repeat", "irreversible", "actor", "release", "wake",
     },
     "repeat": {"untilDryRounds", "maxRounds", "dedupeBy"},
+    "release": {"instructions", "proofContract"},
+    "wake": {"check", "everyMinutes", "deadline"},
     "budget": {"maxNodes", "verifyFloorTokens", "nodeFloorTokens"},
     "IR": {
         "version", "name", "campaign", "budget", "defaults", "roles", "lists",
@@ -215,6 +256,7 @@ probed = {
 }
 for level, registry in [
     ("node", cg.NODE_FIELDS), ("repeat", cg.REPEAT_FIELDS),
+    ("release", cg.RELEASE_FIELDS), ("wake", cg.WAKE_FIELDS),
     ("budget", cg.BUDGET_FIELDS), ("IR", cg.IR_FIELDS),
 ]:
     missing = registry - probed[level]

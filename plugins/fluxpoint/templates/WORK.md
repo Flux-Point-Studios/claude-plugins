@@ -19,6 +19,10 @@ needs a row in Evidence.
 - [ ] Diff carries no single-caller abstractions and no dead code
 
 ## Plan
+<!-- `- [ ]` todo · `- [x]` done · `- [~] <item> — blockedOn: <who>`
+     parked on someone who is not the loop. The loop skips `[~]`;
+     re-picking a blocked slice spends the iteration budget on nothing. -->
+
 Loop slices, worked one per iteration per `WORK_PROMPT.md`.
 
 - [ ] <failing test for the first behavior>

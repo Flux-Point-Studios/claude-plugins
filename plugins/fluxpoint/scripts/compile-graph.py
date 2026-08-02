@@ -43,8 +43,11 @@ NODE_FIELDS = {
     "id", "phase", "prompt", "contract", "role", "effort", "model", "agentType",
     "foreach", "after", "mutates", "independent", "verifies", "verify",
     "verifyOver", "expectItems", "haltWhen", "haltReason", "onRed", "isolation",
-    "repeat", "irreversible",
+    "repeat", "irreversible", "actor", "release", "wake",
 }
+ACTORS = {"agent", "human", "third-party"}
+RELEASE_FIELDS = {"instructions", "proofContract"}
+WAKE_FIELDS = {"check", "everyMinutes", "deadline"}
 REPEAT_FIELDS = {"untilDryRounds", "maxRounds", "dedupeBy"}
 BUDGET_FIELDS = {"maxNodes", "verifyFloorTokens", "nodeFloorTokens"}
 ROLE_FIELDS = {"agentType", "effort", "model"}
@@ -131,6 +134,8 @@ def validate(ir, contracts):
         where = f"node '{nid}'"
         f += _unknown(where, n, NODE_FIELDS)
         f += _unknown(f"{where} repeat", n.get("repeat"), REPEAT_FIELDS)
+        f += _unknown(f"{where} release", n.get("release"), RELEASE_FIELDS)
+        f += _unknown(f"{where} wake", n.get("wake"), WAKE_FIELDS)
         if not IDENT.match(str(n.get("id", ""))):
             f.append(f"{where}: id must be lowercase kebab-case")
         if nid in seen:
@@ -284,6 +289,65 @@ def validate(ir, contracts):
                     f"{where}: mutates the tree but no node with independent:true "
                     f"verifies:'{nid}' — a mutator may not certify its own work"
                 )
+        # Actors. The engine had two responses to a node it could not
+        # complete — halt the campaign, or drop the item and march on with a
+        # null — and no third state for "this one is blocked, work the other
+        # branches". Every real delivery has nodes only a human or a third
+        # party can execute.
+        actor = n.get("actor", "agent")
+        if actor not in ACTORS:
+            f.append(f"{where}: actor must be one of {', '.join(sorted(ACTORS))}")
+        if actor != "agent":
+            rel = n.get("release")
+            if not isinstance(rel, dict):
+                f.append(
+                    f"{where}: actor '{actor}' needs a release block — a node no "
+                    f"agent can run is a dead stop unless it says what unblocks it"
+                )
+            else:
+                if not str(rel.get("instructions", "")).strip():
+                    f.append(
+                        f"{where}: release.instructions required — this text is "
+                        f"the entire message the blocked human gets"
+                    )
+                pc = rel.get("proofContract")
+                if not pc:
+                    f.append(f"{where}: release.proofContract required")
+                elif pc not in contracts:
+                    f.append(f"{where}: release.proofContract '{pc}' is not a known contract")
+                elif c and pc != c:
+                    f.append(
+                        f"{where}: release.proofContract '{pc}' differs from the "
+                        f"node's contract '{c}' — the node yields exactly what the "
+                        f"operator pastes, so downstream would be promised a shape "
+                        f"the release can never produce"
+                    )
+            for bad in ("mutates", "irreversible", "foreach", "repeat", "verify"):
+                if n.get(bad) and not (bad == "verify" and n.get(bad) == "schema-only"):
+                    f.append(
+                        f"{where}: actor '{actor}' cannot be combined with "
+                        f"'{bad}' — no agent runs this node, so there is nothing "
+                        f"for it to isolate, fan out, or verify"
+                    )
+        wake = n.get("wake")
+        if wake is not None:
+            if actor == "agent":
+                f.append(
+                    f"{where}: wake is only meaningful with actor human or "
+                    f"third-party — an agent node is not waiting on anyone"
+                )
+            if not isinstance(wake, dict):
+                f.append(f"{where}: wake must be an object")
+            else:
+                if not str(wake.get("check", "")).strip():
+                    f.append(
+                        f"{where}: wake.check required — a poll with no predicate "
+                        f"never fires, and the node waits forever"
+                    )
+                ev = wake.get("everyMinutes")
+                if not isinstance(ev, int) or ev < 1:
+                    f.append(f"{where}: wake.everyMinutes must be an integer >= 1")
+
         # Irreversible effects. `mutates` buys worktree isolation, which is
         # real containment for a filesystem write and none at all for a chain
         # write — the same marker covering "edit a test file" and "mint a
@@ -376,6 +440,10 @@ def plan_node_count(ir):
     lists = ir.get("lists") or {}
     total = 0
     for n in ir.get("nodes") or []:
+        # A node no agent runs costs no agent calls. Pricing it would make
+        # the ceiling bite on work that never spawns.
+        if n.get("actor", "agent") != "agent":
+            continue
         fan = len(lists.get(n.get("foreach"), [None])) if n.get("foreach") else 1
         per_round = fan
         m = TIER.match(str(n.get("verify", "schema-only")))
@@ -535,6 +603,22 @@ def emit(ir, contracts):
         for name, items in lists.items():
             a(f"const {list_var(name)} = {json.dumps(items, indent=2)}")
         a("")
+    parked = [n for n in nodes if n.get("actor", "agent") != "agent"]
+    if parked:
+        a("// --- actors: nodes no agent can run ---")
+        a("// Without this the engine had two answers for a node it could not")
+        a("// complete: halt everything, or drop it and continue with a null.")
+        a("// Neither is 'this one is blocked, work the other branches'.")
+        a("if (!A._releases || typeof A._releases !== 'object')")
+        a("  throw new Error('this graph has human or third-party nodes but no "
+          "releases map — launch it with /fluxpoint:graph-run, which loads "
+          ".claude/fluxpoint/releases into args._releases')")
+        a("const RELEASES = A._releases")
+        a("// Blocked is inherited: handing a dependent the literal null of a")
+        a("// node nobody ran would report a failure where there is a wait.")
+        a("const BLOCKED = new Set()")
+        a("const WAITS = []")
+        a("")
     if any(n.get("irreversible") for n in nodes):
         a("// --- irreversible effects: once-only ledger ---")
         a("// Resume is the flagship recovery path and also the operation that")
@@ -589,9 +673,13 @@ def emit(ir, contracts):
     a("let INCOMPLETE = false")
     a("function summary(outcome) {")
     a("  const final = outcome === 'COMPLETE' && INCOMPLETE ? 'INCOMPLETE' : outcome")
-    ledger_out = ", ledger: LEDGER_WRITES" if any(n.get("irreversible") for n in nodes) else ""
+    extra = ""
+    if any(n.get("irreversible") for n in nodes):
+        extra += ", ledger: LEDGER_WRITES"
+    if parked:
+        extra += ", blocked: [...BLOCKED], waits: WAITS"
     a("  return { campaign, outcome: final, results: RESULTS, provenance: PROVENANCE,")
-    a(f"           contracts: CONTRACTS{ledger_out} }}")
+    a(f"           contracts: CONTRACTS{extra} }}")
     a("}")
     a("")
     budget_cfg = ir.get("budget") or {}
@@ -679,6 +767,43 @@ def emit(ir, contracts):
     return "\n".join(L) + "\n"
 
 
+def emit_parked(n):
+    """A node no agent can run: released from a file, or reported blocked.
+
+    Emits no spawn at all. The campaign continues past it rather than
+    halting, because the branches that do not depend on this node are still
+    workable — and it is marked INCOMPLETE, so a run carrying a blocked node
+    can never be read as a finished one.
+    """
+    nid = n["id"]
+    var = "n_" + nid.replace("-", "_")
+    rel = n.get("release") or {}
+    actor = n.get("actor")
+    instructions = str(rel.get("instructions", ""))
+    L = []
+    a = L.append
+    a(f"const rel_{var} = RELEASES[{js_str(nid)}] || null")
+    a(f"let {var} = null")
+    a(f"if (rel_{var}) {{")
+    a(f"  {var} = rel_{var}.proof")
+    a(f"  note({js_str(nid)}, 'RELEASED', `released by ${{rel_{var}.by || 'operator'}}`)")
+    a(f"  log(`{nid}: released — the {actor} step is done`)")
+    a("} else {")
+    a(f"  note({js_str(nid)}, 'BLOCKED', {js_str(instructions)})")
+    a(f"  log(`BLOCKED at {nid} ({actor}): ` + {js_str(instructions)})")
+    a(f"  BLOCKED.add({js_str(nid)})")
+    a("  INCOMPLETE = true")
+    w = n.get("wake")
+    if w:
+        fields = [f"node: {js_str(nid)}", f"check: {js_str(w['check'])}",
+                  f"everyMinutes: {int(w['everyMinutes'])}"]
+        if w.get("deadline"):
+            fields.append(f"deadline: {js_str(str(w['deadline']))}")
+        a(f"  WAITS.push({{ {', '.join(fields)} }})")
+    a("}")
+    return "\n".join(L)
+
+
 def emit_node(n, ir):
     nid = n["id"]
     var = "n_" + nid.replace("-", "_")
@@ -704,7 +829,23 @@ def emit_node(n, ir):
       f"{', independent' if n.get('independent') else ''}) =====")
     a(f"phase({js_str(phase)})")
 
-    if n.get("repeat"):
+    # Blocked is inherited down the `after` chain. Handing a dependent the
+    # literal null of a node nobody ran would report a failure where there
+    # is only a wait, and the campaign would argue with itself about why.
+    has_parked = any(o.get("actor", "agent") != "agent" for o in ir["nodes"])
+    guard = has_parked and n.get("after") and n.get("actor", "agent") == "agent"
+    if guard:
+        a(f"if (BLOCKED.has({js_str(n['after'])})) {{")
+        a(f"  note({js_str(nid)}, 'BLOCKED', 'blocked on {n['after']}')")
+        a(f"  log(`BLOCKED at {nid}: inherited from {n['after']}`)")
+        a(f"  BLOCKED.add({js_str(nid)})")
+        a("  INCOMPLETE = true")
+        a(f"  RESULTS[{js_str(nid)}] = null")
+        a("} else {")
+
+    if n.get("actor", "agent") != "agent":
+        a(emit_parked(n))
+    elif n.get("repeat"):
         a(emit_repeat(n, ir, prompt, phase, panel, over))
     elif n.get("foreach"):
         lst = list_var(n["foreach"])
@@ -811,6 +952,8 @@ def emit_node(n, ir):
             a(f"log(`{nid}: ${{{var}.length}} item(s) survived {tier}`)")
 
     a(f"RESULTS[{js_str(nid)}] = {var}")
+    if guard:
+        a("}")
     return "\n".join(L)
 
 

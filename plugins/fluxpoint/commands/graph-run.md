@@ -21,8 +21,18 @@ Workflow tool requires.
    `python3 "$ROOT/scripts/compile-graph.py" <graph> -o .claude/workflows/<name>.graph.js`
    The output is generated code. Never hand-edit it; edit the IR and
    recompile, or the spec and the executor start lying to each other.
-4. If the IR contains any `irreversible` node, load the once-only ledger
-   first — the compiled graph refuses to start without it:
+4. Load whatever state the graph refuses to start without.
+   If any node has `actor: human` or `actor: third-party`:
+   ```
+   python3 "$ROOT/scripts/release.py" --load --campaign "<the IR's campaign line>"
+   ```
+   into `args._releases`. A node with no release parks: the run reports it
+   BLOCKED with its instructions, marks itself INCOMPLETE, and works the
+   branches that do not depend on it. That is the expected outcome, not a
+   failure — clear it with `/fluxpoint:release <node>`, never by inventing
+   a release.
+   If the IR contains any `irreversible` node, load the once-only ledger —
+   the compiled graph refuses to start without it:
    ```
    python3 "$ROOT/scripts/ledger.py" --load --campaign "<the IR's campaign line>"
    ```

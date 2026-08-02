@@ -137,6 +137,42 @@ def main():
     except Exception as e:  # noqa: BLE001 - never lose the Evidence row over this
         print(f"record-run: ledger append failed: {e}", file=sys.stderr)
 
+    # 1b. Park the waits and raise anything that needs a person. A campaign
+    # that parks instead of halting is only an improvement if somebody finds
+    # out; otherwise it is a quieter failure than the halt it replaced.
+    campaign = summary.get("campaign", "")
+    blocked_nodes = [p.get("node") for p in prov if p.get("status") == "BLOCKED"]
+    try:
+        import inbox as _inbox
+        for p in prov:
+            if p.get("status") == "BLOCKED":
+                _inbox.add(args.root, "blocked", p.get("node"), campaign,
+                           p.get("detail") or "waiting on a person")
+        if outcome == "CONFIRM-REQUIRED":
+            refused = [p.get("node") for p in prov if p.get("status") == "REFUSED"]
+            _inbox.add(args.root, "confirm-required", refused[0] if refused else "",
+                       campaign,
+                       "an irreversible node refused to fire without being named "
+                       "in confirm")
+        waits = summary.get("waits") or []
+        if waits:
+            wdir = os.path.join(args.root, ".claude", "fluxpoint", "waits")
+            os.makedirs(wdir, exist_ok=True)
+            for w in waits:
+                rec = dict(w)
+                rec["campaign"] = campaign
+                # The resume point rides with the wait: a poller that knows
+                # the condition cleared but not which run to continue has
+                # moved the problem rather than solved it.
+                rec["runId"] = args.run_id
+                rec.setdefault("lastChecked", 0)
+                safe = "".join(ch if ch.isalnum() or ch in "-_" else "-"
+                               for ch in f"{campaign}.{w.get('node','')}")[:120]
+                with open(os.path.join(wdir, f"{safe}.json"), "w") as fh:
+                    json.dump(rec, fh, indent=2)
+    except Exception as e:  # noqa: BLE001
+        print(f"record-run: inbox/waits update failed: {e}", file=sys.stderr)
+
     # 1. Durable provenance artifact.
     os.makedirs(args.state_dir, exist_ok=True)
     art = os.path.join(args.state_dir, f"{args.run_id}.json")
@@ -163,6 +199,9 @@ def main():
     claim = f"graph run: {ok} node(s) OK, {dead} dead, {findings} produced item(s)"
     if blocked:
         claim += "; red-team returned BLOCK — not shippable"
+    if blocked_nodes:
+        claim += (f"; {len(blocked_nodes)} node(s) BLOCKED on a person "
+                  f"({', '.join(blocked_nodes[:3])})")
     if skipped:
         claim += f"; {skipped} SKIPPED on budget — coverage incomplete"
     for p in partial:

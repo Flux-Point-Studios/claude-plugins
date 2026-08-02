@@ -38,6 +38,17 @@ else
   echo "- Harness: scripts/harness.sh is absent, so the DoD gate is dormant in this repo. The /fluxpoint:init command scaffolds it."
 fi
 
+# What is waiting on a person, first. A fresh context is re-oriented with
+# the goal and the Definition of Done but not with what is blocking, which
+# is how a parked campaign sits unnoticed for days.
+inbox_py="$(dirname "$0")/inbox.py"
+if [ -f "$inbox_py" ]; then
+  open_items="$(python3 "$inbox_py" --count 2>/dev/null || echo 0)"
+  if [ "${open_items:-0}" -gt 0 ] 2>/dev/null; then
+    echo "- BLOCKED ON YOU: ${open_items} item(s) waiting on a person. Run /fluxpoint:status for the list, /fluxpoint:release <node> to clear one."
+  fi
+fi
+
 # Latest graph run, if this repo runs campaigns.
 runs="$sd/runs"
 if [ -d "$runs" ]; then

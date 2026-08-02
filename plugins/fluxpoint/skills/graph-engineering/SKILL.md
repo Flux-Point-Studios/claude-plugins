@@ -73,6 +73,66 @@ compiler rejects, at compile time:
 Those are structural. `/fluxpoint:graph-audit` judges what is left:
 scoping, tier-vs-stakes, prompt quality.
 
+## Work nobody on the graph can do
+
+The engine used to have two answers for a node it could not complete: halt
+the whole campaign, or drop the item and continue with a `null`. Neither is
+*"this one is blocked, work the other branches"* — and real deliveries
+guarantee that third case. 2-of-3 hardware signing. A withdrawal only an
+external counterparty can perform. A 72-hour governance timelock. An
+operator wallet with nothing spendable until someone tops it up.
+
+Mark those `actor: human` or `actor: third-party` with a `release` block:
+
+```json
+{ "id": "sign", "actor": "human", "contract": "HarnessCheckV1",
+  "release": { "instructions": "Sign with 2 of the 3 hardware keys and paste the cardano-cli output.",
+               "proofContract": "HarnessCheckV1" },
+  "wake": { "check": "cardano-cli query tip --mainnet", "everyMinutes": 30 } }
+```
+
+The compiler emits **no spawn** for that node. It reads a release file; if
+there is none it reports `BLOCKED` with those instructions, sets the run
+`INCOMPLETE`, and keeps going. `instructions` is the entire message the
+blocked person gets, so write it for someone with no context — the
+compiler rejects an empty one, and rejects a `proofContract` that differs
+from the node's contract, because the node yields exactly what was pasted.
+
+Four consequences worth knowing:
+
+- **Blocked is inherited.** A node whose `after` is blocked is blocked too,
+  not handed the `null` that reads like a failure. A dependent chain parks
+  as a unit; unrelated branches finish.
+- **A parked run can never read COMPLETE.** It is `INCOMPLETE`, and the
+  Evidence row names the blocked nodes.
+- **Releases are proof, not assent.** `/fluxpoint:release` validates what
+  the operator pastes against `proofContract` and refuses an adjective. The
+  campaign resumes on the strength of that file; one that resumes on
+  recollection will eventually resume on a mistake. Never write a release
+  on someone's behalf — a fabricated release is strictly worse than a
+  stalled campaign, because the stall is visible.
+- **Nothing is waiting silently.** Every block, expired wake, and refused
+  confirmation lands in `.claude/fluxpoint/inbox.jsonl`;
+  `/fluxpoint:status` leads with it and SessionStart injects the count.
+
+`wake` parks a predicate rather than a person: `scripts/wake-check.sh`,
+driven by a Routine or by `loop.sh`, runs the due checks and reports which
+campaigns can resume. It deliberately does not resume them itself —
+re-invoking a graph spends budget and may sit upstream of an irreversible
+node, so a human or an explicitly configured Routine makes that call.
+
+In loop mode the same idea is a Plan marker: `- [~] <item> — blockedOn:
+<who>`, which the loop skips. Without it, step 1's "pick the first
+unchecked item" re-picks a human-blocked slice every iteration and a
+72-hour wait spends the entire iteration budget in minutes.
+
+**This is not a scheduler, on purpose.** There is no ready-set, no
+topological sort, no `needs`/`priority`. Declaration order plus
+park-and-skip-dependents covers a largely serial critical path with
+independent slices hanging off it, which is what campaigns actually look
+like. A DAG scheduler is the right answer to a problem no graph here has
+had yet; build it when one does, not before.
+
 ## Effects that cannot be undone
 
 `mutates: true` buys `isolation: 'worktree'`. That is real containment for

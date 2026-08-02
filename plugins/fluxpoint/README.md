@@ -24,12 +24,14 @@ does.
   `proof-guard.py` (proof-strength ratchet); `plutus-budget.py` (on-chain
   size and execution-unit limits); `pair-guard.py` (relation gate over
   declared artifact pairs); `ledger.py` (once-only guard for
-  irreversible nodes); `migrate.py` (pre-1.0 migration,
+  irreversible nodes); `release.py`, `inbox.py`, `wake-check.sh`
+  (the park layer); `migrate.py` (pre-1.0 migration,
   plan/apply/finalize).
 - `contracts/` — versioned named schemas (`FindingsV1`, `VerdictV1`,
   `HarnessCheckV1`, `DesignV1`, `SliceV1`, `RedTeamV1`).
 - `commands/` — `/fluxpoint:init`, `:status`, `:migrate`, `:red-team`,
-  `:proof-audit`, `:graph-design`, `:graph-run`, `:graph-audit`.
+  `:proof-audit`, `:graph-design`, `:graph-run`, `:graph-audit`,
+  `:release`.
 - `agents/` — `red-team-reviewer` (adversarial diff review),
   `graph-auditor` (semantic review of a campaign IR), `proof-auditor`
   (did the verification get weaker, not just greener).
@@ -112,6 +114,23 @@ is to evaluate the two together, making the relation itself an exit code —
 that is the real check, and `--list` names every pair that lacks one rather
 than letting a half-checked relation read as covered. Only the consuming
 repo can write parity vectors; the plugin supplies the slot.
+
+## Blocked is a state
+
+A node no agent can run — 2-of-3 signing, a third party's withdrawal, a
+72h timelock — used to leave the engine two options: halt everything, or
+drop it and continue with a `null`. Neither is "work the other branches".
+
+`actor: human` / `actor: third-party` with a `release` block emits no spawn
+at all. Absent a release the node reports BLOCKED with the instructions its
+author wrote, the run goes INCOMPLETE and continues, and dependents inherit
+BLOCKED rather than a null that reads like a failure. `/fluxpoint:release`
+validates the operator's proof against the node's `proofContract` and
+refuses an adjective — the campaign resumes on that file, so it is not a
+formality. Every block, expired `wake` deadline and refused confirmation
+lands in an inbox that `/fluxpoint:status` leads with and SessionStart
+counts, because a campaign that parks quietly is a worse failure than one
+that halts loudly. Deliberately not a DAG scheduler.
 
 ## Verified work
 
