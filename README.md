@@ -253,9 +253,12 @@ Three mechanisms, in `scripts/harness.sh` and `scripts/proof-guard.py`:
    budgets, since a proved-correct validator that cannot be submitted is
    not done.
 
-The ratchet is deliberately a floor. Gutting an Aiken negative test to
-`True` leaves every count unchanged and reports green; that blind spot is
-documented, tested for, and is exactly why the second pass exists.
+Gutting a test adds no escape hatch, so Aiken tests that cannot fail — a
+bare boolean body, a self-comparison, an empty body — are counted
+structurally rather than by line match, with false positives treated as
+worse than misses. The ratchet is still deliberately a floor: a theorem
+that lost a conjunct, or a property proved about an unreachable state,
+leaves every count unchanged, which is why the second pass exists.
 
 ## Treating WORK.md as untrusted input
 

@@ -111,9 +111,12 @@ proved one.
   that cannot fail, unproved surface, on-chain budgets, solver `unknown`
   read as success.
 
-The ratchet is a floor, not a ceiling — gutting an Aiken negative test to
-`True` leaves every count unchanged and reports green, which is precisely
-why the semantic pass exists.
+It also counts Aiken tests that cannot fail — a body that is a bare
+boolean, a self-comparison, or empty — because gutting a test weakens a
+suite without adding any hatch for a line scan to find. Only unambiguous
+cases are flagged; a false positive would train people to ignore the
+ratchet. The ratchet remains a floor, not a ceiling: a theorem that lost a
+conjunct still needs the semantic pass.
 
 ## Migrating from the split plugins
 
