@@ -56,6 +56,11 @@ def main():
     prov = summary.get("provenance") or []
     ok = sum(1 for p in prov if p.get("status") == "OK")
     dead = sum(1 for p in prov if p.get("status") == "DEAD")
+    # Work declined for budget is neither success nor failure, and must never
+    # be filed as either — a skipped node means the campaign covered less
+    # ground than it set out to.
+    skipped = sum(1 for p in prov if p.get("status") == "SKIPPED")
+    partial = [p for p in prov if p.get("status") == "INCOMPLETE"]
     outcome = summary.get("outcome", "UNKNOWN")
     findings = count_items(summary.get("results"))
     ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M")
@@ -72,6 +77,7 @@ def main():
                 "outcome": outcome,
                 "nodesOk": ok,
                 "nodesDead": dead,
+                "nodesSkipped": skipped,
                 "findings": findings,
                 "harnessExit": args.harness,
                 "redTeam": args.red_team,
@@ -83,6 +89,10 @@ def main():
 
     # 2. Evidence row, appended under whichever table header the file carries.
     claim = f"graph run: {ok} node(s) OK, {dead} dead, {findings} verified finding(s)"
+    if skipped:
+        claim += f"; {skipped} SKIPPED on budget — coverage incomplete"
+    for p in partial:
+        claim += f"; {p.get('node')} INCOMPLETE — {p.get('detail') or 'did not run to exhaustion'}"
     proof = f"harness exit {args.harness}; red-team {args.red_team}; executor {args.executor}"
     row = f"| {ts} | {args.run_id} | {outcome} | {claim} | {proof} |"
     legacy_row = (

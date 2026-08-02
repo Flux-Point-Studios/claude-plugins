@@ -29,9 +29,17 @@ command.
      node with `independent: true` and `verifies: "<id>"` must re-derive
      the verdict. The compiler enforces this; do not try to talk it out
      of the rule.
-   - `budget.maxNodes` set to the real worst-case ceiling, `foreach`
-     lists named, `onRed` policy per node, `haltWhen` where a numeric
-     result should stop the campaign.
+   - `budget.maxNodes` set to the real worst-case ceiling (the compiler
+     prices discovery rounds into it), `nodeFloorTokens` where work
+     fan-out should stop before exhaustion, `foreach` lists named,
+     `onRed` policy per node, `haltWhen` where a numeric result should
+     stop the campaign.
+   - where the size of the work is unknown rather than given, a `repeat`
+     block instead of a fixed fan-out: `untilDryRounds`, `maxRounds`, and
+     a `dedupeBy` key that is neither so coarse it collapses distinct
+     items nor so fine that a reworded restatement reads as new. Put
+     `{{seen}}` in the prompt so each round works new ground. See
+     `templates/WORK.discovery.md`.
 5. Compile-check until clean:
    `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compile-graph.py" WORK.md --check`
    Its findings are structural. Fix the IR — never weaken a contract,

@@ -44,6 +44,17 @@ contains "unified table: claim column" "1 node(s) OK, 1 dead, 2 verified finding
 contains "unified table: proof column" "harness exit 0; red-team SHIP" WORK.md
 check "provenance artifact written" "0" "$([ -f .claude/fluxpoint/runs/wf_u1.json ] && echo 0 || echo 1)"
 
+# --- 2b. budget-skipped nodes are reported, never filed as success ---
+newrepo
+cp "$PLUGIN/templates/WORK.md" WORK.md
+SKIPPED='{"campaign":"c","outcome":"COMPLETE","results":{},"provenance":[{"node":"a","status":"OK"},{"node":"b","status":"SKIPPED","detail":"budget floor"}]}'
+printf '%s' "$SKIPPED" | python3 "$PLUGIN/scripts/record-run.py" --run-id wf_sk1 >/dev/null
+contains "skipped node: flagged in Evidence claim" "1 SKIPPED on budget — coverage incomplete" WORK.md
+check "skipped node: not counted as OK" "1" \
+  "$(python3 -c "import json;print(json.load(open('.claude/fluxpoint/runs/wf_sk1.json'))['nodesOk'])")"
+check "skipped node: counted in artifact" "1" \
+  "$(python3 -c "import json;print(json.load(open('.claude/fluxpoint/runs/wf_sk1.json'))['nodesSkipped'])")"
+
 # --- 3. legacy 7-column GRAPH.md table still works (mid-migration repo) ---
 newrepo
 { printf '## Evidence\n\n'

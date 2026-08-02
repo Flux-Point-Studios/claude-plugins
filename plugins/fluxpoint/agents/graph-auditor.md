@@ -40,7 +40,16 @@ Audit checklist, in priority order:
 - Failure honesty: `onRed: drop+log` where the campaign is meaningless
   without that node; a budget ceiling set so high it is not a ceiling; a
   verification floor that will silently leave the most important claims
-  unverified; no halt condition a human can name.
+  unverified; a node floor so high the campaign will skip work on its
+  first round, or so low it will never protect anything; no halt
+  condition a human can name.
+- Discovery honesty: a fixed fan-out where the size of the work is
+  genuinely unknown and a `repeat` block belongs; a `maxRounds` so low the
+  sweep will predictably end INCOMPLETE and be read as exhaustive anyway;
+  a `dedupeBy` key too coarse (collapsing distinct findings) or too fine
+  (`claim` alone, so a reworded restatement counts as new and the loop
+  never goes dry); a `{{seen}}`-less discovery prompt that will re-find
+  the same items every round.
 - Composition: graph output treated as overriding the Stop-hook DoD gate;
   a campaign that ends at "PR opened" rather than merged or explicitly
   parked; red-team verdict collected but not gating anything.

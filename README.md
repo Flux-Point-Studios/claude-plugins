@@ -40,11 +40,11 @@ restarts.
 | Piece | Mechanism | Behavior |
 |---|---|---|
 | Spec | ```json graph-ir block in `WORK.md` | The single source of truth: nodes with named contracts, `foreach`/`after` edges, a verification tier per node, budget ceiling, failure policy. Prose explains intent; the IR decides what runs. |
-| Compiler | `scripts/compile-graph.py` (python3, stdlib) | Compiles the IR to a Workflow script **deterministically — no model transcribes it**, so spec and executor cannot drift. Rejects unsound graphs at compile time: missing/unknown contracts, even panels, `verifyOver` that is not a contract field, dangling `after`/`foreach`/`role`, `{{prev}}` without an edge, planned fan-out over `budget.maxNodes`, and any mutator with no independent node verifying it. |
+| Compiler | `scripts/compile-graph.py` (python3, stdlib) | Compiles the IR to a Workflow script **deterministically — no model transcribes it**, so spec and executor cannot drift. Rejects unsound graphs at compile time: missing/unknown contracts, even panels, `verifyOver` that is not a contract field, dangling `after`/`foreach`/`role`, `{{prev}}` without an edge, a discovery loop with no dry rule/ceiling/dedup key, planned fan-out over `budget.maxNodes` (rounds priced in), and any mutator with no independent node verifying it. |
 | Executor | Claude Code Workflow tool | `/fluxpoint:graph-run` compiles, runs, and records. Generated code carries the guarantees: input normalization, worktree isolation for mutators, refuter panels that attack rather than confirm, a budget floor that logs whatever it leaves unverified. On partial failure, `resumeFromRunId` re-runs only the repaired node onward. |
 | Evidence | `scripts/record-run.py`, `/fluxpoint:status` | Provenance is a build artifact: `runs/<runId>.json` plus an auto-appended Evidence row (outcome, nodes OK/dead, findings, harness exit, red-team verdict). Nothing is remembered by hand. |
 | Review | `graph-auditor` agent, `/fluxpoint:graph-audit` | Semantic adversarial pass — stakes-vs-tier mismatches, vacuous contracts, context packets that paste transcripts, hidden coupling, ceilings that are not ceilings. Structure is the compiler's job. Ends `VERDICT: SOUND` or `VERDICT: REWIRE`. |
-| Method | `graph-engineering` skill + templates | Loop-vs-graph rule, five primitives → bindings, tier selection by stakes, canonical shapes: fan-out/verify (`WORK.md`), council → build → independently gated (`WORK.feature.md`), advisor–orchestrator, zone defense. |
+| Method | `graph-engineering` skill + templates | Loop-vs-graph rule, five primitives → bindings, tier selection by stakes, canonical shapes: fan-out/verify (`WORK.md`), council → build → independently gated (`WORK.feature.md`), loop-until-dry discovery (`WORK.discovery.md`), advisor–orchestrator, zone defense. |
 | Composition | shares the loop contract | Mutating nodes work loop slices; `scripts/harness.sh` and the Stop-hook DoD gate keep final authority. Graph green ≠ done — campaigns still exit through the ship pipeline. |
 
 The invariant worth naming: **a node that writes to the tree may not
@@ -247,8 +247,8 @@ plugins/fluxpoint/
 │                       graph-design.md, graph-run.md, graph-audit.md
 ├── agents/             red-team-reviewer.md, graph-auditor.md
 ├── skills/             loop-engineering/SKILL.md, graph-engineering/SKILL.md
-├── templates/          harness.sh, WORK.md, WORK.feature.md, WORK_PROMPT.md,
-│                       loop.sh, settings.snippet.json
+├── templates/          harness.sh, WORK.md, WORK.feature.md, WORK.discovery.md,
+│                       WORK_PROMPT.md, loop.sh, settings.snippet.json
 ├── tests/              gate-test.sh, compile-test.py, unify-test.sh
 └── DESIGN-NOTES.md
 ```

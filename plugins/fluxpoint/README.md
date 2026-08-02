@@ -30,9 +30,9 @@ does.
 - `skills/` — `loop-engineering` (driver selection, conditions, the gate),
   `graph-engineering` (escalation rule, primitives, tiers, shapes).
 - `templates/` — `harness.sh` contract, `WORK.md`, `WORK.feature.md`,
-  `WORK_PROMPT.md`, `loop.sh`, settings snippet.
-- `tests/` — `gate-test.sh` (7 gate cases), `compile-test.py` (22 compiler
-  invariants).
+  `WORK.discovery.md`, `WORK_PROMPT.md`, `loop.sh`, settings snippet.
+- `tests/` — `gate-test.sh` (7 gate cases), `compile-test.py` (45 compiler
+  invariants), `unify-test.sh` (20 state and compatibility cases).
 
 ## The two contracts
 
@@ -54,6 +54,14 @@ Evidence table both modes append to.
   source written through the Bash tool.
 - Compiled `.graph.js` files are build output. Never hand-edit them; edit
   the IR and recompile.
+- Budget is enforced twice and neither check is advisory: `maxNodes` is a
+  compile-time ceiling priced at the worst case (discovery rounds
+  included), and run-time floors stop verification and work fan-out
+  separately. Anything declined is recorded `SKIPPED` and surfaces in
+  Evidence as incomplete coverage.
+- Ending a discovery sweep on its round ceiling is logged
+  `discovery INCOMPLETE, not exhausted` — stopping early and finishing are
+  different claims.
 
 ## Migrating from the split plugins
 
