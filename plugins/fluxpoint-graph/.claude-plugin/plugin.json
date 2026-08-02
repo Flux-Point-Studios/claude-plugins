@@ -1,0 +1,6 @@
+{
+  "name": "fluxpoint-graph",
+  "version": "0.1.0",
+  "description": "Graph Engineering harness for Flux Point Studios: GRAPH.md node/edge/contract spec, deterministic Workflow-script compile rules, a graph-auditor adversarial reviewer, and canonical graph templates that keep the loop harness as the only authority on done.",
+  "author": { "name": "Flux Point Studios" }
+}

@@ -1,6 +1,9 @@
 {
   "name": "fluxpoint",
   "owner": { "name": "Flux Point Studios" },
+  "metadata": {
+    "description": "Flux Point Studios engineering harnesses: fluxpoint-loop (Loop Engineering — deterministic DoD gate on one agent's cycle) and fluxpoint-graph (Graph Engineering — verified multi-agent campaigns as explicit graphs)."
+  },
   "plugins": [
     {
       "name": "fluxpoint-loop",
@@ -9,6 +12,14 @@
       "version": "0.1.2",
       "category": "workflow",
       "keywords": ["loop", "ralph", "tdd", "harness", "defi", "cardano"]
+    },
+    {
+      "name": "fluxpoint-graph",
+      "source": "./plugins/fluxpoint-graph",
+      "description": "Graph Engineering harness: GRAPH.md node/edge/contract spec, Workflow-script compile rules, graph-auditor adversarial reviewer, and canonical graph templates that keep the loop harness as the only authority on done.",
+      "version": "0.1.0",
+      "category": "workflow",
+      "keywords": ["graph", "multi-agent", "orchestration", "workflow", "council", "harness"]
     }
   ]
 }

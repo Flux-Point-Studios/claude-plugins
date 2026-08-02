@@ -1,9 +1,13 @@
 # Flux Point Claude Plugins
 
-Private Claude Code plugin marketplace for Flux Point Studios. One plugin
-today: **fluxpoint-loop**, the Loop Engineering harness that makes every
-Claude Code session — interactive or autonomous — run against a
-deterministic Definition-of-Done gate instead of the agent's self-report.
+Private Claude Code plugin marketplace for Flux Point Studios. Two plugins:
+**fluxpoint-loop**, the Loop Engineering harness that makes every Claude
+Code session — interactive or autonomous — run against a deterministic
+Definition-of-Done gate instead of the agent's self-report; and
+**fluxpoint-graph**, the Graph Engineering harness that makes the
+*organization* of agents programmable — campaigns specified as nodes with
+typed contracts and deterministically verified edges, with the same loop
+harness as the only authority on done.
 
 ## What fluxpoint-loop enforces
 
@@ -19,6 +23,28 @@ The repo-side contract is a single file: `scripts/harness.sh` supporting
 `--changed <file>` (fast, scoped) and `--full` (everything the DoD
 requires), exit 0 = green. The gate stays dormant in repos that lack it.
 
+## What fluxpoint-graph adds
+
+Graph Engineering is the layer above the loop: fluxpoint-loop makes one
+agent's cycle programmable (state file, deterministic harness, driver);
+fluxpoint-graph makes the organization of agents programmable. A campaign
+is a graph — nodes are single-responsibility agents with typed contracts,
+edges are deterministic code, verification is named per edge — compiled to
+a Claude Code Workflow script and repaired by targeted resume instead of
+restarts.
+
+| Piece | Mechanism | Behavior |
+|---|---|---|
+| Spec | `GRAPH.md` | Org graph (stable roles) + work graph (this campaign): every node a contract, every edge a named verifier, failure policy, evidence table. Sibling of `LOOP.md`. |
+| Executor | Claude Code Workflow tool | `/fluxpoint-graph:graph-run` compiles the spec to a `.graph.js` script — `pipeline()` wiring, JSON-Schema contracts on every node, worktree isolation for mutators — runs it, and on partial failure resumes from `runId` so only the repaired node onward re-runs. |
+| Review | `graph-auditor` agent, `/fluxpoint-graph:graph-audit` | Adversarial pass over the graph itself: vacuous contracts, self-reported verification, unjustified barriers, unbounded fan-out, silent caps, resume-breaking runtime calls. Ends `VERDICT: SOUND` or `VERDICT: REWIRE`. |
+| Method | `graph-engineering` skill + templates | Loop-vs-graph decision rule, the five primitives → Claude Code bindings, ten compile rules, canonical shapes: fan-out/verify (`review.graph.js`), council → loop → gate (`feature.graph.js`), advisor–orchestrator, zone defense, loop-until-dry. |
+| Composition | no hooks of its own | Mutating nodes work fluxpoint-loop slices; `scripts/harness.sh` and the Stop-hook DoD gate keep final authority. Graph green ≠ done — campaigns still exit through the ship pipeline. |
+
+Requires a Claude Code version with the Workflow tool (`/workflows`
+resolves); where absent, the skill degrades to parallel subagent fan-out
+with the same contracts, recorded as degraded in Evidence.
+
 ## Install
 
 Publish this repo (see below), then either path:
@@ -28,6 +54,7 @@ Publish this repo (see below), then either path:
 ```
 /plugin marketplace add flux-point-studios/claude-plugins
 /plugin install fluxpoint-loop@fluxpoint
+/plugin install fluxpoint-graph@fluxpoint
 ```
 
 **Automatic, per repo** — commit this to each repo's
@@ -41,7 +68,8 @@ Publish this repo (see below), then either path:
     }
   },
   "enabledPlugins": {
-    "fluxpoint-loop@fluxpoint": true
+    "fluxpoint-loop@fluxpoint": true,
+    "fluxpoint-graph@fluxpoint": true
   }
 }
 ```
@@ -61,6 +89,18 @@ This copies the harness contract, `LOOP.md`, `LOOP_PROMPT.md`, and
 `scripts/loop.sh` into the repo, wires `.gitignore` and settings, then
 tailors `harness.sh` to the repo's real stack and iterates until `--full`
 exits 0.
+
+For graph campaigns, layer on:
+
+```
+/fluxpoint-graph:graph-init <one-line campaign goal>
+```
+
+This copies `GRAPH.md` and the `.graph.js` templates into the repo, wires
+settings, then smokes the executor with a two-node ping graph. Drive a
+campaign with `/fluxpoint-graph:graph-design <goal>` (spec, audited to
+`VERDICT: SOUND`) followed by `/fluxpoint-graph:graph-run` (compile,
+execute, evidence row, targeted resume on partial failure).
 
 ## Drive a loop
 
@@ -172,4 +212,10 @@ plugins/fluxpoint-loop/
 ├── agents/             red-team-reviewer.md
 ├── skills/             loop-engineering/SKILL.md
 └── templates/          harness.sh, LOOP.md, LOOP_PROMPT.md, loop.sh, settings.snippet.json
+plugins/fluxpoint-graph/
+├── .claude-plugin/plugin.json
+├── commands/           graph-init.md, graph-design.md, graph-run.md, graph-audit.md
+├── agents/             graph-auditor.md
+├── skills/             graph-engineering/SKILL.md
+└── templates/          GRAPH.md, review.graph.js, feature.graph.js, settings.snippet.json
 ```
