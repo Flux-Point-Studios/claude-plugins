@@ -91,7 +91,7 @@ def survey(root):
     ir_block = None
     graph_text = ""
     if os.path.exists(p(GRAPH)):
-        graph_text = open(p(GRAPH)).read()
+        graph_text = open(p(GRAPH), encoding="utf-8").read()
         m = IR_FENCE.search(graph_text)
         ir_block = m.group(0) if m else None
     return {
@@ -102,7 +102,7 @@ def survey(root):
         "graph_has_ir": ir_block is not None,
         "ir_block": ir_block,
         "graph_text": graph_text,
-        "loop_text": open(p(LOOP)).read() if os.path.exists(p(LOOP)) else "",
+        "loop_text": open(p(LOOP), encoding="utf-8").read() if os.path.exists(p(LOOP)) else "",
         "old_dirs": [d for d in OLD_DIRS if os.path.isdir(p(d))],
         "settings": os.path.exists(p(".claude/settings.json")),
         "gitignore": os.path.exists(p(".gitignore")),
@@ -168,7 +168,7 @@ def build_work(s):
 
 
 def rewire_gitignore(path):
-    lines = open(path).read().splitlines() if os.path.exists(path) else []
+    lines = open(path, encoding="utf-8").read().splitlines() if os.path.exists(path) else []
     kept = [l for l in lines if l.strip().rstrip("/") not in
             (".claude/fluxpoint-loop", ".claude/fluxpoint-graph")]
     # .claude/worktrees/ holds the isolated trees mutating nodes run in;
@@ -176,7 +176,7 @@ def rewire_gitignore(path):
     for want in (f"{NEW_DIR}/", ".claude/worktrees/", "__pycache__/"):
         if want not in [l.strip() for l in kept]:
             kept.append(want)
-    open(path, "w").write("\n".join(kept) + "\n")
+    open(path, "w", encoding="utf-8", newline="\n").write("\n".join(kept) + "\n")
     return kept
 
 
@@ -190,7 +190,7 @@ def check_settings(path):
     if not os.path.exists(path):
         return None
     try:
-        d = json.load(open(path))
+        d = json.load(open(path, encoding="utf-8"))
     except json.JSONDecodeError as e:
         return f"{path} is not valid JSON ({e}); fix it before migrating"
     ep = d.get("enabledPlugins")
@@ -205,7 +205,7 @@ def rewire_settings(path):
     that did not happen."""
     if not os.path.exists(path):
         return None
-    d = json.load(open(path))
+    d = json.load(open(path, encoding="utf-8"))
     ep = d.get("enabledPlugins")
     if isinstance(ep, dict):
         for old in OLD_PLUGINS:
@@ -220,8 +220,8 @@ def rewire_settings(path):
     else:
         return None
     d["enabledPlugins"] = ep
-    json.dump(d, open(path, "w"), indent=2)
-    open(path, "a").write("\n")
+    json.dump(d, open(path, "w", encoding="utf-8", newline="\n"), indent=2)
+    open(path, "a", encoding="utf-8", newline="\n").write("\n")
     return ep
 
 
@@ -283,13 +283,13 @@ def main():
                   file=sys.stderr)
             return 1
         text, n = build_work(s)
-        open(p(WORK), "w").write(text)
+        open(p(WORK), "w", encoding="utf-8", newline="\n").write(text)
         print(f"migrate --apply")
         print(f"  wrote {WORK} ({n} Evidence row(s) carried)")
 
         if s["old_prompt"] and not os.path.exists(p(NEW_PROMPT)):
-            body = open(p(OLD_PROMPT)).read().replace(LOOP, WORK).replace(OLD_PROMPT, NEW_PROMPT)
-            open(p(NEW_PROMPT), "w").write(body)
+            body = open(p(OLD_PROMPT), encoding="utf-8").read().replace(LOOP, WORK).replace(OLD_PROMPT, NEW_PROMPT)
+            open(p(NEW_PROMPT), "w", encoding="utf-8", newline="\n").write(body)
             os.remove(p(OLD_PROMPT))
             print(f"  renamed {OLD_PROMPT} -> {NEW_PROMPT} (references updated)")
 
@@ -332,7 +332,7 @@ def main():
     if not s["work"]:
         print("migrate: no WORK.md — run --apply first", file=sys.stderr)
         return 1
-    work_rows = len(table_rows(next((b for h, b in sections(open(p(WORK)).read())
+    work_rows = len(table_rows(next((b for h, b in sections(open(p(WORK), encoding="utf-8").read())
                                      if h == "Evidence"), "")))
     src_rows = len(table_rows(next((b for h, b in sections(s["loop_text"])
                                     if h == "Evidence"), ""))) + \

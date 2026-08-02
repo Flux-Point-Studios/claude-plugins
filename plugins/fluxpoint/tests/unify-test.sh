@@ -2,6 +2,20 @@
 # Tests for the unified state model and the pre-1.0 compatibility path that
 # /fluxpoint:migrate relies on.
 set -uo pipefail
+
+# Interpreter name differs by platform: `python3` on Linux/macOS, `python` on a
+# standard Windows install. Resolve once rather than hardcoding either.
+if [ -z "${FPL_PY:-}" ]; then
+  if command -v python3 >/dev/null 2>&1; then FPL_PY=python3
+  elif command -v python >/dev/null 2>&1; then FPL_PY=python
+  else echo "fluxpoint: no python interpreter on PATH" >&2; exit 127
+  fi
+fi
+# Force UTF-8 on every embedded interpreter's stdio. Without it Windows writes
+# cp1252, so a header like "## Plan --" emitted with an em-dash comes back as
+# 0x97 and every consumer that greps for the UTF-8 bytes silently misses it.
+export PYTHONIOENCODING=utf-8
+
 PLUGIN="$(cd "$(dirname "$0")/.." && pwd)"
 ROOT="$(mktemp -d)"
 pass=0; fail=0
@@ -38,7 +52,7 @@ check "no state file -> non-zero" "1" "$?"
 # --- 2. unified 5-column Evidence table gets the graph row ---
 newrepo
 cp "$PLUGIN/templates/WORK.md" WORK.md
-printf '%s' "$RESULT" | python3 "$PLUGIN/scripts/record-run.py" --run-id wf_u1 --harness 0 --red-team SHIP >/dev/null
+printf '%s' "$RESULT" | "$FPL_PY" "$PLUGIN/scripts/record-run.py" --run-id wf_u1 --harness 0 --red-team SHIP >/dev/null
 contains "unified table: row appended" "| wf_u1 | COMPLETE |" WORK.md
 contains "unified table: claim column" "1 node(s) OK, 1 dead, 2 produced item(s)" WORK.md
 contains "unified table: proof column" "harness exit 0; red-team SHIP" WORK.md
@@ -48,12 +62,12 @@ check "provenance artifact written" "0" "$([ -f .claude/fluxpoint/runs/wf_u1.jso
 newrepo
 cp "$PLUGIN/templates/WORK.md" WORK.md
 SKIPPED='{"campaign":"c","outcome":"COMPLETE","results":{},"provenance":[{"node":"a","status":"OK"},{"node":"b","status":"SKIPPED","detail":"budget floor"}]}'
-printf '%s' "$SKIPPED" | python3 "$PLUGIN/scripts/record-run.py" --run-id wf_sk1 >/dev/null
+printf '%s' "$SKIPPED" | "$FPL_PY" "$PLUGIN/scripts/record-run.py" --run-id wf_sk1 >/dev/null
 contains "skipped node: flagged in Evidence claim" "1 SKIPPED on budget — coverage incomplete" WORK.md
 check "skipped node: not counted as OK" "1" \
-  "$(python3 -c "import json;print(json.load(open('.claude/fluxpoint/runs/wf_sk1.json'))['nodesOk'])")"
+  "$("$FPL_PY" -c "import json;print(json.load(open('.claude/fluxpoint/runs/wf_sk1.json'))['nodesOk'])")"
 check "skipped node: counted in artifact" "1" \
-  "$(python3 -c "import json;print(json.load(open('.claude/fluxpoint/runs/wf_sk1.json'))['nodesSkipped'])")"
+  "$("$FPL_PY" -c "import json;print(json.load(open('.claude/fluxpoint/runs/wf_sk1.json'))['nodesSkipped'])")"
 
 # --- 2c. the two columns that decide shipping are derived, not declared ---
 # They arrived as CLI flags defaulting to 'n/a', so whether a campaign
@@ -64,17 +78,17 @@ cp "$PLUGIN/templates/WORK.md" WORK.md
 BLOCKED='{"campaign":"c","outcome":"COMPLETE","contracts":{"gate":"HarnessCheckV1","rt":"RedTeamV1"},
  "results":{"gate":{"exit":0},"rt":{"verdict":"BLOCK","findings":[{"severity":"HIGH"}]}},
  "provenance":[{"node":"gate","status":"OK"},{"node":"rt","status":"OK"}]}'
-printf '%s' "$BLOCKED" | python3 "$PLUGIN/scripts/record-run.py" --run-id wf_b1 >/dev/null
+printf '%s' "$BLOCKED" | "$FPL_PY" "$PLUGIN/scripts/record-run.py" --run-id wf_b1 >/dev/null
 contains "BLOCK verdict degrades the outcome" "| wf_b1 | BLOCKED-REDTEAM |" WORK.md
 contains "BLOCK verdict is named in the claim" "red-team returned BLOCK — not shippable" WORK.md
 contains "verdict derived into the proof column" "red-team BLOCK" WORK.md
 check "artifact records the derived verdict" "BLOCK" \
-  "$(python3 -c "import json;print(json.load(open('.claude/fluxpoint/runs/wf_b1.json'))['redTeam'])")"
+  "$("$FPL_PY" -c "import json;print(json.load(open('.claude/fluxpoint/runs/wf_b1.json'))['redTeam'])")"
 
 # A flag that disagrees with the run does not get to win.
 newrepo
 cp "$PLUGIN/templates/WORK.md" WORK.md
-printf '%s' "$BLOCKED" | python3 "$PLUGIN/scripts/record-run.py" --run-id wf_b2 \
+printf '%s' "$BLOCKED" | "$FPL_PY" "$PLUGIN/scripts/record-run.py" --run-id wf_b2 \
   --harness 0 --red-team SHIP >/dev/null
 contains "a SHIP flag cannot override a BLOCK in the run" "| wf_b2 | BLOCKED-REDTEAM |" WORK.md
 
@@ -83,7 +97,7 @@ newrepo
 cp "$PLUGIN/templates/WORK.md" WORK.md
 TWOGATES='{"campaign":"c","outcome":"COMPLETE","contracts":{"g1":"HarnessCheckV1","g2":"HarnessCheckV1"},
  "results":{"g1":{"exit":0},"g2":{"exit":2}},"provenance":[{"node":"g1","status":"OK"}]}'
-printf '%s' "$TWOGATES" | python3 "$PLUGIN/scripts/record-run.py" --run-id wf_b3 --harness 0 >/dev/null
+printf '%s' "$TWOGATES" | "$FPL_PY" "$PLUGIN/scripts/record-run.py" --run-id wf_b3 --harness 0 >/dev/null
 contains "a red harness node beats a green one" "harness exit 2" WORK.md
 
 # A run from before contracts were emitted still gets read.
@@ -91,13 +105,13 @@ newrepo
 cp "$PLUGIN/templates/WORK.md" WORK.md
 OLD='{"campaign":"c","outcome":"COMPLETE","results":{"rt":{"verdict":"BLOCK","findings":[]}},
  "provenance":[{"node":"rt","status":"OK"}]}'
-printf '%s' "$OLD" | python3 "$PLUGIN/scripts/record-run.py" --run-id wf_b4 >/dev/null
+printf '%s' "$OLD" | "$FPL_PY" "$PLUGIN/scripts/record-run.py" --run-id wf_b4 >/dev/null
 contains "no contracts map: falls back to result shape" "| wf_b4 | BLOCKED-REDTEAM |" WORK.md
 
 # A campaign with neither node keeps the flags as the fallback they are.
 newrepo
 cp "$PLUGIN/templates/WORK.md" WORK.md
-printf '%s' "$RESULT" | python3 "$PLUGIN/scripts/record-run.py" --run-id wf_b5 \
+printf '%s' "$RESULT" | "$FPL_PY" "$PLUGIN/scripts/record-run.py" --run-id wf_b5 \
   --harness 0 --red-team SHIP >/dev/null
 contains "no gate node: the flag is still used" "harness exit 0; red-team SHIP" WORK.md
 contains "no gate node: outcome untouched" "| wf_b5 | COMPLETE |" WORK.md
@@ -107,13 +121,13 @@ newrepo
 { printf '## Evidence\n\n'
   printf '| When (UTC) | runId | Outcome | Nodes OK/dead | Findings | Harness | Red-team |\n'
   printf '|---|---|---|---|---|---|---|\n'; } >GRAPH.md
-printf '%s' "$RESULT" | python3 "$PLUGIN/scripts/record-run.py" --run-id wf_l1 --graph GRAPH.md --harness 0 >/dev/null
+printf '%s' "$RESULT" | "$FPL_PY" "$PLUGIN/scripts/record-run.py" --run-id wf_l1 --graph GRAPH.md --harness 0 >/dev/null
 contains "legacy table: 7-column row appended" "| wf_l1 | COMPLETE | 1/1 | 2 | 0 |" GRAPH.md
 
 # --- 4. no Evidence table: artifact still written, warning emitted, exit 0 ---
 newrepo
 printf '# WORK\nno table here\n' >WORK.md
-err="$(printf '%s' "$RESULT" | python3 "$PLUGIN/scripts/record-run.py" --run-id wf_n1 2>&1 >/dev/null)"
+err="$(printf '%s' "$RESULT" | "$FPL_PY" "$PLUGIN/scripts/record-run.py" --run-id wf_n1 2>&1 >/dev/null)"
 check "missing table -> still exit 0" "0" "$?"
 check "missing table -> artifact exists" "0" "$([ -f .claude/fluxpoint/runs/wf_n1.json ] && echo 0 || echo 1)"
 case "$err" in *"no Evidence table header"*) check "missing table -> warns" "warn" "warn" ;;
@@ -122,7 +136,7 @@ case "$err" in *"no Evidence table header"*) check "missing table -> warns" "war
 # --- 5. SessionStart injection reflects the unified world ---
 newrepo
 cp "$PLUGIN/templates/WORK.md" WORK.md
-printf '%s' "$RESULT" | python3 "$PLUGIN/scripts/record-run.py" --run-id wf_s1 --harness 0 --red-team SHIP >/dev/null
+printf '%s' "$RESULT" | "$FPL_PY" "$PLUGIN/scripts/record-run.py" --run-id wf_s1 --harness 0 --red-team SHIP >/dev/null
 mkdir -p .claude/fluxpoint; printf 'PASS 2026-01-01T00:00:00Z\n' >.claude/fluxpoint/last-harness
 out="$(printf '{"session_id":"s","cwd":"%s"}' "$ROOT/r" | bash "$PLUGIN/scripts/inject-state.sh")"
 printf '%s' "$out" >"$ROOT/inject.txt"

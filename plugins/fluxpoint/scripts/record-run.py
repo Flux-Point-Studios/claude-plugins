@@ -134,7 +134,7 @@ def main():
     ap.add_argument("--root", default=".", help="repo root holding .claude/fluxpoint")
     args = ap.parse_args()
 
-    raw = open(args.result).read() if args.result else sys.stdin.read()
+    raw = open(args.result, encoding="utf-8").read() if args.result else sys.stdin.read()
     try:
         summary = json.loads(raw)
     except json.JSONDecodeError as e:
@@ -218,7 +218,7 @@ def main():
                 rec.setdefault("lastChecked", 0)
                 safe = "".join(ch if ch.isalnum() or ch in "-_" else "-"
                                for ch in f"{campaign}.{w.get('node','')}")[:120]
-                with open(os.path.join(wdir, f"{safe}.json"), "w") as fh:
+                with open(os.path.join(wdir, f"{safe}.json"), "w", encoding="utf-8", newline="\n") as fh:
                     json.dump(rec, fh, indent=2)
     except Exception as e:  # noqa: BLE001
         print(f"record-run: inbox/waits update failed: {e}", file=sys.stderr)
@@ -226,7 +226,7 @@ def main():
     # 1. Durable provenance artifact.
     os.makedirs(args.state_dir, exist_ok=True)
     art = os.path.join(args.state_dir, f"{args.run_id}.json")
-    with open(art, "w") as fh:
+    with open(art, "w", encoding="utf-8", newline="\n") as fh:
         json.dump(
             {
                 "runId": args.run_id,
@@ -266,13 +266,13 @@ def main():
     # 2a. Decisions, spliced under their own header when the file has one.
     drows = decision_rows(summary, ts)
     if drows and os.path.exists(args.graph):
-        text = open(args.graph).read()
+        text = open(args.graph, encoding="utf-8").read()
         if DEC_HDR in text:
             text, n = re.subn(
                 re.escape(DEC_HDR) + r"\n\|[-| ]+\|\n",
                 lambda m: m.group(0) + "\n".join(drows) + "\n", text, count=1)
             if n:
-                open(args.graph, "w").write(text)
+                open(args.graph, "w", encoding="utf-8", newline="\n").write(text)
                 for d in drows:
                     print(d)
         else:
@@ -282,7 +282,7 @@ def main():
                   file=sys.stderr)
 
     if os.path.exists(args.graph):
-        text = open(args.graph).read()
+        text = open(args.graph, encoding="utf-8").read()
         hdr, new_row = (ROW_HDR, row) if ROW_HDR in text else (LEGACY_HDR, legacy_row)
         if hdr in text:
             text, n = re.subn(
@@ -292,7 +292,7 @@ def main():
                 count=1,
             )
             if n:
-                open(args.graph, "w").write(text)
+                open(args.graph, "w", encoding="utf-8", newline="\n").write(text)
                 row = new_row
             else:
                 print(

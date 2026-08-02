@@ -71,7 +71,7 @@ def load_contract(plugin_root, name):
     p = os.path.join(plugin_root, "contracts", f"{name}.schema.json")
     if not os.path.exists(p):
         raise SystemExit(f"release: unknown contract '{name}' ({p} not found)")
-    with open(p) as fh:
+    with open(p, encoding="utf-8") as fh:
         return json.load(fh)
 
 
@@ -100,7 +100,7 @@ def main():
         if os.path.isdir(d):
             for fn in sorted(os.listdir(d)):
                 if fn.endswith(".json"):
-                    with open(os.path.join(d, fn)) as fh:
+                    with open(os.path.join(d, fn), encoding="utf-8") as fh:
                         rec = json.load(fh)
                     out[rec.get("node", fn[:-5])] = rec
         print(json.dumps(out))
@@ -116,7 +116,7 @@ def main():
             for fn in sorted(os.listdir(os.path.join(base, camp))):
                 if not fn.endswith(".json"):
                     continue
-                with open(os.path.join(base, camp, fn)) as fh:
+                with open(os.path.join(base, camp, fn), encoding="utf-8") as fh:
                     r = json.load(fh)
                 print(f"      {r.get('node')}  released {r.get('when')} "
                       f"by {r.get('by')}")
@@ -126,7 +126,7 @@ def main():
         if not getattr(a, req.replace("-", "_")):
             ap.error(f"--record requires --{req}")
     schema = load_contract(a.plugin_root, a.contract)
-    raw = open(a.proof).read() if a.proof else sys.stdin.read()
+    raw = open(a.proof, encoding="utf-8").read() if a.proof else sys.stdin.read()
     try:
         proof = json.loads(raw)
     except json.JSONDecodeError as e:
@@ -156,7 +156,7 @@ def main():
         "proof": proof,
     }
     path = os.path.join(d, f"{slug(a.node)}.json")
-    with open(path, "w") as fh:
+    with open(path, "w", encoding="utf-8", newline="\n") as fh:
         json.dump(rec, fh, indent=2)
     print(f"release: {a.node} released by {a.by} — {path}")
     print("  Re-run /fluxpoint:graph-run to continue the campaign from here.")

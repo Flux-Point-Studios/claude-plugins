@@ -49,10 +49,10 @@ step; do not stop at copying files.
    subtasks, a work-list to fan out over, claims needing adversarial
    verification, cross-zone ownership). If the Campaign section stays,
    verify it compiles:
-   `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/compile-graph.py" WORK.md --check`
+   `bash "${CLAUDE_PLUGIN_ROOT}/scripts/py.sh" compile-graph.py WORK.md --check`
 8. If the repo tracks proof-language files (`.ak`, `.dfy`, `.lean`, `.v`,
    `.thy`, `.tla`, or verified Rust), arm the proof-strength ratchet:
-   `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/proof-guard.py" --baseline`
+   `bash "${CLAUDE_PLUGIN_ROOT}/scripts/py.sh" proof-guard.py --baseline`
    Commit `.fluxpoint-proof-baseline.json` — it belongs in review, because
    a rise in it is someone making a proof obligation disappear. Confirm
    `harness.sh --full` actually invokes the prover; per-file checking on

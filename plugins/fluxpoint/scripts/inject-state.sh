@@ -4,6 +4,20 @@
 # phrasing can trip prompt-injection defenses and surface the text to the
 # user instead. Runs on startup, resume, clear, and post-compaction.
 set -u
+
+# Interpreter name differs by platform: `python3` on Linux/macOS, `python` on a
+# standard Windows install. Resolve once rather than hardcoding either.
+if [ -z "${FPL_PY:-}" ]; then
+  if command -v python3 >/dev/null 2>&1; then FPL_PY=python3
+  elif command -v python >/dev/null 2>&1; then FPL_PY=python
+  else echo "fluxpoint: no python interpreter on PATH" >&2; exit 127
+  fi
+fi
+# Force UTF-8 on every embedded interpreter's stdio. Without it Windows writes
+# cp1252, so a header like "## Plan --" emitted with an em-dash comes back as
+# 0x97 and every consumer that greps for the UTF-8 bytes silently misses it.
+export PYTHONIOENCODING=utf-8
+
 [ "${FPL_DISABLE:-0}" = "1" ] && exit 0
 here="${0%/*}"; [ "$here" = "$0" ] && here=.
 . "$here/lib.sh"
@@ -43,7 +57,7 @@ fi
 # is how a parked campaign sits unnoticed for days.
 inbox_py="$(dirname "$0")/inbox.py"
 if [ -f "$inbox_py" ]; then
-  open_items="$(python3 "$inbox_py" --count 2>/dev/null || echo 0)"
+  open_items="$("$FPL_PY" "$inbox_py" --count 2>/dev/null || echo 0)"
   if [ "${open_items:-0}" -gt 0 ] 2>/dev/null; then
     echo "- BLOCKED ON YOU: ${open_items} item(s) waiting on a person. Run /fluxpoint:status for the list, /fluxpoint:release <node> to clear one."
   fi
@@ -67,7 +81,7 @@ if [ -n "$state" ]; then
   # it: a fresh context was re-oriented with the goal and the Definition of
   # Done but not with what was proven or what is blocking.
   echo "- ${state} (sections that matter, newest evidence first):"
-  python3 - "$state" <<'PY'
+  "$FPL_PY" - "$state" <<'PY'
 import re, sys
 
 text = open(sys.argv[1], errors="replace").read()

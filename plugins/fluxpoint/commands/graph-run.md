@@ -11,20 +11,20 @@ Workflow tool requires.
    The graph file is "$ARGUMENTS" if it names one, else `WORK.md`.
 2. Preflight, all deterministic — stop and report exactly what is missing
    rather than improvising around it:
-   - `python3 "$ROOT/scripts/compile-graph.py" <graph> --check` exits 0.
+   - `bash "$ROOT/scripts/py.sh" compile-graph.py <graph> --check` exits 0.
      Its findings are the work list; fix the IR, never the compiler.
    - `STATUS:` reads `READY` (or `RUNNING` with a resume point in Notes).
    - Every command the verification map names exists (`scripts/harness.sh`
      if referenced) and every `agentType` resolves — `red-team-reviewer`
      ships with this plugin.
 3. Compile:
-   `python3 "$ROOT/scripts/compile-graph.py" <graph> -o .claude/workflows/<name>.graph.js`
+   `bash "$ROOT/scripts/py.sh" compile-graph.py <graph> -o .claude/workflows/<name>.graph.js`
    The output is generated code. Never hand-edit it; edit the IR and
    recompile, or the spec and the executor start lying to each other.
 4. Load whatever state the graph refuses to start without.
    If any node has `actor: human` or `actor: third-party`:
    ```
-   python3 "$ROOT/scripts/release.py" --load --campaign "<the IR's campaign line>"
+   bash "$ROOT/scripts/py.sh" release.py --load --campaign "<the IR's campaign line>"
    ```
    into `args._releases`. A node with no release parks: the run reports it
    BLOCKED with its instructions, marks itself INCOMPLETE, and works the
@@ -41,7 +41,7 @@ Workflow tool requires.
    If the IR contains any `irreversible` node, load the once-only ledger —
    the compiled graph refuses to start without it:
    ```
-   python3 "$ROOT/scripts/ledger.py" --load --campaign "<the IR's campaign line>"
+   bash "$ROOT/scripts/py.sh" ledger.py --load --campaign "<the IR's campaign line>"
    ```
    Put its output in `args._ledger`. Run `--list` and show the operator what
    has already fired before asking for anything. `confirm` is theirs to
@@ -57,7 +57,7 @@ Workflow tool requires.
 6. On completion, record the run — evidence is a build artifact, not
    something you remember to write:
    ```
-   echo '<the workflow return value as JSON>' | python3 "$ROOT/scripts/record-run.py" \
+   echo '<the workflow return value as JSON>' | bash "$ROOT/scripts/py.sh" record-run.py \
      --run-id <runId> --graph <graph> [--harness <exit>] [--red-team SHIP|BLOCK]
    ```
    That also appends any irreversible effect to the ledger, so the next

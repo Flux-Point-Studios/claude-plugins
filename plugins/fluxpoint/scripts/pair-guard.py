@@ -89,7 +89,7 @@ def load_manifest(root):
     path = os.path.join(root, MANIFEST)
     if not os.path.exists(path):
         return None
-    with open(path) as fh:
+    with open(path, encoding="utf-8") as fh:
         try:
             data = json.load(fh)
         except json.JSONDecodeError as e:

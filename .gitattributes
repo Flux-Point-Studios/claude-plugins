@@ -1,0 +1,9 @@
+# Git for Windows ships core.autocrlf=true, so without this a Windows clone
+# rewrites every checked-out file to CRLF. bash then reads the shebang as
+# `#!/usr/bin/env bash\r` and nothing in this plugin runs. Pin the line ending
+# at checkout for everything the plugin executes or parses.
+*.sh   text eol=lf
+*.py   text eol=lf
+*.md   text eol=lf
+*.json text eol=lf
+*.js   text eol=lf

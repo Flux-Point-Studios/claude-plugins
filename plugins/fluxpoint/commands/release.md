@@ -11,7 +11,7 @@ Resolve the plugin root: `${CLAUDE_PLUGIN_ROOT}`, else
 `find ~/.claude/plugins -type d -name fluxpoint | head -1`. Call it `$ROOT`.
 
 1. **Show what is actually waiting**, never a guess:
-   `python3 "$ROOT/scripts/inbox.py" --list`. With no argument, stop here —
+   `bash "$ROOT/scripts/py.sh" inbox.py --list`. With no argument, stop here —
    the operator picks. If `$ARGUMENTS` names a node, continue with it.
 2. **Read the block's own instructions** out of the campaign's provenance
    (`.claude/fluxpoint/runs/<runId>.json`, the BLOCKED entry for that node)
@@ -25,7 +25,7 @@ Resolve the plugin root: `${CLAUDE_PLUGIN_ROOT}`, else
    adjective. You did not watch them do it.
 4. Record it:
    ```
-   python3 "$ROOT/scripts/release.py" --record \
+   bash "$ROOT/scripts/py.sh" release.py --record \
      --campaign "<the IR's campaign line>" --node <id> \
      --contract <the node's release.proofContract> --by "<who>" < proof.json
    ```
@@ -35,7 +35,7 @@ Resolve the plugin root: `${CLAUDE_PLUGIN_ROOT}`, else
    half-remembered "yeah that's done" will eventually resume on a mistake.
    Fix the proof, never the check.
 5. Close the inbox item:
-   `python3 "$ROOT/scripts/inbox.py" --resolve blocked:<campaign>:<node>`.
+   `bash "$ROOT/scripts/py.sh" inbox.py --resolve blocked:<campaign>:<node>`.
 6. Resume the campaign with `/fluxpoint:graph-run`, passing
    `resumeFromRunId` from the parked run so the unchanged prefix replays
    from cache instead of re-running. The released node now reads its proof

@@ -392,5 +392,72 @@ for name, src in [("fan-out+panel", js), ("discovery", disc_js), ("single", sing
           f"{'yes' if ok else bypass[0].strip()[:50]}")
     passed, failed = (passed + ok, failed + (not ok))
 
+
+# ---------------------------------------------------------------------------
+# Emission is BYTES, not just content. An open(path, "w") without encoding and
+# newline writes the platform default: on Windows that is cp1252 with CRLF, and
+# both halves are invisible to a content assertion because the script still says
+# all the right things. The file was simply unusable — a non-UTF-8 script cannot
+# be read as text downstream, and the Workflow permission handler rejects the
+# carriage returns as "control characters that would be hidden in the approval
+# dialog", which is correct of it. graph-run was blocked end-to-end on the
+# platform. CI is ubuntu-only, where both halves pass by default; that is
+# precisely why this shipped, so the check has to be on bytes.
+# ---------------------------------------------------------------------------
+
+def emission_bytes_case():
+    global passed, failed
+    import tempfile
+
+    ir = copy.deepcopy(BASE)
+    # Non-ASCII in the IR is the only thing that exercises the encoding half.
+    ir["campaign"] = "en dash – em dash — accented café, all must survive"
+    ir["nodes"][0]["prompt"] = "review {{item.brief}} — report precisely"
+
+    with tempfile.TemporaryDirectory() as d:
+        src = os.path.join(d, "WORK.md")
+        out = os.path.join(d, "campaign.graph.js")
+        with open(src, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write("# t\n\n```json graph-ir\n" + json.dumps(ir) + "\n```\n")
+
+        import subprocess
+        r = subprocess.run(
+            [sys.executable,
+             os.path.join(PLUGIN, "scripts", "compile-graph.py"), src, "-o", out],
+            capture_output=True, text=True)
+        if r.returncode != 0:
+            print("FAIL emission-bytes: compiler exited", r.returncode, r.stderr[-300:])
+            failed += 1
+            return
+
+        with open(out, "rb") as fh:
+            raw = fh.read()
+
+        problems = []
+        crs = raw.count(b"\r")
+        if crs:
+            problems.append(
+                "emitted script contains %d CR byte(s); it must be LF-only or the "
+                "Workflow permission handler rejects it as control characters" % crs)
+        text = ""
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError as e:
+            problems.append("emitted script is not valid UTF-8: %s" % e)
+        if text and "—" not in text:
+            problems.append("non-ASCII from the IR did not survive emission")
+
+        if problems:
+            for m in problems:
+                print("FAIL emission-bytes:", m)
+            failed += 1
+        else:
+            print("ok   emission-bytes: utf-8, LF-only, non-ASCII preserved")
+            passed += 1
+
+
+emission_bytes_case()
+
+
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

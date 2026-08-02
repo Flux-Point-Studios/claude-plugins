@@ -226,7 +226,7 @@ def scan(root):
             continue
         path = os.path.join(root, rel)
         try:
-            with open(path, errors="replace") as fh:
+            with open(path, errors="replace", encoding="utf-8") as fh:
                 lines = fh.readlines()
         except OSError:
             continue
@@ -291,7 +291,7 @@ def main():
         return 0
 
     if args.baseline:
-        with open(bpath, "w") as fh:
+        with open(bpath, "w", encoding="utf-8", newline="\n") as fh:
             json.dump(
                 {
                     "version": 1,
@@ -322,7 +322,7 @@ def main():
         )
         return 0  # bootstrapping must not block; arming is a deliberate step
 
-    with open(bpath) as fh:
+    with open(bpath, encoding="utf-8") as fh:
         base = json.load(fh).get("counts", {})
 
     risen = [

@@ -47,7 +47,7 @@ def read(root):
     if not os.path.exists(p):
         return []
     rows = []
-    with open(p) as fh:
+    with open(p, encoding="utf-8") as fh:
         for line in fh:
             line = line.strip()
             if line:
@@ -78,7 +78,7 @@ def add(root, kind, node, campaign, detail):
             return None
     row = {"id": item_id, "kind": kind, "node": node, "campaign": campaign,
            "detail": detail, "when": when, "resolved": False}
-    with open(p, "a") as fh:
+    with open(p, "a", encoding="utf-8", newline="\n") as fh:
         fh.write(json.dumps(row) + "\n")
     return row
 
@@ -94,7 +94,7 @@ def resolve(root, item_id):
     row["resolved"] = True
     row["resolvedWhen"] = datetime.datetime.now(
         datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    with open(p, "a") as fh:
+    with open(p, "a", encoding="utf-8", newline="\n") as fh:
         fh.write(json.dumps(row) + "\n")
     return True
 

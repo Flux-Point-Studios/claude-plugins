@@ -10,7 +10,7 @@ Resolve the plugin root: `${CLAUDE_PLUGIN_ROOT}`, else
 `find ~/.claude/plugins -type d -name fluxpoint | head -1`. Call it `$ROOT`.
 
 1. **Mechanical pass — the ratchet.**
-   `python3 "$ROOT/scripts/proof-guard.py" --scan` to see the current escape
+   `bash "$ROOT/scripts/py.sh" proof-guard.py --scan` to see the current escape
    hatches, then `--check` to compare against
    `.fluxpoint-proof-baseline.json`. If no baseline exists and the repo has
    proof files, say so and run `--baseline` to arm it — an unarmed ratchet
@@ -28,7 +28,7 @@ Resolve the plugin root: `${CLAUDE_PLUGIN_ROOT}`, else
    downstream gate needs is actually produced, not just that the prover
    exited 0.
 3. **On-chain budgets (Cardano).** If `plutus.json` exists, run
-   `python3 "$ROOT/scripts/plutus-budget.py" --report`. A validator over
+   `bash "$ROOT/scripts/py.sh" plutus-budget.py --report`. A validator over
    `maxTxSize` cannot be submitted no matter how well it is proved, and the
    prover never mentions it. Report an unmeasured `exUnits` as a gap rather
    than a pass — it is the budget most often assumed met.
