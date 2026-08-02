@@ -1,8 +1,0 @@
-{
-  "name": "fluxpoint-graph",
-  "version": "0.2.0",
-  "description": "Graph Engineering harness for Flux Point Studios: a declarative GRAPH.md IR compiled deterministically to Claude Code Workflow scripts, compile-time soundness invariants, verification tiers, provenance-recorded evidence, and a semantic graph-auditor.",
-  "author": {
-    "name": "Flux Point Studios"
-  }
-}
