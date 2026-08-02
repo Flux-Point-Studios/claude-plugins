@@ -21,10 +21,11 @@ command.
      `contracts/` (add a new `*.schema.json` there if none fits — make it
      one a lazy output cannot satisfy: `required`, `minLength`, enums).
    - `verify` tier chosen by stakes, not habit: `schema-only` for cheap
-     mechanical output, `harness` for anything claiming green,
-     `skeptic:1` for low-severity claims, `panel:3` for findings that
-     cost someone real time, `panel:5` only for CRITICAL. Panels are odd
-     so majority is defined; every panel needs `verifyOver`.
+     mechanical output, `skeptic:1` for low-severity claims, `panel:3` for
+     findings that cost someone real time, `panel:5` only for CRITICAL.
+     Panels are odd so majority is defined; every panel needs `verifyOver`.
+     To gate on the harness, do not reach for a tier — mark the producer
+     `mutates: true` and add an `independent` node that runs it.
    - any node that writes to the tree gets `mutates: true`, and a later
      node with `independent: true` and `verifies: "<id>"` must re-derive
      the verdict. The compiler enforces this; do not try to talk it out

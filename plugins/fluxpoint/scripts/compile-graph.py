@@ -21,14 +21,49 @@ import re
 import sys
 
 IR_FENCE = re.compile(r"```json\s+graph-ir\s*\n(.*?)\n```", re.S)
-TIER = re.compile(r"^(schema-only|harness|skeptic:(\d+)|panel:(\d+))$")
+# 'harness' is deliberately absent: it was accepted, priced into the budget,
+# and emitted nothing. Verifying that something is green is what
+# mutates + independent already does, properly. See validate().
+TIER = re.compile(r"^(schema-only|skeptic:(\d+)|panel:(\d+))$")
 HALT = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*(==|!=|>=|<=|>|<)\s*(-?\d+|'[^']*')\s*$")
 SUBST = re.compile(r"\{\{\s*([A-Za-z0-9_.\[\]]+)\s*\}\}")
 IDENT = re.compile(r"^[a-z][a-z0-9-]*$")
 
+# Every key the IR may carry, by level. An unknown key is a compile error
+# rather than a no-op, because the failure this closes is a field that looks
+# honored and is silently inert — a misspelled `verifyOver` used to disable
+# verification while the spec still claimed it. tests/emission-test.py holds
+# these registries to the second half of the promise: every field listed here
+# must demonstrably change what the compiler produces.
+IR_FIELDS = {
+    "version", "name", "campaign", "budget", "defaults", "roles", "lists",
+    "nodes", "requiredArgs", "argDefaults",
+}
+NODE_FIELDS = {
+    "id", "phase", "prompt", "contract", "role", "effort", "model", "agentType",
+    "foreach", "after", "mutates", "independent", "verifies", "verify",
+    "verifyOver", "expectItems", "haltWhen", "haltReason", "onRed", "isolation",
+    "repeat",
+}
+REPEAT_FIELDS = {"untilDryRounds", "maxRounds", "dedupeBy"}
+BUDGET_FIELDS = {"maxNodes", "verifyFloorTokens", "nodeFloorTokens"}
+ROLE_FIELDS = {"agentType", "effort", "model"}
+DEFAULTS_FIELDS = {"effort", "model"}
+
 
 class GraphError(Exception):
     pass
+
+
+def _unknown(where, obj, allowed):
+    """Findings for keys that are not part of the IR at this level."""
+    if not isinstance(obj, dict):
+        return []
+    return [
+        f"{where}: unknown field '{k}' — not part of the IR, so it would be "
+        f"silently ignored (known: {', '.join(sorted(allowed))})"
+        for k in sorted(set(obj) - allowed)
+    ]
 
 
 # ---------------------------------------------------------------- extraction
@@ -74,9 +109,19 @@ def validate(ir, contracts):
     roles = ir.get("roles") or {}
     seen = {}
 
+    # Strict keys at every level: a typo must fail loudly, never quietly
+    # disable the thing it was meant to configure.
+    f += _unknown("IR", ir, IR_FIELDS)
+    f += _unknown("budget", ir.get("budget"), BUDGET_FIELDS)
+    f += _unknown("defaults", ir.get("defaults"), DEFAULTS_FIELDS)
+    for rname, rbody in (roles or {}).items():
+        f += _unknown(f"role '{rname}'", rbody, ROLE_FIELDS)
+
     for i, n in enumerate(nodes):
         nid = n.get("id", f"<node {i}>")
         where = f"node '{nid}'"
+        f += _unknown(where, n, NODE_FIELDS)
+        f += _unknown(f"{where} repeat", n.get("repeat"), REPEAT_FIELDS)
         if not IDENT.match(str(n.get("id", ""))):
             f.append(f"{where}: id must be lowercase kebab-case")
         if nid in seen:
@@ -94,8 +139,16 @@ def validate(ir, contracts):
         # Verification tier.
         tier = n.get("verify", "schema-only")
         m = TIER.match(str(tier))
-        if not m:
-            f.append(f"{where}: verify must be schema-only | harness | skeptic:N | panel:N")
+        if str(tier) == "harness":
+            f.append(
+                f"{where}: verify 'harness' was removed — it compiled to nothing "
+                f"while the spec claimed the node was checked. To gate on the "
+                f"harness, mark the producing node mutates:true and add a node "
+                f"with independent:true, verifies:'{nid}', and a haltWhen on its "
+                f"real exit code"
+            )
+        elif not m:
+            f.append(f"{where}: verify must be schema-only | skeptic:N | panel:N")
         else:
             count = m.group(2) or m.group(3)
             if count:
@@ -117,13 +170,40 @@ def validate(ir, contracts):
         after = n.get("after")
         if after and after not in seen:
             f.append(f"{where}: after '{after}' is not a node defined earlier")
+        if after and "{{prev}}" not in str(n.get("prompt", "")):
+            # Nodes already run in declaration order, so an `after` whose
+            # output is never consumed is a phantom edge: it reads as a
+            # dependency in the spec and constrains nothing in the run.
+            f.append(
+                f"{where}: after '{after}' but the prompt never uses {{{{prev}}}} — "
+                f"declaration order already sequences nodes, so `after` means "
+                f"'consumes that node's contract'. Use {{{{prev}}}} or drop the field"
+            )
         if n.get("foreach") and n["foreach"] not in lists:
             f.append(f"{where}: foreach '{n['foreach']}' has no entry under lists")
         if n.get("role") and n["role"] not in roles:
             f.append(f"{where}: role '{n['role']}' is not declared under roles")
 
-        if n.get("haltWhen") and not HALT.match(str(n["haltWhen"])):
-            f.append(f"{where}: haltWhen must be '<field> <op> <literal>' (e.g. 'exit != 0')")
+        if n.get("haltWhen"):
+            if not HALT.match(str(n["haltWhen"])):
+                f.append(f"{where}: haltWhen must be '<field> <op> <literal>' (e.g. 'exit != 0')")
+            elif panel_size(n):
+                # After a panel the node's value is verified items, not its own
+                # contract, so the named field is not there to test. Accepting
+                # this would emit a halt that can never fire.
+                f.append(
+                    f"{where}: haltWhen cannot be combined with verify {n.get('verify')} — "
+                    f"the node's value after verification is the surviving items, not "
+                    f"its contract, so '{n['haltWhen']}' would never fire. Halt on a "
+                    f"separate unverified node, or drop the tier"
+                )
+            elif HALT.match(str(n["haltWhen"])) and c in contracts:
+                field = HALT.match(str(n["haltWhen"])).group(1)
+                if field not in contracts[c].get("properties", {}):
+                    f.append(
+                        f"{where}: haltWhen tests '{field}', which is not a field of "
+                        f"{c} — the condition could never fire"
+                    )
 
         # {{prev}} is only meaningful with a declared predecessor; otherwise
         # the node is reading state no edge delivers to it.
@@ -300,6 +380,24 @@ def emit_halt(n, var):
     return (
         f"if ({var} && {var}.{field} {op} {lit}) {{\n"
         f"  log(`HALT at {n['id']}: {field}=${{{var}.{field}}} — {n.get('haltReason', 'halt condition met')}`)\n"
+        f"  RESULTS[{js_str(n['id'])}] = {var}\n"
+        f"  return summary('HALTED')\n"
+        f"}}"
+    )
+
+
+def emit_halt_any(n, var):
+    """haltWhen across a fan-out: any tripping item halts the campaign."""
+    m = HALT.match(str(n["haltWhen"]))
+    field, op, lit = m.group(1), m.group(2), m.group(3)
+    op = {"==": "===", "!=": "!=="}.get(op, op)
+    return (
+        f"const tripped_{var} = {var}.filter(r => r && r.{field} {op} {lit})\n"
+        f"if (tripped_{var}.length) {{\n"
+        f"  log(`HALT at {n['id']}: ${{tripped_{var}.length}}/${{{var}.length}} item(s) "
+        f"tripped {field} {op} {lit} — {n.get('haltReason', 'halt condition met')}`)\n"
+        f"  note({js_str(n['id'])}, 'HALTED', `${{tripped_{var}.length}} item(s) tripped "
+        f"{field}`)\n"
         f"  RESULTS[{js_str(n['id'])}] = {var}\n"
         f"  return summary('HALTED')\n"
         f"}}"
@@ -488,6 +586,10 @@ def emit_node(n, ir):
             a(f"  if ({var}.length < {lst}.length) log(`{nid}: "
               f"${{{lst}.length - {var}.length}} node(s) died — see provenance`)")
         a("}")
+        if n.get("haltWhen"):
+            # One item tripping the condition halts the campaign: a fan-out
+            # gate that only fired when every branch failed would not be a gate.
+            a(emit_halt_any(n, var))
     else:
         label = f"{js_str(nid)}"
         verified = bool(panel and over)
