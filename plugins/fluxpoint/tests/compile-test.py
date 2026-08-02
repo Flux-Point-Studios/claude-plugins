@@ -196,6 +196,38 @@ def rounds_blow_budget(ir):
 
 case("repeat: rounds priced into the ceiling", rounds_blow_budget, "budget.maxNodes is 20")
 
+# --- warnings: legal shapes that will predictably disappoint -------------
+def warn_case(name, mutate, want_substr):
+    """want_substr=None means the IR must produce NO warnings."""
+    global passed, failed
+    ir = copy.deepcopy(BASE)
+    mutate(ir)
+    ws = cg.warnings(ir)
+    if want_substr is None:
+        ok, detail = (not ws, "silent" if not ws else f"warned: {ws}")
+    else:
+        ok = any(want_substr in w for w in ws)
+        detail = "warned" if ok else f"NOT warned (got {ws})"
+    print(f"{'PASS' if ok else 'FAIL'}  warn: {name:<48} -> {detail}")
+    passed, failed = (passed + ok, failed + (not ok))
+
+
+warn_case("healthy ceiling stays silent", make_repeat(untilDryRounds=2, maxRounds=6), None)
+warn_case("ceiling too tight to ever go dry",
+          make_repeat(untilDryRounds=2, maxRounds=3), "will end the sweep before the dry rule")
+warn_case("ceiling equal to dry rule",
+          make_repeat(untilDryRounds=2, maxRounds=2), "leaves only 0 round(s)")
+warn_case("non-discovery graph stays silent", lambda ir: None, None)
+
+
+def unverified_discovery(ir):
+    make_repeat()(ir)
+    ir["nodes"][0]["verify"] = "schema-only"
+    ir["nodes"][0].pop("verifyOver", None)
+
+
+warn_case("discovery with no verification tier", unverified_discovery, "no verification tier")
+
 # The discovery loop's emitted shape carries its own guarantees.
 disc = copy.deepcopy(BASE)
 make_repeat()(disc)

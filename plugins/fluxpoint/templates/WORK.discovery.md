@@ -22,7 +22,7 @@ Copy over `WORK.md`'s Campaign section to use it.
   "version": 1,
   "name": "discovery-campaign",
   "campaign": "Sweep for defects until two consecutive rounds find nothing new",
-  "budget": { "maxNodes": 84, "verifyFloorTokens": 50000, "nodeFloorTokens": 80000 },
+  "budget": { "maxNodes": 126, "verifyFloorTokens": 50000, "nodeFloorTokens": 80000 },
   "defaults": { "effort": "medium" },
   "requiredArgs": ["target"],
   "roles": { "hunter": { "effort": "medium" } },
@@ -47,7 +47,7 @@ Copy over `WORK.md`'s Campaign section to use it.
       "onRed": "drop+log",
       "repeat": {
         "untilDryRounds": 2,
-        "maxRounds": 4,
+        "maxRounds": 6,
         "dedupeBy": ["file", "line", "claim"]
       }
     }
@@ -65,14 +65,26 @@ Copy over `WORK.md`'s Campaign section to use it.
   discovery, not with rounds.
 
 ## Failure policy
-- Dry rule: 2 consecutive rounds with nothing new ends the sweep.
-- Hard ceiling: 4 rounds. Hitting it while still finding new items is
-  logged as `discovery INCOMPLETE, not exhausted` — the difference matters
-  and is never silently blurred.
+- Dry rule: 2 consecutive rounds with nothing new ends the sweep. This is
+  what *should* end it.
+- Hard ceiling: 6 rounds — a backstop against a loop that never converges,
+  not a thoroughness dial. Leave enough headroom above the dry rule
+  (>= untilDryRounds + 3) that the ceiling is rarely what stops the sweep;
+  the compiler warns when it is too tight. Rounds that never run cost
+  nothing, so a generous ceiling is cheap: the `while` exits the moment the
+  sweep goes dry.
+- Hitting the ceiling while still finding new items is logged as
+  `discovery INCOMPLETE, not exhausted`, marks the node INCOMPLETE in
+  provenance, and downgrades the campaign outcome to INCOMPLETE. Stopping
+  early and finishing are different claims and never get blurred.
 - Budget: `nodeFloorTokens` stops a further round before it starts and
   records the sweep as INCOMPLETE rather than half-running a round.
-- Halt condition a human can name: two dry rounds, four rounds total, or
+- Halt condition a human can name: two dry rounds, six rounds total, or
   the budget floor — whichever comes first.
+
+`maxNodes` prices the worst case: 3 modalities x (1 finder + 2 expected
+items x 3 refuters) x 6 rounds = 126. Typical runs cost far less, because
+a converging sweep never reaches its later rounds.
 
 ## Evidence
 Appended automatically by `scripts/record-run.py` — do not hand-edit.

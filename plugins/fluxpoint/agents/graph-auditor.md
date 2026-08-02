@@ -44,8 +44,10 @@ Audit checklist, in priority order:
   first round, or so low it will never protect anything; no halt
   condition a human can name.
 - Discovery honesty: a fixed fan-out where the size of the work is
-  genuinely unknown and a `repeat` block belongs; a `maxRounds` so low the
-  sweep will predictably end INCOMPLETE and be read as exhaustive anyway;
+  genuinely unknown and a `repeat` block belongs; a `maxRounds` with too
+  little headroom over `untilDryRounds`, so the ceiling rather than the dry
+  rule ends every run and INCOMPLETE stops meaning anything (the compiler
+  warns; judge whether a short sweep is genuinely intended);
   a `dedupeBy` key too coarse (collapsing distinct findings) or too fine
   (`claim` alone, so a reworded restatement counts as new and the loop
   never goes dry); a `{{seen}}`-less discovery prompt that will re-find
