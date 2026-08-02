@@ -22,7 +22,8 @@ does.
 - `scripts/` — `lib.sh`, `inject-state.sh`, `verify-changed.sh`,
   `dod-gate.sh` (loop); `compile-graph.py`, `record-run.py` (graph);
   `proof-guard.py` (proof-strength ratchet); `plutus-budget.py` (on-chain
-  size and execution-unit limits); `ledger.py` (once-only guard for
+  size and execution-unit limits); `pair-guard.py` (relation gate over
+  declared artifact pairs); `ledger.py` (once-only guard for
   irreversible nodes); `migrate.py` (pre-1.0 migration,
   plan/apply/finalize).
 - `contracts/` — versioned named schemas (`FindingsV1`, `VerdictV1`,
@@ -41,6 +42,9 @@ does.
   `hooks-test.sh` (hooks.json command strings + PostToolUse behavior),
   `security-test.py` (codegen injection and red-team regressions),
   `migrate-test.sh` (migration against real pre-1.0 fixtures),
+  `proof-guard-test.sh` (the ratchet, per prover), `budget-test.sh`
+  (on-chain limits), `ledger-test.py` (the once-only guard, executed
+  rather than grepped), `pair-test.sh` (relation gate),
   `unify-test.sh` (state model and compatibility). All of it runs from
   `scripts/harness.sh --full` in CI.
 
@@ -91,6 +95,23 @@ Evidence table both modes append to.
   that changes nothing, because the recurring defect here was never a wrong
   output — it was a silent one. Unknown fields are compile errors for the
   same reason.
+
+## Relations, not just artifacts
+
+Every gate above measures one artifact. The defects that cost the most are
+relationships between two: an on-chain predicate tightened without its
+off-chain builder, a migration and the schema it assumes, both ends of a
+wire format. Each side passes its own tests — the suite is green *because*
+each half is individually correct — and the pair is what breaks.
+
+`scripts/pair-guard.py` checks declared pairs from a repo-owned
+`.fluxpoint-pairs.json`, in two tiers. **Co-change** reports a diff that
+moves one side and not the other; it is a smoke alarm and proves only that
+somebody touched both files. **Parity** runs a declared command whose job
+is to evaluate the two together, making the relation itself an exit code —
+that is the real check, and `--list` names every pair that lacks one rather
+than letting a half-checked relation read as covered. Only the consuming
+repo can write parity vectors; the plugin supplies the slot.
 
 ## Verified work
 

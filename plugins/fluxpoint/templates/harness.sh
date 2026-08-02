@@ -111,6 +111,11 @@ full() {
   # rise. Dormant in repos with no proof-language files.
   pg="$(plugin_script proof-guard.py)"
   [ -n "$pg" ] && python3 "$pg" --check
+  # Relation gate. Every check above measures one artifact; the defects that
+  # cost the most are relationships between two, and a suite stays green
+  # because each half is individually correct. Dormant without a manifest.
+  pr="$(plugin_script pair-guard.py)"
+  [ -n "$pr" ] && python3 "$pr" --check ${FPL_PAIR_AGAINST:+--against "$FPL_PAIR_AGAINST"}
 }
 
 case "$mode" in

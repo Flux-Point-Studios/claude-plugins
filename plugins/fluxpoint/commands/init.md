@@ -30,6 +30,17 @@ step; do not stop at copying files.
    requires (build, unit and property tests, lint, typecheck, formal
    checks, preview-net exercises). Then run `scripts/harness.sh --full` and
    iterate until it exits 0, or report precisely what is red and why.
+
+   While you are reading the stack, ask the one question the harness cannot
+   answer for itself: **which artifacts have to agree with each other?** An
+   on-chain predicate and the off-chain builder that constructs
+   transactions for it; a migration and the schema it assumes; a wire
+   format and both ends of it. Each side has its own tests and passes them;
+   the pair is what breaks. Write them into `.fluxpoint-pairs.json` with a
+   `parity` command wherever one can be written — a co-change rule only
+   proves somebody touched both files, never that they agree. The manifest
+   is worthless if it is not written at onboarding, because nobody adds a
+   pair after the incident it would have caught.
 6. Fill in the WORK.md goal line. Use "$ARGUMENTS" if provided; otherwise
    ask for the goal before writing.
 7. Set `MODE`. Default to `loop` and delete the Campaign section — most

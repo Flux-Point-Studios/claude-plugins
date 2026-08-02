@@ -93,6 +93,7 @@ case "${1:---full}" in
     step "proof-strength ratchet" bash "$PLUGIN/tests/proof-guard-test.sh"
     step "on-chain budget gate" bash "$PLUGIN/tests/budget-test.sh"
     step "once-only ledger (executed)" python3 "$PLUGIN/tests/ledger-test.py"
+    step "relation gate" bash "$PLUGIN/tests/pair-test.sh"
     step "unified state + compatibility" bash "$PLUGIN/tests/unify-test.sh"
     ;;
   *)
