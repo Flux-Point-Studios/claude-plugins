@@ -82,11 +82,34 @@ guarantee that third case. 2-of-3 hardware signing. A withdrawal only an
 external counterparty can perform. A 72-hour governance timelock. An
 operator wallet with nothing spendable until someone tops it up.
 
+**Park last, not first.** Most work that feels human-only is not: a CLI, an
+API, a headless browser, a read-only query, or a generated file the person
+only has to sign. Genuine blockers are narrow — key material an agent must
+not hold, legal authority, physical possession, another party's own action.
+So `release.whyNotAgent` is required and has to name what was ruled out;
+`graph-auditor` treats a reason that does not survive contact with the
+repo's own tooling as HIGH. Every unnecessary park is a person waiting on
+work that could have been finished.
+
+**A block never arrives empty.** When a node does park, the graph spawns one
+advisor first, contracted to `DecisionV1` — so a bare "ask the operator"
+cannot satisfy it. The advisor is told to attack `whyNotAgent` before
+accepting it, and if the step turns out to be automatable its recommendation
+*is* that concrete path and the tooling it needs. Otherwise it returns the
+best available course of action with the alternatives it rejected and the
+strongest objection to each, including to the one it recommends. That lands
+in the provenance, the inbox row, and `/fluxpoint:status`, so what reaches a
+person is a recommendation with reasoning attached, not a hand-off. The
+advisor costs one agent call per parked node and is priced into
+`budget.maxNodes`; if the floor declines it, the block says so explicitly
+rather than quietly arriving bare.
+
 Mark those `actor: human` or `actor: third-party` with a `release` block:
 
 ```json
 { "id": "sign", "actor": "human", "contract": "HarnessCheckV1",
   "release": { "instructions": "Sign with 2 of the 3 hardware keys and paste the cardano-cli output.",
+               "whyNotAgent": "the keys live on hardware devices held by three people; an agent may never hold them. The unsigned body IS built headlessly by the previous node.",
                "proofContract": "HarnessCheckV1" },
   "wake": { "check": "cardano-cli query tip --mainnet", "everyMinutes": 30 } }
 ```

@@ -128,7 +128,14 @@ out="$(printf '{"session_id":"s","cwd":"%s"}' "$ROOT/r" | bash "$PLUGIN/scripts/
 printf '%s' "$out" >"$ROOT/inject.txt"
 contains "inject: harness verdict" "Last recorded harness verdict: PASS" "$ROOT/inject.txt"
 contains "inject: last graph run" "Last graph run: wf_s1 COMPLETE" "$ROOT/inject.txt"
-contains "inject: WORK.md head" "WORK.md (first 80 lines)" "$ROOT/inject.txt"
+contains "inject: names the state file" "WORK.md (sections that matter" "$ROOT/inject.txt"
+# The point of section-aware extraction: in the shipped 90-line template the
+# Evidence header sits at 85 and Notes at 88, so a fixed 80-line window hid
+# the row record-run.py had just written.
+contains "inject: shows the Evidence row it just wrote" "wf_s1" "$ROOT/inject.txt"
+contains "inject: shows the Notes section" "## Notes" "$ROOT/inject.txt"
+contains "inject: shows open Plan items" "## Plan —" "$ROOT/inject.txt"
+contains "inject: shows unmet DoD" "## Definition of Done —" "$ROOT/inject.txt"
 
 # --- 6. legacy repo: LOOP.md injected AND migrate hint shown ---
 newrepo
@@ -137,7 +144,7 @@ mkdir -p .claude/fluxpoint-loop; printf 'FAIL 2026-01-01T00:00:00Z\n' >.claude/f
 out="$(printf '{"session_id":"s","cwd":"%s"}' "$ROOT/r" | bash "$PLUGIN/scripts/inject-state.sh")"
 printf '%s' "$out" >"$ROOT/inject2.txt"
 contains "legacy: reads pre-1.0 state dir" "Last recorded harness verdict: FAIL" "$ROOT/inject2.txt"
-contains "legacy: injects LOOP.md" "LOOP.md (first 80 lines)" "$ROOT/inject2.txt"
+contains "legacy: injects LOOP.md" "LOOP.md (sections that matter" "$ROOT/inject2.txt"
 contains "legacy: suggests migrate" "/fluxpoint:migrate" "$ROOT/inject2.txt"
 
 cd /; rm -rf "$ROOT"

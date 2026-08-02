@@ -64,6 +64,8 @@ IR = {
          "contract": "HarnessCheckV1",
          "release": {"instructions": "Sign with 2 of the 3 hardware keys and paste "
                                      "the HarnessCheckV1 from cardano-cli.",
+                     "whyNotAgent": "the signing keys are on hardware devices held by "
+                                    "three people and no agent may ever hold them",
                      "proofContract": "HarnessCheckV1"},
          "wake": {"check": "cardano-cli query tip --mainnet", "everyMinutes": 30,
                   "deadline": "2030-01-01T00:00:00Z"}},
@@ -103,11 +105,17 @@ case("a misspelled release field",
      lambda ir: ir["nodes"][1]["release"].update(instuctions="typo"),
      "unknown field 'instuctions'")
 
-# A parked node spawns nothing, so it must not be priced against the ceiling.
+case("a human node with no stated reason an agent cannot do it",
+     lambda ir: ir["nodes"][1]["release"].pop("whyNotAgent"),
+     "release.whyNotAgent required")
+
+# A parked node spawns no worker but does spawn one advisor, and the ceiling
+# must say so — pricing it at zero would understate the run by one per park.
 tight = copy.deepcopy(IR)
 tight["budget"] = {"maxNodes": 3}
-report("a parked node costs no agent calls", not cg.validate(tight, CONTRACTS),
-       f"{cg.plan_node_count(tight)} planned for 3 agent nodes")
+report("a parked node is priced for its advisor",
+       bool(cg.validate(tight, CONTRACTS)) and cg.plan_node_count(tight) == 4,
+       f"{cg.plan_node_count(tight)} planned, ceiling 3 rejected")
 
 
 # ==================== execution ===========================================
@@ -121,7 +129,13 @@ def run(ir, args):
                 "import {writeFileSync} from 'node:fs';\n"
                 "const SPAWNED=[];\n"
                 "const agent=async(p)=>{SPAWNED.push(p);"
-                "return {exit:0,command:'x',output:'ok'}};\n"
+                "return p.includes('cannot be run by an agent')"
+                "  ? {question:'can this be automated?',options:[],"
+                "     chosen:'use cardano-cli with a watch-only wallet',"
+                "     rationale:'the unsigned body can be built headlessly; only the "
+                "signature needs a person',overturned_prior:false,frozen_by:'none',"
+                "reversible:true,evidence:[]}"
+                "  : {exit:0,command:'x',output:'ok'}};\n"
                 "const parallel=async(t)=>Promise.all(t.map(f=>f()));\n"
                 "const pipeline=async()=>[],log=()=>{},phase=()=>{};\n"
                 f"const args={json.dumps(args)};\n"
@@ -142,8 +156,28 @@ def run(ir, args):
 
 summary, calls, err = run(IR, {"_releases": {}})
 prov = {p["node"]: p["status"] for p in (summary or {}).get("provenance", [])}
-report("the human node spawns no agent",
-       not [c for c in calls if "hardware signing" in c], f"{len(calls)} spawn(s)")
+advisory = [c for c in calls if "cannot be run by an agent" in c]
+worker = [c for c in calls
+          if "hardware signing" in c and "cannot be run by an agent" not in c]
+report("the human node spawns no worker", not worker, f"{len(worker)} worker spawn(s)")
+report("but it does ask for a recommendation first", len(advisory) == 1,
+       f"{len(advisory)} advisory spawn(s)")
+# The advisor is told to challenge the block before accepting it, because
+# most steps that feel human-only are a CLI call away.
+report("the advisor is told to challenge the block first",
+       bool(advisory) and "headless browser" in advisory[0],
+       "challenged" if advisory and "headless browser" in advisory[0] else "not asked")
+report("the advisor is given the stated reason to attack",
+       bool(advisory) and "hardware devices held by" in advisory[0], "supplied")
+report("a recommendation comes back with the block",
+       ((summary or {}).get("recommendations") or {}).get("sign", {}).get("chosen")
+       is not None,
+       str(((summary or {}).get("recommendations") or {}).get("sign"))[:40])
+blocked_detail = [p.get("detail") for p in (summary or {}).get("provenance", [])
+                  if p.get("node") == "sign"]
+report("the block itself carries the recommendation",
+       bool(blocked_detail) and "RECOMMENDED:" in (blocked_detail[0] or ""),
+       (blocked_detail[0] or "")[-40:] if blocked_detail else "none")
 report("the human node is reported BLOCKED", prov.get("sign") == "BLOCKED",
        prov.get("sign", f"absent; stderr={err[:40]}"))
 report("its dependent inherits BLOCKED", prov.get("submit") == "BLOCKED",
@@ -259,6 +293,80 @@ with tempfile.TemporaryDirectory() as root:
     report("a resolved item stays in the log",
            len([l for l in open(os.path.join(root, ".claude", "fluxpoint",
                                              "inbox.jsonl"))]) == 2, "2 rows")
+
+# ==================== decisions: the choice, not the prose ================
+# DesignV1 has summary/plan/files/risks and none of them is the choice, so a
+# frozen decision had to be smuggled into free text and the rejected options
+# had nowhere to go at all. The one that overturns the prior is exactly the
+# one a fresh context re-decides the other way.
+DEC_IR = {
+    "version": 1, "name": "d", "campaign": "freeze the vault parameters",
+    "budget": {"maxNodes": 8},
+    "nodes": [
+        {"id": "choose", "phase": "Council", "prompt": "pick the window and say why",
+         "contract": "DecisionV1", "decides": "vault-window"},
+        {"id": "build", "phase": "Build", "prompt":
+            "implement under {{decisions.vault-window}}",
+         "contract": "SliceV1", "honors": ["vault-window"]},
+    ],
+}
+report("a decision graph compiles", not cg.validate(DEC_IR, CONTRACTS),
+       str(cg.validate(DEC_IR, CONTRACTS))[:60])
+
+
+def dcase(name, mutate, want):
+    ir = copy.deepcopy(DEC_IR)
+    mutate(ir)
+    errs = cg.validate(ir, CONTRACTS)
+    hit = any(want in e for e in errs)
+    report(name, hit, f"rejected on '{want}'" if hit else f"NOT rejected ({errs})")
+
+
+dcase("decides on a non-DecisionV1 node",
+      lambda ir: ir["nodes"][0].update(contract="DesignV1"),
+      "requires contract DecisionV1")
+dcase("honors a decision nobody makes",
+      lambda ir: ir["nodes"][1].update(honors=["nonexistent"],
+                                       prompt="x {{decisions.nonexistent}}"),
+      "neither decided by an earlier node nor listed under imports")
+dcase("honors without reading it is a phantom edge",
+      lambda ir: ir["nodes"][1].update(prompt="implement it"),
+      "the prompt never uses")
+dcase("reading a decision this node does not honor",
+      lambda ir: ir["nodes"][1].update(honors=[],
+                                       prompt="x {{decisions.vault-window}}"),
+      "is not in this node's honors")
+dcase("two nodes deciding the same thing",
+      lambda ir: ir["nodes"].append(
+          {"id": "again", "phase": "C", "prompt": "re-pick", "contract": "DecisionV1",
+           "decides": "vault-window"}),
+      "is already decided by node")
+dcase("an import that is not a run reference",
+      lambda ir: ir.update(imports={"vault-window": ""}),
+      "must be a runId")
+
+dec_js = cg.emit(copy.deepcopy(DEC_IR), CONTRACTS)
+report("the decision is bound into the honoring prompt",
+       'JSON.stringify(DECISIONS["vault-window"])' in dec_js, "bound")
+report("overturning the prior is logged, not buried",
+       "overturned the prior" in dec_js, "logged")
+report("no decisions machinery without a decision",
+       "DECISIONS" not in cg.emit(copy.deepcopy(IR), CONTRACTS), "clean")
+
+IMP = copy.deepcopy(DEC_IR)
+IMP["nodes"] = [IMP["nodes"][1]]
+IMP["imports"] = {"vault-window": "latest"}
+imp_js = cg.emit(IMP, CONTRACTS)
+report("a missing import throws at launch",
+       "missing imported decision: vault-window" in imp_js, "throws")
+
+# The refuters' arguments were collected and discarded; a survivor with its
+# strongest objection recorded is worth more later than a vote count.
+PANEL = {**copy.deepcopy(DEC_IR), "nodes": [
+    {"id": "find", "phase": "F", "prompt": "find things", "contract": "FindingsV1",
+     "verify": "panel:3", "verifyOver": "findings"}]}
+report("refuter reasons survive the tally",
+       "objections: cast.map(v => v.reason)" in cg.emit(PANEL, CONTRACTS), "carried")
 
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

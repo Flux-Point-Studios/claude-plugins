@@ -20,6 +20,44 @@ import sys
 # graph runs get theirs appended here.
 ROW_HDR = "| When (UTC) | Source | Outcome | Claim | Proof |"
 LEGACY_HDR = "| When (UTC) | runId | Outcome | Nodes OK/dead | Findings | Harness | Red-team |"
+# A frozen choice is a build artifact for the same reason Evidence is: the
+# most expensive output of a campaign was the one thing with no slot, and a
+# decision that lived only in a transcript was re-decided by the next
+# context that had to ask the same question.
+DEC_HDR = "| When (UTC) | Decision | Chosen | Overturned prior | Frozen by | Rationale |"
+
+
+def cell(s, n=160):
+    """One table cell: no pipes, no newlines, bounded."""
+    s = str(s).replace("|", "\\|").replace("\n", " ").strip()
+    return (s[: n - 1] + "…") if len(s) > n else s
+
+
+def decision_rows(summary, ts):
+    """A row per DecisionV1 the run produced, newest-run-first order."""
+    results = summary.get("results") or {}
+    contracts = summary.get("contracts") or {}
+    decided = summary.get("decisions") or {}
+    # Prefer the campaign's own decisions map; fall back to the contract map
+    # so a graph that produced a DecisionV1 without `decides` is still filed.
+    seen, rows = set(), []
+    for did, rec in decided.items():
+        if isinstance(rec, dict):
+            seen.add(id(rec))
+            rows.append((did, rec))
+    for node, value in results.items():
+        if contracts.get(node) == "DecisionV1" and isinstance(value, dict):
+            if id(value) not in seen:
+                rows.append((node, value))
+    out = []
+    for did, r in rows:
+        out.append(
+            f"| {ts} | {cell(did, 40)} | {cell(r.get('chosen'), 60)} "
+            f"| {'YES' if r.get('overturned_prior') else 'no'} "
+            f"| {cell(r.get('frozen_by') or 'none', 40)} "
+            f"| {cell(r.get('rationale'))} |"
+        )
+    return out
 
 
 def count_items(results):
@@ -144,10 +182,22 @@ def main():
     blocked_nodes = [p.get("node") for p in prov if p.get("status") == "BLOCKED"]
     try:
         import inbox as _inbox
+        recs = summary.get("recommendations") or {}
         for p in prov:
             if p.get("status") == "BLOCKED":
-                _inbox.add(args.root, "blocked", p.get("node"), campaign,
-                           p.get("detail") or "waiting on a person")
+                # The recommendation is the point of the row. An inbox item
+                # that only says "blocked on you" moves the work to a person
+                # without moving it forward.
+                r = recs.get(p.get("node")) or {}
+                detail = p.get("detail") or "waiting on a person"
+                if r.get("chosen"):
+                    detail = (f"RECOMMENDED: {r['chosen']}\n      WHY: "
+                              f"{r.get('rationale', '')}\n      ASK: {detail}")
+                    rejected = [o.get("option") for o in (r.get("options") or [])
+                                if o.get("option") and o.get("option") != r["chosen"]]
+                    if rejected:
+                        detail += f"\n      ALSO CONSIDERED: {', '.join(rejected[:3])}"
+                _inbox.add(args.root, "blocked", p.get("node"), campaign, detail)
         if outcome == "CONFIRM-REQUIRED":
             refused = [p.get("node") for p in prov if p.get("status") == "REFUSED"]
             _inbox.add(args.root, "confirm-required", refused[0] if refused else "",
@@ -212,6 +262,24 @@ def main():
         f"| {ts} | {args.run_id} | {outcome} | {ok}/{dead} | {findings} "
         f"| {harness} | {red_team} |"
     )
+
+    # 2a. Decisions, spliced under their own header when the file has one.
+    drows = decision_rows(summary, ts)
+    if drows and os.path.exists(args.graph):
+        text = open(args.graph).read()
+        if DEC_HDR in text:
+            text, n = re.subn(
+                re.escape(DEC_HDR) + r"\n\|[-| ]+\|\n",
+                lambda m: m.group(0) + "\n".join(drows) + "\n", text, count=1)
+            if n:
+                open(args.graph, "w").write(text)
+                for d in drows:
+                    print(d)
+        else:
+            print(f"record-run: {len(drows)} decision(s) recorded in the run "
+                  f"artifact, but {args.graph} has no Decisions table to append "
+                  f"to — add one so a frozen choice outlives this run",
+                  file=sys.stderr)
 
     if os.path.exists(args.graph):
         text = open(args.graph).read()

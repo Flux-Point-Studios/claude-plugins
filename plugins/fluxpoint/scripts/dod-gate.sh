@@ -39,7 +39,30 @@ fi
 nl=$'\n'
 findings=""
 hlog="$sd/full.log"
-if ! bash scripts/harness.sh --full >"$hlog" 2>&1; then
+# Mark the run as in flight BEFORE starting it. A gate killed mid-run — the
+# hook ceiling is 600s, and aiken check plus a few thousand tests can reach
+# it — used to leave the previous PASS sitting there to be read as current.
+# A crashed verdict must never look like a passed one.
+start_ts="$(date -u +%FT%TZ)"
+printf 'RUNNING %s\n' "$start_ts" >"$sd/last-harness"
+gate_timeout="${FPL_GATE_TIMEOUT:-540}"
+if command -v timeout >/dev/null 2>&1; then
+  timeout "$gate_timeout" bash scripts/harness.sh --full >"$hlog" 2>&1
+  hrc=$?
+else
+  bash scripts/harness.sh --full >"$hlog" 2>&1
+  hrc=$?
+fi
+if [ "$hrc" -eq 124 ] || [ "$hrc" -eq 137 ]; then
+  # Not red and not green: nothing was established either way, and saying so
+  # is the whole point.
+  printf 'TIMEOUT %s\n' "$(date -u +%FT%TZ)" >"$sd/last-harness"
+  findings="harness --full did not finish within ${gate_timeout}s and was killed.${nl}\
+This is not a pass and not a failure — nothing was established. Either the${nl}\
+suite got slower than the gate allows or something hung. Run it yourself,${nl}\
+then split it or raise FPL_GATE_TIMEOUT (the hook ceiling is 600s).${nl}\
+Last 40 lines before the kill:${nl}$(tail -n 40 "$hlog")${nl}${nl}"
+elif [ "$hrc" -ne 0 ]; then
   findings="harness --full RED (last 40 lines):${nl}$(tail -n 40 "$hlog")${nl}${nl}"
 fi
 hy="$(fpl_scan_hygiene | head -n 40)"

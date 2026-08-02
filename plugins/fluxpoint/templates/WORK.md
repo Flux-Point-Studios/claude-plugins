@@ -81,6 +81,14 @@ for a worked council → build → independently-gated campaign.
 - Standing authorizations: <e.g. starting scripts/loop.sh for Plan items
   in this file needs no further approval>.
 
+## Decisions
+Appended automatically by `scripts/record-run.py` — do not hand-edit.
+A decision that overturned the prior is the one a fresh context will
+silently re-decide the other way.
+
+| When (UTC) | Decision | Chosen | Overturned prior | Frozen by | Rationale |
+|---|---|---|---|---|---|
+
 ## Evidence
 One table for both modes. Graph rows are appended automatically by
 `scripts/record-run.py`; loop rows are written per slice. A claim without

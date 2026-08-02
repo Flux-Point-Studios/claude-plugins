@@ -26,7 +26,11 @@ IR_FENCE = re.compile(r"```json\s+graph-ir\s*\n(.*?)\n```", re.S)
 # mutates + independent already does, properly. See validate().
 TIER = re.compile(r"^(schema-only|skeptic:(\d+)|panel:(\d+))$")
 HALT = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*(==|!=|>=|<=|>|<)\s*(-?\d+|'[^']*')\s*$")
-SUBST = re.compile(r"\{\{\s*([A-Za-z0-9_.\[\]]+)\s*\}\}")
+# Hyphens are in the class because decision ids are kebab-case by rule, so
+# {{decisions.vault-window}} has to be a token the substituter can see. An
+# unrecognised root is a compile error either way, so widening this cannot
+# turn a literal into a silent expression.
+SUBST = re.compile(r"\{\{\s*([A-Za-z0-9_.\-\[\]]+)\s*\}\}")
 IDENT = re.compile(r"^[a-z][a-z0-9-]*$")
 
 # Every key the IR may carry, by level. An unknown key is a compile error
@@ -37,16 +41,16 @@ IDENT = re.compile(r"^[a-z][a-z0-9-]*$")
 # must demonstrably change what the compiler produces.
 IR_FIELDS = {
     "version", "name", "campaign", "budget", "defaults", "roles", "lists",
-    "nodes", "requiredArgs", "argDefaults",
+    "nodes", "requiredArgs", "argDefaults", "imports",
 }
 NODE_FIELDS = {
     "id", "phase", "prompt", "contract", "role", "effort", "model", "agentType",
     "foreach", "after", "mutates", "independent", "verifies", "verify",
     "verifyOver", "expectItems", "haltWhen", "haltReason", "onRed", "isolation",
-    "repeat", "irreversible", "actor", "release", "wake",
+    "repeat", "irreversible", "actor", "release", "wake", "decides", "honors",
 }
 ACTORS = {"agent", "human", "third-party"}
-RELEASE_FIELDS = {"instructions", "proofContract"}
+RELEASE_FIELDS = {"instructions", "proofContract", "whyNotAgent"}
 WAKE_FIELDS = {"check", "everyMinutes", "deadline"}
 REPEAT_FIELDS = {"untilDryRounds", "maxRounds", "dedupeBy"}
 BUDGET_FIELDS = {"maxNodes", "verifyFloorTokens", "nodeFloorTokens"}
@@ -111,6 +115,8 @@ def validate(ir, contracts):
     lists = ir.get("lists") or {}
     roles = ir.get("roles") or {}
     seen = {}
+    decided = {}          # decision id -> the node that makes it
+    imports = ir.get("imports") or {}
 
     # A lists key is emitted as a JS identifier, so an unconstrained key is
     # arbitrary code in the generated script. Constrain it like a node id.
@@ -126,6 +132,16 @@ def validate(ir, contracts):
     f += _unknown("IR", ir, IR_FIELDS)
     f += _unknown("budget", ir.get("budget"), BUDGET_FIELDS)
     f += _unknown("defaults", ir.get("defaults"), DEFAULTS_FIELDS)
+    # A ten-node ceiling forces big campaigns to split, and a split is
+    # lossy unless a frozen decision can cross the boundary.
+    if imports and not isinstance(imports, dict):
+        f.append("imports: must be an object of decisionId -> runId | 'latest'")
+    elif imports:
+        for k, v in imports.items():
+            if not IDENT.match(str(k)):
+                f.append(f"imports: key '{k}' must be lowercase kebab-case")
+            if not isinstance(v, str) or not v.strip():
+                f.append(f"imports.{k}: must be a runId or 'latest'")
     for rname, rbody in (roles or {}).items():
         f += _unknown(f"role '{rname}'", rbody, ROLE_FIELDS)
 
@@ -219,6 +235,8 @@ def validate(ir, contracts):
                         f"{c} — the condition could never fire"
                     )
 
+        hon = n.get("honors") or []
+
         # {{prev}} is only meaningful with a declared predecessor; otherwise
         # the node is reading state no edge delivers to it.
         if "{{prev}}" in str(n.get("prompt", "")) and not n.get("after"):
@@ -236,6 +254,17 @@ def validate(ir, contracts):
             bound.add("seen")
         for tok in SUBST.findall(str(n.get("prompt", ""))):
             root = tok.split(".")[0].split("[")[0]
+            if root == "decisions":
+                # Scoped per id on purpose: honoring one decision must not
+                # hand the node every decision the campaign ever made.
+                want = tok.split(".", 1)[1] if "." in tok else ""
+                if want not in (hon or []):
+                    f.append(
+                        f"{where}: prompt uses {{{{{tok}}}}} but '{want}' is not "
+                        f"in this node's honors — name it there, so what binds "
+                        f"this node is declared rather than implied"
+                    )
+                continue
             if root not in bound:
                 f.append(
                     f"{where}: prompt uses {{{{{tok}}}}} but '{root}' is not in "
@@ -289,6 +318,48 @@ def validate(ir, contracts):
                     f"{where}: mutates the tree but no node with independent:true "
                     f"verifies:'{nid}' — a mutator may not certify its own work"
                 )
+        # Decisions. DesignV1 has summary/plan/files/risks and none of them
+        # is *the choice*, so a frozen architectural decision had to be
+        # smuggled into free text and the rejected alternatives had nowhere
+        # to go at all. A decision that overturns the prior is precisely the
+        # one a fresh context re-decides the other way, and when the
+        # parameter freezes at genesis that re-decision is unrecoverable.
+        if n.get("decides"):
+            if c != "DecisionV1":
+                f.append(
+                    f"{where}: decides requires contract DecisionV1 (has '{c}') "
+                    f"— the record is the point, not the prose around it"
+                )
+            if not IDENT.match(str(n["decides"])):
+                f.append(f"{where}: decides id must be lowercase kebab-case")
+            if n["decides"] in decided:
+                f.append(f"{where}: decides '{n['decides']}' is already decided by "
+                         f"node '{decided[n['decides']]}'")
+            else:
+                decided[n["decides"]] = nid
+        if n.get("honors") is not None:
+            if not isinstance(n["honors"], list) or not all(
+                    isinstance(h, str) for h in n["honors"]):
+                f.append(f"{where}: honors must be a list of decision ids")
+            else:
+                for h in hon:
+                    if h not in decided and h not in imports:
+                        f.append(
+                            f"{where}: honors '{h}' is neither decided by an "
+                            f"earlier node nor listed under imports — a decision "
+                            f"this node cannot see cannot bind it"
+                        )
+                    # Same rule as `after`: a declared dependency the prompt
+                    # never reads is a phantom. It looks binding in the spec
+                    # and constrains nothing in the run, which is worse than
+                    # not declaring it — a reader would believe it held.
+                    if ("{{decisions." + h + "}}") not in str(n.get("prompt", "")):
+                        f.append(
+                            f"{where}: honors '{h}' but the prompt never uses "
+                            f"{{{{decisions.{h}}}}} — the decision would not reach "
+                            f"the agent, so nothing would be bound by it"
+                        )
+
         # Actors. The engine had two responses to a node it could not
         # complete — halt the campaign, or drop the item and march on with a
         # null — and no third state for "this one is blocked, work the other
@@ -309,6 +380,18 @@ def validate(ir, contracts):
                     f.append(
                         f"{where}: release.instructions required — this text is "
                         f"the entire message the blocked human gets"
+                    )
+                # Parking is a last resort, not a first response. Most things
+                # that feel human-only are not: a CLI, an API, or a headless
+                # browser does them. Naming what was ruled out is the cheapest
+                # way to stop a node being parked out of habit.
+                if not str(rel.get("whyNotAgent", "")).strip():
+                    f.append(
+                        f"{where}: release.whyNotAgent required — say what makes "
+                        f"this impossible for an agent (key material it must not "
+                        f"hold, legal authority, physical possession, another "
+                        f"party's action), because a step a CLI or a headless "
+                        f"browser could do should not be parked on a person"
                     )
                 pc = rel.get("proofContract")
                 if not pc:
@@ -440,9 +523,11 @@ def plan_node_count(ir):
     lists = ir.get("lists") or {}
     total = 0
     for n in ir.get("nodes") or []:
-        # A node no agent runs costs no agent calls. Pricing it would make
-        # the ceiling bite on work that never spawns.
+        # A parked node spawns no worker, but it does spawn one advisor to
+        # produce the recommendation that goes with the block. Pricing it at
+        # zero would make the ceiling lie by exactly the number of parks.
         if n.get("actor", "agent") != "agent":
+            total += 1
             continue
         fan = len(lists.get(n.get("foreach"), [None])) if n.get("foreach") else 1
         per_round = fan
@@ -554,7 +639,11 @@ def emit_halt_any(n, var):
 def emit(ir, contracts):
     nodes = ir["nodes"]
     lists = ir.get("lists") or {}
-    used = sorted({n["contract"] for n in nodes})
+    used = sorted({n["contract"] for n in nodes}
+                  # The advisor emits DecisionV1 whether or not a node
+                  # declares it, so its schema has to be in scope.
+                  | ({"DecisionV1"} if any(
+                      x.get("actor", "agent") != "agent" for x in nodes) else set()))
     phases, seen_phase = [], set()
     for n in nodes:
         p = n.get("phase", "Run")
@@ -603,6 +692,28 @@ def emit(ir, contracts):
         for name, items in lists.items():
             a(f"const {list_var(name)} = {json.dumps(items, indent=2)}")
         a("")
+    decides_any = [n for n in nodes if n.get("decides")]
+    imports = ir.get("imports") or {}
+    if decides_any or imports:
+        a("// --- decisions: the choice itself, not the prose around it ---")
+        a("// A decision that overturned the prior is the one a fresh context")
+        a("// silently re-decides the other way, and for a parameter that")
+        a("// freezes at genesis the re-decision is unrecoverable.")
+        a("const DECISIONS = {}")
+    if imports:
+        a("// Imported from earlier campaigns. A ten-node ceiling forces a big")
+        a("// campaign to split, and the split is lossy unless a frozen choice")
+        a("// can cross the boundary — so an absent one throws at launch")
+        a("// rather than letting this run re-decide it by accident.")
+        a("const _imported = (A && A._decisions) || {}")
+        for k in sorted(imports):
+            msg = js_str(
+                f"missing imported decision: {k} — load it with "
+                f"/fluxpoint:graph-run, which resolves imports from "
+                f".claude/fluxpoint/runs")
+            a(f"if (!_imported[{js_str(k)}]) throw new Error({msg})")
+            a(f"DECISIONS[{js_str(k)}] = _imported[{js_str(k)}]")
+        a("")
     parked = [n for n in nodes if n.get("actor", "agent") != "agent"]
     if parked:
         a("// --- actors: nodes no agent can run ---")
@@ -617,6 +728,9 @@ def emit(ir, contracts):
         a("// Blocked is inherited: handing a dependent the literal null of a")
         a("// node nobody ran would report a failure where there is a wait.")
         a("const BLOCKED = new Set()")
+        a("// A block handed over with no recommendation is a punt. Each")
+        a("// one carries the reasoned alternative the advisor produced.")
+        a("const RECOMMENDATIONS = {}")
         a("const WAITS = []")
         a("")
     if any(n.get("irreversible") for n in nodes):
@@ -677,7 +791,9 @@ def emit(ir, contracts):
     if any(n.get("irreversible") for n in nodes):
         extra += ", ledger: LEDGER_WRITES"
     if parked:
-        extra += ", blocked: [...BLOCKED], waits: WAITS"
+        extra += ", blocked: [...BLOCKED], waits: WAITS, recommendations: RECOMMENDATIONS"
+    if decides_any or imports:
+        extra += ", decisions: DECISIONS"
     a("  return { campaign, outcome: final, results: RESULTS, provenance: PROVENANCE,")
     a(f"           contracts: CONTRACTS{extra} }}")
     a("}")
@@ -745,6 +861,11 @@ def emit(ir, contracts):
         a("    kills: cast.filter(v => v.refuted).length,")
         a("    cast: cast.length,")
         a("    unverified: cast.length < n,")
+        a("    // The arguments that produced the verdict, not just the tally.")
+        a("    // Discarding them threw away the most reusable thing a panel")
+        a("    // makes: a survivor with its strongest objection recorded is")
+        a("    // worth more later than a survivor with a vote count.")
+        a("    objections: cast.map(v => v.reason).filter(Boolean).slice(0, 5),")
         a("  }")
         a("}")
         a("")
@@ -789,7 +910,44 @@ def emit_parked(n):
     a(f"  note({js_str(nid)}, 'RELEASED', `released by ${{rel_{var}.by || 'operator'}}`)")
     a(f"  log(`{nid}: released — the {actor} step is done`)")
     a("} else {")
-    a(f"  note({js_str(nid)}, 'BLOCKED', {js_str(instructions)})")
+    # Handing someone a block with no recommendation is a punt. The advisor
+    # runs before the block is reported, is contracted to DecisionV1 so a
+    # bare "ask the operator" cannot satisfy it, and is asked first whether
+    # the block is real — most steps that feel human-only are not.
+    a(f"  const advice_{var} = affordable({js_str('advice for ' + nid)})")
+    a(f"    ? await spawn(")
+    a(f"        `A campaign step cannot be run by an agent and is about to be "
+      f"handed to a person. Do not simply agree.\\n\\n` +")
+    a(f"        `The step: ` + {js_str(str(n['prompt']))} + `\\n` +")
+    a(f"        `What the human is being asked to do: ` + {js_str(instructions)} + `\\n` +")
+    a(f"        `The stated reason no agent can do it: ` + "
+      f"{js_str(str(rel.get('whyNotAgent', 'unstated')))} + `\\n\\n` +")
+    a("        `FIRST, challenge that reason. Could this actually be done "
+      "without a person — a CLI, an API, a headless browser, a read-only "
+      "query, a generated file the human only has to sign? If yes, your "
+      "recommendation is that concrete agent-executable path, and say what "
+      "tooling it needs. Only genuine blockers survive: key material an "
+      "agent must not hold, legal authority, physical possession, or "
+      "another party's own action.` +")
+    a("        `\\n\\nTHEN recommend the single best course of action for the "
+      "human, with the alternatives you rejected and the strongest objection "
+      "to each — including to the one you are recommending. Ground it in "
+      "this repo: read what you need to. A recommendation with no reasoning "
+      "is worth less than no recommendation, because it will be followed.`,")
+    a(f"        {{ label: {js_str(nid + ':advice')}, phase: {js_str(n.get('phase', 'Run'))}, "
+      f"schema: C.DecisionV1, effort: 'medium' }}")
+    a("      )")
+    a("    : null")
+    a(f"  if (advice_{var}) {{")
+    a(f"    RECOMMENDATIONS[{js_str(nid)}] = advice_{var}")
+    a(f"    log(`{nid}: recommended — ${{advice_{var}.chosen}}`)")
+    a("  } else {")
+    a(f"    log(`{nid}: BLOCKED with no recommendation — the advisory call was "
+      f"declined by the budget floor. This is a worse hand-off, not a cheaper one.`)")
+    a("  }")
+    a(f"  note({js_str(nid)}, 'BLOCKED', {js_str(instructions)}"
+      f" + (advice_{var} ? ` | RECOMMENDED: ${{advice_{var}.chosen}} — "
+      f"${{advice_{var}.rationale}}` : ''))")
     a(f"  log(`BLOCKED at {nid} ({actor}): ` + {js_str(instructions)})")
     a(f"  BLOCKED.add({js_str(nid)})")
     a("  INCOMPLETE = true")
@@ -822,6 +980,12 @@ def emit_node(n, ir):
         # Later rounds are told what earlier rounds already surfaced, so the
         # finder spends its round on new ground instead of re-reporting.
         mapping["seen"] = f"(seenList_{var}.join('; ') || 'nothing yet')"
+    # Honored decisions arrive as the record alone, at any distance and with
+    # no `after` chain. Pasting the deciding node's whole result instead is
+    # the context-packet smell graph-auditor already flags — and `after` is
+    # single-valued, so a chain could not carry more than one hop anyway.
+    for h in (n.get("honors") or []):
+        mapping[f"decisions.{h}"] = f"JSON.stringify(DECISIONS[{js_str(h)}])"
     prompt = js_template(n["prompt"], mapping)
     L = []
     a = L.append
@@ -952,6 +1116,10 @@ def emit_node(n, ir):
             a(f"log(`{nid}: ${{{var}.length}} item(s) survived {tier}`)")
 
     a(f"RESULTS[{js_str(nid)}] = {var}")
+    if n.get("decides"):
+        a(f"DECISIONS[{js_str(n['decides'])}] = {var}")
+        a(f"if ({var} && {var}.overturned_prior) log("
+          f"`DECISION {n['decides']}: overturned the prior — ${{{var}.chosen}}`)")
     if guard:
         a("}")
     return "\n".join(L)

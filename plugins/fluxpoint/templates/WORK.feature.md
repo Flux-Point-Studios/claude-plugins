@@ -55,8 +55,9 @@ Uses the loop side of the plugin: the gate resolves `red-team-reviewer` via
       "id": "choose",
       "phase": "Council",
       "after": "design",
-      "prompt": "Judge these candidate designs side by side for the goal \"{{A.goal}}\" on TDD-ability, blast radius, fit with the Definition of Done in WORK.md, and honesty of their risks. Candidates: {{prev}}. Return the single strongest design, grafting in the best ideas from the runners-up. Barrier justified: judging requires all candidates at once.",
-      "contract": "DesignV1",
+      "prompt": "Judge these candidate designs side by side for the goal \"{{A.goal}}\" on TDD-ability, blast radius, fit with the Definition of Done in WORK.md, and honesty of their risks. Candidates: {{prev}}. Return a DecisionV1: the question you actually settled, every candidate with who argued it and the strongest objection to it — including the one you chose — the choice, and why it beat the others. Say plainly whether this overturns what the campaign assumed going in, and name the node that freezes it. Barrier justified: judging requires all candidates at once.",
+      "contract": "DecisionV1",
+      "decides": "implementation-approach",
       "effort": "high",
       "verify": "schema-only",
       "onRed": "halt"
@@ -67,7 +68,8 @@ Uses the loop side of the plugin: the gate resolves `red-team-reviewer` via
       "role": "builder",
       "after": "choose",
       "mutates": true,
-      "prompt": "Implement exactly this design as one loop slice: {{prev}}. Goal: \"{{A.goal}}\". Constraints: {{A.constraints}}. Work TDD strictly per WORK_PROMPT.md: failing test first, minimum code to green, scripts/harness.sh --changed <file> after each edit. Create and commit on a branch named claude/graph-<short-slug-of-goal>, test and code together. Run scripts/harness.sh --full and report its real exit code; never weaken the harness or delete tests to reach green. Evidence entries are command + observed result.",
+      "honors": ["implementation-approach"],
+      "prompt": "Implement exactly this design as one loop slice: {{prev}}. The frozen decision that binds this work is {{decisions.implementation-approach}} — if the implementation cannot honor it, stop and say so rather than quietly choosing differently. Goal: \"{{A.goal}}\". Constraints: {{A.constraints}}. Work TDD strictly per WORK_PROMPT.md: failing test first, minimum code to green, scripts/harness.sh --changed <file> after each edit. Create and commit on a branch named claude/graph-<short-slug-of-goal>, test and code together. Run scripts/harness.sh --full and report its real exit code; never weaken the harness or delete tests to reach green. Evidence entries are command + observed result.",
       "contract": "SliceV1",
       "verify": "schema-only",
       "onRed": "halt"
@@ -122,6 +124,14 @@ Uses the loop side of the plugin: the gate resolves `red-team-reviewer` via
 - Budget: 20 planned agent calls, verification floor 50k tokens.
 - Halt conditions a human can name: independent harness exit != 0, and a
   red-team verdict of BLOCK.
+
+## Decisions
+Appended automatically by `scripts/record-run.py` — do not hand-edit.
+A decision that overturned the prior is the one a fresh context will
+silently re-decide the other way.
+
+| When (UTC) | Decision | Chosen | Overturned prior | Frozen by | Rationale |
+|---|---|---|---|---|---|
 
 ## Evidence
 Appended automatically by `scripts/record-run.py` — do not hand-edit.

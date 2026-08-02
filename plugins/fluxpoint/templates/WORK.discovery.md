@@ -86,6 +86,14 @@ Copy over `WORK.md`'s Campaign section to use it.
 items x 3 refuters) x 6 rounds = 126. Typical runs cost far less, because
 a converging sweep never reaches its later rounds.
 
+## Decisions
+Appended automatically by `scripts/record-run.py` — do not hand-edit.
+A decision that overturned the prior is the one a fresh context will
+silently re-decide the other way.
+
+| When (UTC) | Decision | Chosen | Overturned prior | Frozen by | Rationale |
+|---|---|---|---|---|---|
+
 ## Evidence
 Appended automatically by `scripts/record-run.py` — do not hand-edit.
 

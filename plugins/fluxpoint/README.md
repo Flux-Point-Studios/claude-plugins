@@ -121,10 +121,17 @@ A node no agent can run — 2-of-3 signing, a third party's withdrawal, a
 72h timelock — used to leave the engine two options: halt everything, or
 drop it and continue with a `null`. Neither is "work the other branches".
 
-`actor: human` / `actor: third-party` with a `release` block emits no spawn
-at all. Absent a release the node reports BLOCKED with the instructions its
-author wrote, the run goes INCOMPLETE and continues, and dependents inherit
-BLOCKED rather than a null that reads like a failure. `/fluxpoint:release`
+Parking is a last resort: `release.whyNotAgent` must name what makes the
+step impossible for an agent, and `graph-auditor` attacks that reason,
+because a CLI, an API or a headless browser covers most of what feels
+human-only. `actor: human` / `actor: third-party` emits no worker spawn.
+Absent a release the node reports BLOCKED — but never empty: one advisor
+runs first, contracted to `DecisionV1` so a bare "ask the operator" cannot
+satisfy it, told to challenge `whyNotAgent` before accepting it and to
+return the concrete automatable path if one exists, otherwise the
+recommended course with the rejected alternatives and the strongest
+objection to each. The run goes INCOMPLETE and continues, and dependents
+inherit BLOCKED rather than a null that reads like a failure. `/fluxpoint:release`
 validates the operator's proof against the node's `proofContract` and
 refuses an adjective — the campaign resumes on that file, so it is not a
 formality. Every block, expired `wake` deadline and refused confirmation

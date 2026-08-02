@@ -1,0 +1,53 @@
+{
+  "$id": "DecisionV1",
+  "type": "object",
+  "required": [
+    "question", "options", "chosen", "rationale",
+    "overturned_prior", "frozen_by", "reversible", "evidence"
+  ],
+  "properties": {
+    "question": {
+      "type": "string",
+      "minLength": 15,
+      "description": "The decision actually being made, as a question with more than one defensible answer."
+    },
+    "options": {
+      "type": "array",
+      "minItems": 2,
+      "description": "The alternatives considered. One option is not a decision, it is a plan.",
+      "items": {
+        "type": "object",
+        "required": ["option", "argued_by", "strongest_objection"],
+        "properties": {
+          "option": { "type": "string", "minLength": 1 },
+          "argued_by": { "type": "string", "minLength": 1 },
+          "strongest_objection": {
+            "type": "string",
+            "minLength": 20,
+            "description": "The best case against this option, including the one that was chosen. An option with no objection was not examined."
+          }
+        }
+      }
+    },
+    "chosen": { "type": "string", "minLength": 1 },
+    "rationale": {
+      "type": "string",
+      "minLength": 40,
+      "description": "Why this option beat the others. Long enough that a lazy output cannot satisfy it."
+    },
+    "overturned_prior": {
+      "type": "boolean",
+      "description": "True when this reverses what the orchestrator or a previous decision assumed. These are the ones a fresh context silently re-decides the other way."
+    },
+    "frozen_by": {
+      "type": "string",
+      "description": "The nodeId whose execution makes this irrevocable, or 'none'. For anything compiled into a genesis, re-deciding later is not an option."
+    },
+    "reversible": { "type": "boolean" },
+    "evidence": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "What was run or read to establish this, not adjectives."
+    }
+  }
+}

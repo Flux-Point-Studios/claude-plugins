@@ -60,8 +60,84 @@ fi
 
 state="$(fpl_state_file || true)"
 if [ -n "$state" ]; then
-  echo "- ${state} (first 80 lines):"
-  sed -n '1,80p' "$state"
+  # A fixed line window is the wrong shape for this file. In the shipped
+  # 90-line template the Evidence header sits at 85 and Notes at 88, and a
+  # real campaign is worse — the graph-ir block alone can run 30+ lines. So
+  # record-run.py did the hard part correctly and the bootstrap never showed
+  # it: a fresh context was re-oriented with the goal and the Definition of
+  # Done but not with what was proven or what is blocking.
+  echo "- ${state} (sections that matter, newest evidence first):"
+  python3 - "$state" <<'PY'
+import re, sys
+
+text = open(sys.argv[1], errors="replace").read()
+lines = text.splitlines()
+out, elided = [], []
+BUDGET = 90  # lines emitted, not lines scanned
+
+
+def section(name):
+    """Body lines of '## name', up to the next header."""
+    body, inside = [], False
+    for ln in lines:
+        if re.match(r"^##+\s", ln):
+            if inside:
+                break
+            inside = ln.strip().lower().startswith(f"## {name.lower()}")
+            continue
+        if inside:
+            body.append(ln)
+    return [b for b in body if b.strip()]
+
+
+for ln in lines[:12]:
+    if re.match(r"^(STATUS|MODE):", ln.strip()):
+        out.append(ln.strip())
+
+# Open work only, and blocked items carry who they are blocked on — the
+# loop skips `[~]`, so hiding them here would hide why nothing is moving.
+plan = [b for b in section("Plan") if re.match(r"^\s*-\s*\[( |~)\]", b)]
+if plan:
+    out.append("")
+    out.append(f"## Plan — {len(plan)} open item(s)")
+    out += [p.rstrip() for p in plan[:12]]
+    if len(plan) > 12:
+        elided.append(f"{len(plan) - 12} more Plan item(s)")
+
+dod = [b for b in section("Definition of Done") if re.match(r"^\s*-\s*\[ \]", b)]
+if dod:
+    out.append("")
+    out.append(f"## Definition of Done — {len(dod)} unmet")
+    out += [d.rstrip() for d in dod[:8]]
+    if len(dod) > 8:
+        elided.append(f"{len(dod) - 8} more unmet DoD item(s)")
+
+for name, keep in (("Decisions", 3), ("Evidence", 5)):
+    rows = [b for b in section(name)
+            if b.strip().startswith("|") and not re.match(r"^\|[-| ]+\|$", b.strip())]
+    rows = [r for r in rows[1:]]  # drop the header row itself
+    if rows:
+        out.append("")
+        out.append(f"## {name} — newest {min(keep, len(rows))} of {len(rows)}")
+        out += [r.rstrip() for r in rows[:keep]]
+        if len(rows) > keep:
+            elided.append(f"{len(rows) - keep} older {name} row(s)")
+
+notes = section("Notes for the next iteration") or section("Notes for the next run")
+if notes:
+    out.append("")
+    out.append("## Notes")
+    out += [n.rstrip() for n in notes[:10]]
+
+if len(out) > BUDGET:
+    elided.append(f"{len(out) - BUDGET} further line(s)")
+    out = out[:BUDGET]
+print("\n".join(out) if out else "(no recognizable sections; showing nothing "
+                                 "rather than a truncated head)")
+if elided:
+    # Named, because silent truncation is how a bootstrap reads as complete.
+    print(f"[elided: {'; '.join(elided)} — read {sys.argv[1]} directly]")
+PY
   if [ "$state" = "LOOP.md" ]; then
     echo "- Note: LOOP.md is the pre-1.0 state file and is still honored. /fluxpoint:migrate folds it into WORK.md, which carries one Definition of Done and one Evidence table for both loop slices and graph campaigns."
   fi
