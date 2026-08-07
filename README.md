@@ -1,7 +1,10 @@
 # Flux Point Claude Plugins
 
-Private Claude Code plugin marketplace for Flux Point Studios. One plugin,
-**fluxpoint**, with two drivers over one contract:
+Private Claude Code plugin marketplace for Flux Point Studios. Two plugins:
+**fluxpoint**, the engineering harness (below), and **substrate**, a
+multi-repo primitive registry (see [The substrate
+plugin](#the-substrate-plugin)). fluxpoint has two drivers over one
+contract:
 
 - **Loop mode** makes one agent's cycle programmable — every session,
   interactive or autonomous, runs against a deterministic
@@ -341,10 +344,35 @@ payloads and runs the output to prove they stay inert:
    `/fluxpoint:init`, make an edit containing `FIXME`, try to
    stop, and watch the gate block.
 
+## The substrate plugin
+
+The second plugin in this marketplace, **substrate**, answers a different
+question than the harness: not "is this done" but "does this already
+exist". Each repo in a multi-repo workspace declares its reusable
+primitives in a `substrate.json` manifest; a zero-dependency Node script
+compiles every manifest into one generated `SUBSTRATE.md` graph — nodes,
+consumes-edges, orphans (dormant value to activate), hubs (harden first) —
+and a matcher-less `SessionStart` hook injects the compact summary plus
+staleness alarms into every session, post-compaction included. A manifest
+that lags its repo's commits is reported as a fact, and a re-commit
+touching only the manifest is deliberately not drift. Install with
+`/plugin install substrate@fluxpoint`, onboard a workspace with
+`/substrate:init`; the manifest schema, config reference, staleness
+semantics, and honest limitations live in
+[`plugins/substrate/README.md`](plugins/substrate/README.md). Its
+`node:test` suites run as part of `scripts/harness.sh --full`.
+
 ## Layout
 
 ```
 .claude-plugin/marketplace.json
+plugins/substrate/
+├── .claude-plugin/plugin.json
+├── hooks/hooks.json
+├── scripts/substrate-graph.mjs
+├── commands/           init.md, status.md, emit.md
+├── templates/DOCTRINE.snippet.md
+└── tests/              graph.test.mjs, staleness.test.mjs
 plugins/fluxpoint/
 ├── .claude-plugin/plugin.json
 ├── hooks/hooks.json

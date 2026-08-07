@@ -1,0 +1,96 @@
+# substrate
+
+A registry for multi-repo workspaces that makes reuse checkable instead of
+remembered. Each repo declares its reusable primitives — engines, APIs,
+pipelines, toolkits, agents, patterns — in a `substrate.json` manifest;
+`substrate-graph.mjs` compiles every manifest into one generated
+`SUBSTRATE.md` graph of nodes, consumes-edges, orphans (dormant value) and
+hubs (harden first); and a `SessionStart` hook injects the compact summary
+plus staleness alarms into every session, including post-compaction, so the
+sweep-before-build doctrine has something deterministic to sweep.
+
+## Layout
+
+- `scripts/substrate-graph.mjs` — the whole engine: zero dependencies,
+  Node ≥ 18, cross-platform. `--emit` writes `SUBSTRATE.md` and exits 1 on
+  manifest problems (the CI half); `--check` prints the summary and always
+  exits 0 (the session half). Root resolution: `--root <dir>`, else
+  `CLAUDE_PROJECT_DIR`, else the current directory.
+- `hooks/hooks.json` — `SessionStart` with no matcher, so startup, resume,
+  clear, and post-compaction all get the `--check` output. The output is
+  factual statements only; a stale manifest is reported, never commanded.
+- `commands/` — `/substrate:init` (onboard a workspace), `/substrate:status`
+  (run and interpret `--check`), `/substrate:emit` (regenerate, and keep the
+  manifest edit in the same commit as the primitive it describes).
+- `templates/DOCTRINE.snippet.md` — the sweep doctrine, ready to append to a
+  workspace `CLAUDE.md`.
+- `tests/` — `node:test` suites over temp-dir fixture workspaces; wired into
+  this repo's `scripts/harness.sh --full`.
+
+## Install
+
+```
+/plugin marketplace add flux-point-studios/claude-plugins
+/plugin install substrate@fluxpoint
+```
+
+Then `/substrate:init <repo>` in the workspace that contains your repos.
+
+## Manifest schema
+
+`<workspace-root>/<repo>/substrate.json`, discovered exactly one level under
+the root:
+
+| Key | Type | Meaning |
+|---|---|---|
+| `repo` | string | Display and sort name for the repo (usually the dirname). |
+| `version` | number, optional | Schema version; `1` is tolerated and currently the only value. |
+| `primitives` | array | The repo's reusable primitives. Empty is valid — the repo still appears in the graph. |
+| `primitives[].id` | string | Kebab-case, globally unique across the workspace. Duplicates are a manifest problem. |
+| `primitives[].name` | string | Short human title. |
+| `primitives[].desc` | string | One line on what it computes and for whom. |
+| `primitives[].kind` | string | e.g. `engine`, `api`, `pipeline`, `toolkit`, `agent`, `pattern`. |
+| `primitives[].paths` | string[] | Repo-relative files or directories that are the primitive. |
+| `primitives[].consumes` | string[] | Ids of primitives this one builds on; `[]` for none. Unknown ids are a manifest problem. |
+| `primitives[].status` | string | e.g. `live`, `core-only`. |
+
+A repo without a manifest is silently ignored: by doctrine, that absence
+marks demos and pitch artifacts as outside the substrate.
+
+## Config reference
+
+Optional `substrate.config.json` at the workspace root:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `graceHours` | `6` | A manifest edit within this many hours of the code change counts as the same shipment and never alarms. |
+| `excludeDirs` | `[]` | Extra directory names pruned from non-git staleness walks, on top of the built-ins: `node_modules`, `.git`, `dist`, `build`, `out`, `coverage`, `__pycache__`. |
+| `nonGitRepos` | `{}` | Map of non-git repo dirname → relative code paths its staleness check may walk. Undeclared non-git repos are skipped from staleness with a one-line note, never walked blind. |
+
+## Staleness semantics
+
+- **Git repos** (detected via `git rev-parse`, so worktrees and gitfile
+  checkouts count): the alarm fires when the last commit is more than
+  `graceHours` newer than the manifest file's mtime **and** at least one
+  committed file other than `substrate.json` changed in that window. A
+  re-commit touching only the manifest is not drift.
+- **Declared non-git repos**: file mtimes under the declared paths stand in
+  for commit times. Walks are capped at depth 6 and 5000 entries; a capped
+  walk says so, and its counts are a lower bound.
+- **git missing from PATH**: one note, staleness skipped for git repos —
+  never per-repo error spam. `--check` exits 0 regardless of what it finds.
+
+## Honest limitations
+
+- Discovery is exactly one level under the root: `root/repo/substrate.json`.
+  Nested workspaces and deeper monorepo packages are not scanned.
+- Staleness is a heuristic, not a proof. It compares the manifest file's
+  mtime against commit times (git) or file mtimes (declared non-git), so a
+  fresh clone or copy — which resets mtimes — can defer a legitimate alarm
+  until the next real commit. It answers "did code move after the manifest,"
+  never "is the manifest's content correct."
+- Non-git mtime semantics count file entries newer than the manifest, which
+  is not identical to git's distinct-files-changed count.
+- The graph is only as true as the manifests. The doctrine snippet
+  (`templates/DOCTRINE.snippet.md`) is the enforcement mechanism: manifest
+  updates ride the same commit as the primitive they describe.
