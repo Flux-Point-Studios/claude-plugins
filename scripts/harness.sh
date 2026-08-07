@@ -26,6 +26,7 @@ export PYTHONIOENCODING=utf-8
 
 cd "$(dirname "$0")/.."
 PLUGIN="plugins/fluxpoint"
+SUB="plugins/substrate"
 fail=0
 
 step() { # name, then command
@@ -85,6 +86,18 @@ portable_invocations() {
   }
 }
 
+substrate_tests() {
+  local n
+  n=$(ls "$SUB"/tests/*.test.mjs 2>/dev/null | wc -l)
+  # A green that ran nothing is not a green: if the suites are ever renamed
+  # or moved, this check must fail rather than silently pass.
+  if [ "$n" -lt 1 ]; then
+    echo "expected at least 1 substrate test suite, found $n" >&2
+    return 1
+  fi
+  node --test "$SUB"/tests/*.test.mjs
+}
+
 case "${1:---full}" in
   --changed)
     f="${2:?usage: harness.sh --changed <file>}"
@@ -92,6 +105,7 @@ case "${1:---full}" in
       *.json) step "json: $f" check_json "$f" ;;
       *.sh)   step "bash -n: $f" check_sh "$f" ;;
       *.py)   step "py_compile: $f" check_py "$f" ;;
+      *.mjs)  step "node --check: $f" node --check "$f" ;;
       *)      : ;;
     esac
     # Any change under the plugin can break compilation; keep it cheap but
@@ -99,13 +113,16 @@ case "${1:---full}" in
     case "$f" in
       "$PLUGIN"/scripts/*.py | "$PLUGIN"/contracts/*.json | "$PLUGIN"/templates/WORK*.md)
         step "templates compile" compile_templates ;;
+      "$SUB"/*)
+        step "substrate suites" substrate_tests ;;
     esac
     ;;
   --full)
     echo "fluxpoint harness --full"
     for f in .claude-plugin/marketplace.json "$PLUGIN"/.claude-plugin/plugin.json \
              "$PLUGIN"/contracts/*.json "$PLUGIN"/hooks/hooks.json \
-             "$PLUGIN"/templates/settings.snippet.json; do
+             "$PLUGIN"/templates/settings.snippet.json \
+             "$SUB"/.claude-plugin/plugin.json "$SUB"/hooks/hooks.json; do
       [ -f "$f" ] && step "json: ${f#"$PLUGIN"/}" check_json "$f"
     done
     for f in "$PLUGIN"/scripts/*.sh "$PLUGIN"/templates/*.sh scripts/*.sh; do
@@ -129,6 +146,8 @@ case "${1:---full}" in
     step "relation gate" bash "$PLUGIN/tests/pair-test.sh"
     step "park layer (executed)" "$FPL_PY" "$PLUGIN/tests/park-test.py"
     step "unified state + compatibility" bash "$PLUGIN/tests/unify-test.sh"
+    step "substrate: node --check" node --check "$SUB/scripts/substrate-graph.mjs"
+    step "substrate: registry graph + staleness suites" substrate_tests
     ;;
   *)
     echo "usage: harness.sh --changed <file> | --full" >&2
