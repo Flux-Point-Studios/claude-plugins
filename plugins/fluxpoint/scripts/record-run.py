@@ -34,17 +34,24 @@ def cell(s, n=160):
 
 
 def decision_rows(summary, ts):
-    """A row per DecisionV1 the run produced, newest-run-first order."""
+    """A row per DecisionV1 the run produced, newest-run-first order.
+
+    Imported decisions are excluded: they were decided — and filed — by the
+    run named in decisionsImported, and re-filing them under every honoring
+    campaign would stamp an old choice with a new date once per run.
+    """
     results = summary.get("results") or {}
     contracts = summary.get("contracts") or {}
     decided = summary.get("decisions") or {}
+    imported = summary.get("decisionsImported") or {}
     # Prefer the campaign's own decisions map; fall back to the contract map
     # so a graph that produced a DecisionV1 without `decides` is still filed.
     seen, rows = set(), []
     for did, rec in decided.items():
-        if isinstance(rec, dict):
-            seen.add(id(rec))
-            rows.append((did, rec))
+        if did in imported or not isinstance(rec, dict):
+            continue
+        seen.add(id(rec))
+        rows.append((did, rec))
     for node, value in results.items():
         if contracts.get(node) == "DecisionV1" and isinstance(value, dict):
             if id(value) not in seen:
@@ -254,6 +261,12 @@ def main():
                   f"({', '.join(blocked_nodes[:3])})")
     if skipped:
         claim += f"; {skipped} SKIPPED on budget — coverage incomplete"
+    imported = summary.get("decisionsImported") or {}
+    if imported:
+        claim += ("; honors " + ", ".join(
+            f"{d}@{imported[d]}" for d in sorted(imported)[:2]))
+        if len(imported) > 2:
+            claim += f" +{len(imported) - 2} more imported decision(s)"
     for p in partial:
         claim += f"; {p.get('node')} INCOMPLETE — {p.get('detail') or 'did not run to exhaustion'}"
     proof = f"harness exit {harness}; red-team {red_team}; executor {args.executor}"

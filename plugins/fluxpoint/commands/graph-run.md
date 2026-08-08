@@ -31,13 +31,15 @@ Workflow tool requires.
    branches that do not depend on it. That is the expected outcome, not a
    failure — clear it with `/fluxpoint:release <node>`, never by inventing
    a release.
-   If the IR has an `imports` block, resolve each frozen decision from
-   `.claude/fluxpoint/runs/*.json` — `'latest'` means the newest run whose
-   summary carries that decision id, otherwise the named runId — and pass
-   the map as `args._decisions`. The graph throws at launch on a missing
-   one rather than re-deciding it by accident. If a required decision
-   genuinely does not exist yet, the campaign that makes it has to run
-   first; do not invent the record to get past the throw.
+   If the IR has an `imports` block, there is nothing for you to load: the
+   compiler resolves each frozen decision from `.claude/fluxpoint/runs`
+   at compile time — `'latest'` is the newest recorded run carrying that
+   decision id, otherwise the named runId — and embeds the record and its
+   source runId in the generated script. No hand-assembled `args._decisions`
+   map exists to get wrong, and a missing or malformed record fails step 2's
+   `--check` rather than the launch. If it does fail there, the campaign
+   that makes the decision has to run first; never hand-write or edit a run
+   artifact to get past the compiler.
    If the IR contains any `irreversible` node, load the once-only ledger —
    the compiled graph refuses to start without it:
    ```

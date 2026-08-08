@@ -100,6 +100,105 @@ def load_contracts(contracts_dir):
     return out
 
 
+RUNS_DIR = os.path.join(".claude", "fluxpoint", "runs")
+
+
+def _decision_in(artifact, did):
+    """The DecisionV1 record for `did` in one run artifact, or None.
+
+    Mirrors record-run.py's filing order: the campaign's own decisions map
+    first, then a node whose declared contract is DecisionV1 and whose id is
+    the decision id — the same fallback that files a record produced
+    without `decides`.
+    """
+    summary = artifact.get("summary") or {}
+    rec = (summary.get("decisions") or {}).get(did)
+    if isinstance(rec, dict):
+        return rec
+    rec = (summary.get("results") or {}).get(did)
+    if (summary.get("contracts") or {}).get(did) == "DecisionV1" and isinstance(rec, dict):
+        return rec
+    return None
+
+
+def resolve_imports(ir, contracts, runs_dir):
+    """Resolve the IR's imports from recorded runs, at compile time.
+
+    Returns ({decisionId: {"record": ..., "runId": ...}}, findings).
+
+    This resolution used to be a step the orchestrating agent performed by
+    hand while the compiled graph checked only that *some* record arrived —
+    which left the most-protected artifact class (frozen decisions) with the
+    least-protected loading path: a fabricated or stale map satisfied the
+    launch throw. Resolving here and embedding the record means no
+    hand-assembled map exists for a launch to trust, and a missing decision
+    fails the compile, which is earlier and louder than failing the launch.
+
+    A malformed run artifact is a hard finding, never skipped: what
+    'latest' names must not depend on which artifacts happened to parse.
+    """
+    imports = ir.get("imports") or {}
+    if not imports:
+        return {}, []
+    f = []
+    resolved = {}
+    required = (contracts.get("DecisionV1") or {}).get("required") or []
+    arts = []  # (when, runId, artifact) — runId from the filename, which is
+    # how a run is addressed; an artifact cannot rename itself via its body.
+    if os.path.isdir(runs_dir):
+        for fn in sorted(os.listdir(runs_dir)):
+            if not fn.endswith(".json"):
+                continue
+            p = os.path.join(runs_dir, fn)
+            try:
+                with open(p, encoding="utf-8") as fh:
+                    art = json.load(fh)
+            except (OSError, json.JSONDecodeError) as e:
+                f.append(
+                    f"imports: {p} is not readable JSON ({e}) — restore or "
+                    f"remove the artifact; a malformed run cannot be skipped, "
+                    f"because what 'latest' names must not depend on which "
+                    f"artifacts happened to parse")
+                continue
+            if not isinstance(art, dict):
+                f.append(f"imports: {p} is not a run artifact (not an object)")
+                continue
+            arts.append((str(art.get("when") or ""), fn[: -len(".json")], art))
+    for did in sorted(imports):
+        ref = imports[did]
+        if ref == "latest":
+            hits = []
+            for when, rid, art in arts:
+                rec = _decision_in(art, did)
+                if rec is not None:
+                    hits.append((when, rid, rec))
+            if not hits:
+                f.append(
+                    f"imports.{did}: no recorded run in {runs_dir} carries this "
+                    f"decision — the campaign that decides it has to run first; "
+                    f"never hand-write a run artifact to get past this")
+                continue
+            _, rid, rec = max(hits, key=lambda h: (h[0], h[1]))
+        else:
+            art = next((a for _, rid, a in arts if rid == ref), None)
+            if art is None:
+                f.append(f"imports.{did}: run '{ref}' not found in {runs_dir}")
+                continue
+            rid, rec = ref, _decision_in(art, did)
+            if rec is None:
+                f.append(f"imports.{did}: run '{ref}' does not carry this decision")
+                continue
+        missing = [k for k in required if k not in rec]
+        if missing:
+            f.append(
+                f"imports.{did}: the record in run '{rid}' is missing required "
+                f"DecisionV1 field(s) {missing} — a hand-edited artifact does "
+                f"not count as a decision")
+            continue
+        resolved[did] = {"record": rec, "runId": rid}
+    return resolved, f
+
+
 # ---------------------------------------------------------------- validation
 def validate(ir, contracts):
     """Return a list of findings. Empty list means the graph may compile."""
@@ -332,6 +431,12 @@ def validate(ir, contracts):
                 )
             if not IDENT.match(str(n["decides"])):
                 f.append(f"{where}: decides id must be lowercase kebab-case")
+            if n["decides"] in imports:
+                f.append(
+                    f"{where}: decides '{n['decides']}', which this campaign "
+                    f"imports — an imported decision is frozen, and re-deciding "
+                    f"it here is exactly the silent overturn imports exist to "
+                    f"prevent; drop the import or rename the decision")
             if n["decides"] in decided:
                 f.append(f"{where}: decides '{n['decides']}' is already decided by "
                          f"node '{decided[n['decides']]}'")
@@ -636,7 +741,7 @@ def emit_halt_any(n, var):
     )
 
 
-def emit(ir, contracts):
+def emit(ir, contracts, imports_resolved=None):
     nodes = ir["nodes"]
     lists = ir.get("lists") or {}
     used = sorted({n["contract"] for n in nodes}
@@ -701,18 +806,30 @@ def emit(ir, contracts):
         a("// freezes at genesis the re-decision is unrecoverable.")
         a("const DECISIONS = {}")
     if imports:
+        unresolved = sorted(set(imports) - set(imports_resolved or {}))
+        if unresolved:
+            # Emission-time backstop only: main() resolves before emitting,
+            # and a caller that skips resolution must fail loudly rather
+            # than regenerate the couriered-map hole this closed.
+            raise GraphError(
+                "imports must be resolved before emission (unresolved: "
+                + ", ".join(unresolved) + ") — go through resolve_imports(), "
+                "so the record is embedded rather than couriered by an agent")
         a("// Imported from earlier campaigns. A ten-node ceiling forces a big")
         a("// campaign to split, and the split is lossy unless a frozen choice")
-        a("// can cross the boundary — so an absent one throws at launch")
-        a("// rather than letting this run re-decide it by accident.")
-        a("const _imported = (A && A._decisions) || {}")
+        a("// can cross the boundary. Each record below was resolved from")
+        a("// .claude/fluxpoint/runs at compile time and embedded — no")
+        a("// hand-assembled map exists for a launch to trust, and no model")
+        a("// sits between the recorded choice and this run. Re-deciding it")
+        a("// requires a new deciding campaign, not a different argument.")
         for k in sorted(imports):
-            msg = js_str(
-                f"missing imported decision: {k} — load it with "
-                f"/fluxpoint:graph-run, which resolves imports from "
-                f".claude/fluxpoint/runs")
-            a(f"if (!_imported[{js_str(k)}]) throw new Error({msg})")
-            a(f"DECISIONS[{js_str(k)}] = _imported[{js_str(k)}]")
+            r = imports_resolved[k]
+            a(f"// {k} <- run {js_str(r['runId'])}")
+            a(f"DECISIONS[{js_str(k)}] = "
+              + json.dumps(r["record"], indent=2, sort_keys=True))
+        a("const DECISIONS_IMPORTED = " + json.dumps(
+            {k: imports_resolved[k]["runId"] for k in sorted(imports)},
+            sort_keys=True))
         a("")
     parked = [n for n in nodes if n.get("actor", "agent") != "agent"]
     if parked:
@@ -794,6 +911,11 @@ def emit(ir, contracts):
         extra += ", blocked: [...BLOCKED], waits: WAITS, recommendations: RECOMMENDATIONS"
     if decides_any or imports:
         extra += ", decisions: DECISIONS"
+    if imports:
+        # Which run each imported record came from rides out in the summary,
+        # so provenance can tell an imported decision from one this campaign
+        # made — record-run.py files only the latter as new Decisions rows.
+        extra += ", decisionsImported: DECISIONS_IMPORTED"
     a("  return { campaign, outcome: final, results: RESULTS, provenance: PROVENANCE,")
     a(f"           contracts: CONTRACTS{extra} }}")
     a("}")
@@ -1211,6 +1333,8 @@ def main():
     ap.add_argument("-o", "--out", help="path to write the compiled .graph.js")
     ap.add_argument("--check", action="store_true", help="validate only")
     ap.add_argument("--contracts", help="contracts directory")
+    ap.add_argument("--runs-dir", default=RUNS_DIR,
+                    help="recorded-runs directory imports resolve against")
     args = ap.parse_args()
 
     here = os.path.dirname(os.path.abspath(__file__))
@@ -1241,13 +1365,24 @@ def main():
     for w in warnings(ir):
         print(f"graph-compile: warning — {w}", file=sys.stderr)
 
+    # Resolved for --check too: a missing decision should fail preflight,
+    # not the emission the preflight was supposed to clear.
+    resolved, rfindings = resolve_imports(ir, contracts, args.runs_dir)
+    if rfindings:
+        print("graph-compile: imports unresolved\n", file=sys.stderr)
+        for f in rfindings:
+            print(f"  - {f}", file=sys.stderr)
+        return 1
+
     if args.check:
+        imported = (f", {len(resolved)} imported decision(s) resolved"
+                    if resolved else "")
         print(f"graph-compile: IR valid — {len(ir['nodes'])} node(s), "
               f"{planned} planned agent call(s), budget.maxNodes="
-              f"{(ir.get('budget') or {}).get('maxNodes')}")
+              f"{(ir.get('budget') or {}).get('maxNodes')}{imported}")
         return 0
 
-    js = emit(ir, contracts)
+    js = emit(ir, contracts, resolved)
     if args.out:
         os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
         with open(args.out, "w", encoding="utf-8", newline="\n") as fh:

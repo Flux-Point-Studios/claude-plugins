@@ -20,8 +20,10 @@ introduced quietly.
 """
 import copy
 import importlib.util
+import json
 import os
 import sys
+import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PLUGIN = os.path.dirname(HERE)
@@ -33,6 +35,27 @@ cg = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(cg)
 CONTRACTS = cg.load_contracts(os.path.join(PLUGIN, "contracts"))
 
+# imports resolve against recorded runs at compile time, so the probe that
+# sets the field needs a run to resolve from.
+RUNS = tempfile.mkdtemp(prefix="fpl-emission-runs-")
+with open(os.path.join(RUNS, "wf-fixture.json"), "w", encoding="utf-8") as fh:
+    json.dump({"runId": "wf-fixture", "when": "2026-08-08 00:00", "summary": {
+        "decisions": {"vault-params": {
+            "question": "which vault parameters do we freeze at genesis?",
+            "options": [
+                {"option": "conservative", "argued_by": "risk",
+                 "strongest_objection": "slower to adapt once live"},
+                {"option": "aggressive", "argued_by": "growth",
+                 "strongest_objection": "wider attack surface at launch"},
+            ],
+            "chosen": "conservative",
+            "rationale": "the genesis freeze is irreversible, so the option "
+                         "that fails safe wins every tie by default",
+            "overturned_prior": False, "frozen_by": "genesis",
+            "reversible": False,
+            "evidence": ["scripts/harness.sh --full exit 0"],
+        }}}}, fh)
+
 passed = failed = 0
 
 
@@ -41,7 +64,10 @@ def result_of(ir):
     errs = cg.validate(ir, CONTRACTS)
     if errs:
         return ("INVALID", tuple(errs), None, None)
-    return ("VALID", (), cg.plan_node_count(ir), cg.emit(ir, CONTRACTS))
+    resolved, rerrs = cg.resolve_imports(ir, CONTRACTS, RUNS)
+    if rerrs:
+        return ("UNRESOLVED", tuple(rerrs), None, None)
+    return ("VALID", (), cg.plan_node_count(ir), cg.emit(ir, CONTRACTS, resolved))
 
 
 def probe(level, field, base, mutate, note=""):
