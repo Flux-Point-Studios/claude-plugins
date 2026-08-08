@@ -42,6 +42,7 @@ fi
 
 nl=$'\n'
 findings=""
+state_file="$(fpl_state_file || true)"
 hlog="$sd/full.log"
 # Mark the run as in flight BEFORE starting it. A gate killed mid-run — the
 # hook ceiling is 600s, and aiken check plus a few thousand tests can reach
@@ -72,6 +73,25 @@ fi
 hy="$(fpl_scan_hygiene | head -n 40)"
 if [ -n "$hy" ]; then
   findings="${findings}hygiene scan RED, new code carries forbidden markers:${nl}${hy}${nl}"
+fi
+
+# Optional, and off unless asked for: green code with nothing written down is
+# a session whose reasoning dies at the next compaction. Three file
+# comparisons, no model judgment. Off by default because a check that starts
+# by blocking stops is a check people disable, taking the rest of the gate
+# with it — arm it per repo once the false-positive rate is known.
+if [ "${FPL_DISTILL:-0}" = "1" ] && [ -z "$findings" ]; then
+  snap="$(cat "$sd/$sid.snapshot" 2>/dev/null || echo "")"
+  if [ -n "$snap" ] && [ "$(fpl_memory_sha)" = "$snap" ] \
+     && [ ! -f "$sd/$sid.nodecision" ]; then
+    findings="${findings}nothing was written down this session.${nl}\
+Code changed, the harness is green, and ${state_file:-the work file}'s Decisions${nl}\
+and Notes are byte-identical to how this session found them. Whatever was${nl}\
+chosen and whatever was ruled out exists only in a transcript that${nl}\
+compaction will summarize away.${nl}\
+Record the choice:  decision.py --record < decision.json${nl}\
+or say there was none: decision.py --none \"<why>\" --session ${sid}${nl}"
+  fi
 fi
 
 ts="$(date -u +%FT%TZ)"

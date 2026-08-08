@@ -26,7 +26,7 @@ another layer's missing input:
 | 1 | `runs/*.json` → future campaigns | ~~Write-only.~~ **Closed for findings**: a node's judged items — survivors and the panel's kills with their objections — are filed as `LessonV1` rows by `record-run.py` (Part 3a). Advisor recommendations and per-node objections beyond the top one remain unindexed. | — |
 | 2 | Discovery seen-sets → the next sweep | ~~`emit_repeat`'s seen-set is an in-run local.~~ **Closed**: `memory: {seed, emit}` carries the frontier across runs; run two opens where run one stopped. | — |
 | 3 | Loop-mode work → Evidence | **Partly closed**: the Stop gate now writes its own `Source: gate` rows and SessionStart labels agent-written rows as assertions (Part 2, slice 6). Still open: `WORK.md` itself is unguarded — `verify-changed.sh` and the hygiene scan both skip `*.md` — so a row can still be edited after the fact, and nothing re-executes a Proof cell. | A forged row is now a *visible* anomaly rather than an invisible one; making it impossible needs the work file guarded. |
-| 4 | Loop-mode work → Decisions | The Decisions table is populated only by graph `DecisionV1` nodes; loop mode has no capture step and `hooks.json` wires no PreCompact. | The named failure — "a fresh context silently re-decides the other way" — is still fully open for loop work, which is most work. |
+| 4 | Loop-mode work → Decisions | **Closed**: `decision.py --record`/`--none` gives loop mode the bus with the `DecisionV1` floors enforced, and a PreCompact hook plus SessionStart tell the post-compaction context when reasoning was lost (Part 3c, slice 8). | — |
 | 5 | Prover output → anywhere | The shrunk counterexample from `aiken check` (or any prover) lives in `full.log`, clobbered per run. | The single most valuable artifact a prover produces evaporates; a fixed bug carries no pinned regression. |
 | 6 | Frozen decisions → the next campaign | ~~`imports` resolved by the orchestrating agent by hand; the emitted guard checked key presence only.~~ **Closed**: the compiler resolves `imports` from recorded runs and embeds the records (see Part 2, slice 1). | — |
 | 7 | Real exit codes → claimed exit codes | ~~A gate node typed its own `{"exit": 0}` and nothing could contradict it.~~ **Closed in warn mode**: a PostToolUse hook mints the runtime's exit for declared gates and `record-run.py` cross-checks every claim (see Part 2, slice 2). | — |
@@ -302,7 +302,38 @@ prover claims. Repair campaigns get their canonical shape: gate red → cex
 ingested → the implementer's context packet *is* the minimal failing
 input → gate re-run → pin on green.
 
-**3c. Loop-mode decision capture + flush-before-death.**
+**3c. Loop-mode decision capture + flush-before-death — shipped in slice 8,
+with the PreCompact half redesigned.** `decision.py --record` and `--none`
+landed as described, enforcing the `DecisionV1` floors rather than
+describing them — including one the schema implies but never stated: a
+`chosen` value that was never among the options is refused, because every
+floor can pass and the decision still be incoherent.
+
+The PreCompact hook did **not** land as sketched. The sketch had it "tell
+the summarizer what is already durable", which assumes a hook's stdout is
+injected into the compaction summary — and that is **undocumented**. A hook
+whose entire value rested on an undocumented mechanism would be inert
+without ever saying so, which is the `verify: harness` failure class this
+plugin removed from its own compiler.
+
+So the hook's value rests on a mechanism this plugin already depends on. It
+answers one deterministic question at compaction time — had anything this
+session learned reached the disk? — by hashing the work file's Decisions and
+Notes sections against a snapshot SessionStart took at the session's real
+start, and writes the answer to `<session>.compacted`. SessionStart then
+reads that marker and tells the post-compaction context, in the same
+injection that already carries branch state and the harness verdict, that
+the reasoning behind the current diff is gone and to re-derive rather than
+assume. The stdout line is still emitted: a bonus if the summarizer sees it,
+costing nothing if it does not. The hook never blocks compaction — wedging a
+session by refusing to free context is a worse failure than the memory it
+was protecting.
+
+`FPL_DISTILL=1` arms the Stop-gate check, and it is off by default for the
+reason the slice-6 review made explicit: a check that starts by blocking
+stops is one people disable, taking the rest of the gate with it.
+
+The original design, for reference.
 `decision.py --record` validates a piped `DecisionV1` against the existing
 schema and splices it under the Decisions header with `Source: loop` — the
 schema's anti-lazy floors (two options with real objections, rationale ≥40)
@@ -444,7 +475,7 @@ existing harness and each is independently shippable.
 | 5 | `cex.py --ingest/--pin/--check` for `aiken check` output | **shipped** |
 | 6 | Gate-authored Evidence rows + classed injection (replaced `--mint`; see Part 2) | **shipped** |
 | 7 | Stop-gate branch-point dirtiness + baseline/trust-base modified-contract warnings | **shipped** |
-| 8 | `decision.py` + PreCompact hook (distill gate behind `FPL_DISTILL=1`) | |
+| 8 | `decision.py` + PreCompact hook (distill gate behind `FPL_DISTILL=1`) | **shipped** |
 | 9 | `mutation-guard.py` wrapping cargo-mutants, floor + staleness stamp | |
 | 10 | `ExecutionV1` + `verify: "prove:<gate>"` tier + TAMPERED-EXECUTION enforcement | |
 | 11 | `WORK.consolidate.md` + consolidation Routine; evidence `--replay` + graded injection | |

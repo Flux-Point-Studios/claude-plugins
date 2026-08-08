@@ -75,7 +75,7 @@ post_input() { printf '{"session_id":"s","cwd":"%s","tool_input":{"file_path":"%
 # --- 1. every hook command in hooks.json resolves and runs ---
 # Every group of every event, not just the first: a second group whose script
 # was renamed would otherwise disarm silently.
-for spec in "SessionStart 0" "PostToolUse 0" "PostToolUse 1" "Stop 0"; do
+for spec in "SessionStart 0" "PostToolUse 0" "PostToolUse 1" "PreCompact 0" "Stop 0"; do
   set -- $spec; ev="$1"; idx="$2"
   cmd="$(hook_cmd "$ev" "$idx")"
   [ -n "$cmd" ] || { bad "$ev[$idx]: command present in hooks.json" "missing"; continue; }

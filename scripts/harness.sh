@@ -123,6 +123,7 @@ case "${1:---full}" in
     step "stop-gate regression" bash "$PLUGIN/tests/gate-test.sh"
     step "gate-authored evidence" bash "$PLUGIN/tests/evidence-test.sh"
     step "hook wiring + PostToolUse" bash "$PLUGIN/tests/hooks-test.sh"
+    step "decisions + compaction memory" bash "$PLUGIN/tests/decision-test.sh"
     step "migration against pre-1.0 fixtures" bash "$PLUGIN/tests/migrate-test.sh"
     step "proof-strength ratchet" bash "$PLUGIN/tests/proof-guard-test.sh"
     step "statement ratchet" bash "$PLUGIN/tests/spec-guard-test.sh"

@@ -164,6 +164,34 @@ from a compiled script, so record measured values from your own
 transaction-building tests under `exUnits` in that file; until you do, the
 gate reports them unmeasured rather than met.
 
+## Writing down what you decided
+
+Compaction is the largest memory-loss event a session has, and a process
+exit is the second. Both destroy the same thing: the reasoning. The code
+survives, the tests survive, and *why this and not that* does not — so the
+next context re-decides it, often the other way.
+
+Record a real choice with `scripts/decision.py --record`, which validates
+against `DecisionV1` before writing: at least two options, each with the
+best case against it (including against the one that won — an option nobody
+argued against was not examined), and a rationale long enough that a lazy
+sentence cannot satisfy it. The row lands in the Decisions table, which
+SessionStart injects into every future context and the graph compiler can
+bind into a later campaign. If a slice genuinely decided nothing, say so:
+`decision.py --none "<why>" --session <id>` makes silence a statement
+rather than an absence.
+
+A decision has no verdict to witness — unlike an Evidence row, it is
+inherently an assertion, and no gate could certify it. What the floors buy
+is not proof but survival in a form the next context can act on.
+
+The PreCompact hook records, at the moment of compaction, whether anything
+had been written down at all; if code changed and nothing had,
+SessionStart tells the next context the reasoning is gone and to re-derive
+rather than assume. Set `FPL_DISTILL=1` to make the Stop gate ask for a
+decision (or an explicit `--none`) before a green stop — off by default,
+because a check that starts by blocking stops is one people switch off.
+
 ## Evidence discipline
 
 Every completion claim gets a row in WORK.md's single Evidence table

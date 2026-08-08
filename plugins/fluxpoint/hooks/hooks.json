@@ -33,6 +33,17 @@
         ]
       }
     ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/precompact.sh\"",
+            "timeout": 20
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [

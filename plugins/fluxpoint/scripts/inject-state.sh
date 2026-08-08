@@ -39,7 +39,11 @@ find "$sd" -maxdepth 1 \( -name '*.dirty' -o -name '*.blocks' -o -name '*.base' 
 # post-compaction, and refreshing the baseline there would forgive every
 # commit made before that point. The gate refreshes it itself, on green.
 sid="$(printf '%s' "$input" | fpl_json_get session_id)"
-[ -f "$(fpl_base_file "${sid:-nosession}")" ] || fpl_set_base "${sid:-nosession}"
+sid="${sid:-nosession}"
+[ -f "$(fpl_base_file "$sid")" ] || fpl_set_base "$sid"
+# The same rule for the memory snapshot: taken once, at the session's real
+# start, so a later compaction cannot reset the mark it is measured against.
+[ -f "$sd/$sid.snapshot" ] || fpl_memory_sha >"$sd/$sid.snapshot" 2>/dev/null
 
 branch="$(git branch --show-current 2>/dev/null)"
 dirtyn="$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
@@ -71,6 +75,21 @@ if [ -f "$inbox_py" ]; then
   open_items="$("$FPL_PY" "$inbox_py" --count 2>/dev/null || echo 0)"
   if [ "${open_items:-0}" -gt 0 ] 2>/dev/null; then
     echo "- BLOCKED ON YOU: ${open_items} item(s) waiting on a person. Run /fluxpoint:status for the list, /fluxpoint:release <node> to clear one."
+  fi
+fi
+
+# This context may be the one that exists after a compaction. The PreCompact
+# hook recorded whether anything had been written down at that moment; if
+# nothing had, the reasoning behind whatever is in the tree did not survive,
+# and a fresh context should know that rather than assume the diff explains
+# itself.
+compacted="$sd/$sid.compacted"
+if [ -f "$compacted" ]; then
+  cflushed="$(fpl_json_get flushed <"$compacted")"
+  cworked="$(fpl_json_get codeChanged <"$compacted")"
+  cwhen="$(fpl_json_get when <"$compacted")"
+  if [ "$cflushed" = "no" ] && [ "$cworked" = "yes" ]; then
+    echo "- CONTEXT WAS COMPACTED at ${cwhen} with nothing written to Decisions or Notes, while code had changed. The reasoning behind the current diff — what was tried, what was ruled out, why this approach — was in the transcript that got summarized. Treat it as lost: re-derive from the code and the tests rather than assuming a prior decision still holds, and write down what you conclude."
   fi
 fi
 

@@ -93,6 +93,32 @@ print(json.dumps(dict(zip(a[::2], a[1::2]))))' "$@"
   fi
 }
 
+# fpl_memory_sha — a hash of the work file's Decisions and Notes sections.
+#
+# Those two sections are where reasoning becomes durable: everything else a
+# session knows lives in a transcript that compaction summarizes and a
+# process exit discards. Hashing them lets a hook answer one question
+# deterministically — did anything this session learned reach the disk? —
+# without a model reading anything.
+fpl_memory_sha() {
+  local state
+  state="$(fpl_state_file || true)"
+  [ -n "$state" ] || { printf 'nostate'; return 0; }
+  "$FPL_PY" - "$state" <<'PY' 2>/dev/null || printf 'unknown'
+import hashlib, re, sys
+try:
+    text = open(sys.argv[1], errors="replace").read()
+except OSError:
+    print("unknown"); raise SystemExit
+keep = []
+for name in ("Decisions", "Notes"):
+    for m in re.finditer(r"^##\s+" + name + r"[^\n]*$(.*?)(?=^##\s|\Z)",
+                         text, re.S | re.M | re.I):
+        keep.append(m.group(1))
+print(hashlib.sha256("".join(keep).encode("utf-8", "replace")).hexdigest()[:12])
+PY
+}
+
 _fpl_skip_path() {
   case "$1" in
     *.md|*.svg|*.min.js|*.lock|package-lock.json|pnpm-lock.yaml|yarn.lock) return 0 ;;

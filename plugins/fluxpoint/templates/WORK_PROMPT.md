@@ -41,6 +41,14 @@ explicitly parked:
    with an unreviewed PR.
 7. Update Notes for the next iteration: current state, blockers, and if
    blocked, two alternative paths and which one to attack next.
+   If this slice made a real choice — one with more than one defensible
+   answer — record it with
+   `scripts/decision.py --record < decision.json` (DecisionV1: the options,
+   the best case against each including the winner, the rationale). The
+   code and the tests survive this iteration; why you chose this and not
+   that does not, unless it is written down. If nothing was decided, say
+   so once with `--none "<why>"` rather than leaving silence to be read as
+   an oversight.
 
 Set `STATUS: DONE` on line 3 of WORK.md only when every Definition of Done
 line is checked with proof recorded. Never edit the Definition of Done,
