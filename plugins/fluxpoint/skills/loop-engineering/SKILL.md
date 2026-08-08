@@ -109,6 +109,16 @@ Three rules, in order of how often they are broken:
    file; `--check` fails when any category rises. Proving something you
    previously assumed lowers the count and is always allowed. Raising one
    is a diff a human has to justify.
+   **And the statements ratchet too.** An agent blocked from adding an
+   `assume` has an easier move: weaken the theorem. `scripts/spec-guard.py`
+   hashes what is being proved — Dafny `requires`/`ensures`/`invariant`
+   clauses per declaration, Aiken test and property signatures with their
+   fuzzers and their `fail` polarity — into the same baseline file, and
+   `--check` fails when a recorded obligation changed or vanished. Adding
+   obligations is free; changing one needs a Decisions row naming its
+   obligation id, or a re-recorded baseline. Neither ratchet makes
+   weakening impossible; both make it a reviewed diff instead of an
+   invisible one.
    Two weakenings add no hatch at all, so both are counted structurally:
    `test t() { True }` is flagged as a test that cannot fail, and `fn
    check(..) -> Bool { True }` as a predicate that decides nothing — which

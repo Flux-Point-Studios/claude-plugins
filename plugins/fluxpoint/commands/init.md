@@ -51,12 +51,20 @@ step; do not stop at copying files.
    verify it compiles:
    `bash "${CLAUDE_PLUGIN_ROOT}/scripts/py.sh" compile-graph.py WORK.md --check`
 8. If the repo tracks proof-language files (`.ak`, `.dfy`, `.lean`, `.v`,
-   `.thy`, `.tla`, or verified Rust), arm the proof-strength ratchet:
-   `bash "${CLAUDE_PLUGIN_ROOT}/scripts/py.sh" proof-guard.py --baseline`
-   Commit `.fluxpoint-proof-baseline.json` — it belongs in review, because
-   a rise in it is someone making a proof obligation disappear. Confirm
-   `harness.sh --full` actually invokes the prover; per-file checking on
-   edit is not a Definition-of-Done gate.
+   `.thy`, `.tla`, or verified Rust), arm both ratchets:
+   ```
+   bash "${CLAUDE_PLUGIN_ROOT}/scripts/py.sh" proof-guard.py --baseline
+   bash "${CLAUDE_PLUGIN_ROOT}/scripts/py.sh" spec-guard.py --baseline
+   ```
+   They share `.fluxpoint-proof-baseline.json` and each preserves the
+   other's section. Commit it — it belongs in review, because a rise in the
+   counts is someone making a proof obligation disappear, and a change in
+   the statements is someone making a theorem claim less. Read
+   `spec-guard.py --scan` before arming: it lists exactly what is being
+   treated as an obligation, and names any tracked proof language it does
+   not parse yet, so an unarmed corner never reads as a covered one.
+   Confirm `harness.sh --full` actually invokes the prover; per-file
+   checking on edit is not a Definition-of-Done gate.
 9. Declare this repo's gates so their exit codes stop being self-reported.
    Write `.fluxpoint-gates.json` naming each command whose verdict decides
    something — at minimum the harness — exactly as it is invoked:

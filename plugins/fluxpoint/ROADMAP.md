@@ -222,8 +222,29 @@ the rest, and every mechanism lands as an exit code the existing gate
 already consumes.
 
 **4a. `spec-guard.py` — the statement ratchet (route 2: weaken the
-theorem).** proof-guard polices proof *bodies*; the statements are
-unguarded — a dropped `ensures` conjunct, a widened `requires`, or a
+theorem) — shipped in slice 4.** What landed covers Aiken and Dafny:
+Aiken test and property signatures (name, fuzzer types, `fail` polarity)
+and Dafny `requires`/`ensures`/`invariant` clauses per declaration, hashed
+into the `spec` section of `.fluxpoint-proof-baseline.json` (each guard now
+preserves the other's section, or arming one would disarm the other).
+`--check` reds on a changed or removed obligation unless a Decisions row
+names its id; additions are free; reformatting, clause reordering, and file
+moves are not weakenings and stay green. Lean, Coq, Isabelle and TLA+ are
+reported `NOT COVERED` by name rather than passed over — that surface
+remains the proof-auditor's alone. Not yet built: `--axioms`, the DoD
+`— proof: <tool>:<id>` tails, and the Aiken attack-taxonomy scaffolding
+(slice 12).
+
+Building it surfaced a live bug in the sibling guard, now fixed with
+regression cases: `proof-guard.py` matched Aiken parameter lists with a
+`[^)]*` class, which stops at the first `)`. A property test's own fuzzer
+contains one — `n: Int via bounded_int(1, 99)` — so **every parameterised
+property test was invisible to the vacuous-test scan**, which is exactly
+where a gutted body is least likely to be re-read. Constant predicates
+taking a tuple were missed the same way. Both now match by counting parens.
+
+The original design, for reference. proof-guard polices proof *bodies*;
+the statements are unguarded — a dropped `ensures` conjunct, a widened `requires`, or a
 deleted property keeps every hatch count flat and every prover green, and
 the proof-auditor's own checklist calls this the most common way verified
 code regresses. `--scan` extracts every obligation statement per tool
@@ -301,8 +322,8 @@ existing harness and each is independently shippable.
 | 1 | Compile-time `imports` resolution + embedding (`resolve_imports`, `DECISIONS_IMPORTED`, record-run dedup, re-decide invariant) | **shipped** with this document |
 | 2 | `exec-attest.sh` + `.fluxpoint-gates.json` + record-run cross-check in warn mode | **shipped** |
 | 3 | `memory.py` + record-run filing of findings/objections + `memory.seed` frontier seeding | **shipped** |
-| 4 | `spec-guard.py` for Aiken + Dafny statements, wired into `templates/harness.sh --full` | next |
-| 5 | `cex.py --ingest/--pin/--check` for `aiken check` output | |
+| 4 | `spec-guard.py` for Aiken + Dafny statements, wired into `templates/harness.sh --full` | **shipped** |
+| 5 | `cex.py --ingest/--pin/--check` for `aiken check` output | next |
 | 6 | `evidence.py --mint` + `WORK_PROMPT.md` requiring minted rows for harness-checkable claims | |
 | 7 | Stop-gate branch-point dirtiness + baseline/trust-base modified-contract warnings | |
 | 8 | `decision.py` + PreCompact hook (distill gate behind `FPL_DISTILL=1`) | |

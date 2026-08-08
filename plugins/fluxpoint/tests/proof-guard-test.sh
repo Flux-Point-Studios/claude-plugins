@@ -227,6 +227,23 @@ out="$($PG "$ROOT/r" --scan 2>&1)"
 case "$out" in *looks_like_an_assertion*) ok "self-comparison counts as vacuous" "caught" ;;
   *) bad "self-comparison counts as vacuous" "missed" ;; esac
 
+# A parameter list carries its own parentheses — a fuzzer in a property test
+# and a tuple in a predicate signature. Matching them with a [^)]* class
+# stopped at the wrong paren, so every parameterised property test was
+# invisible to this scan: the one place a gutted body is least likely to be
+# re-read, and the one an agent asked to "make the suite pass" reaches for.
+printf '\ntest property_that_cannot_fail(n: Int via bounded_int(1, 99)) {\n  True\n}\n' \
+  >>validators/real.ak
+printf '\npub fn tuple_pred(p: (Int, Int)) -> Bool {\n  True\n}\n' >>validators/real.ak
+commit params
+out="$($PG "$ROOT/r" --scan 2>&1)"
+case "$out" in *property_that_cannot_fail*)
+  ok "a gutted PROPERTY test is caught too" "caught" ;;
+  *) bad "a gutted PROPERTY test is caught too" "missed — fuzzer parens hid it" ;; esac
+case "$out" in *tuple_pred*)
+  ok "a constant predicate with a tuple parameter is caught" "caught" ;;
+  *) bad "a constant predicate with a tuple parameter is caught" "missed" ;; esac
+
 # ========= 6c. the conservative boundary, pinned deliberately ==============
 # Nested braces must not confuse the brace matcher, and the known misses are
 # recorded here rather than assumed covered. Missing a vacuous test is a

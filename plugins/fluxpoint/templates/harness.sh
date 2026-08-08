@@ -125,6 +125,12 @@ full() {
   # rise. Dormant in repos with no proof-language files.
   pg="$(plugin_script proof-guard.py)"
   [ -n "$pg" ] && "$FPL_PY" "$pg" --check
+  # Statement ratchet. The hatch counts above police proof bodies; this
+  # polices what is being proved, because dropping a conjunct from an
+  # `ensures` or deleting a property test moves no count and keeps every
+  # checker green. Dormant until armed with --baseline.
+  sg="$(plugin_script spec-guard.py)"
+  [ -n "$sg" ] && "$FPL_PY" "$sg" --check
   # Relation gate. Every check above measures one artifact; the defects that
   # cost the most are relationships between two, and a suite stays green
   # because each half is individually correct. Dormant without a manifest.

@@ -9,13 +9,21 @@ this command, never its conclusion.
 Resolve the plugin root: `${CLAUDE_PLUGIN_ROOT}`, else
 `find ~/.claude/plugins -type d -name fluxpoint | head -1`. Call it `$ROOT`.
 
-1. **Mechanical pass — the ratchet.**
+1. **Mechanical pass — both ratchets.**
    `bash "$ROOT/scripts/py.sh" proof-guard.py --scan` to see the current escape
    hatches, then `--check` to compare against
    `.fluxpoint-proof-baseline.json`. If no baseline exists and the repo has
    proof files, say so and run `--baseline` to arm it — an unarmed ratchet
    protects nothing. If `--check` is red, that is the work list: each rise
    is an obligation someone made disappear rather than discharged.
+   Then the statement ratchet:
+   `bash "$ROOT/scripts/py.sh" spec-guard.py --scan`, then `--check`. Where
+   proof-guard asks whether the proof got weaker, this asks whether the
+   *claim* did — a dropped `ensures` conjunct, a widened `requires`, a
+   deleted or renamed property test, a `fail` test flipped positive, a
+   narrowed fuzzer. None of those move a hatch count, and every checker
+   still exits 0. Read the `NOT COVERED` lines too: a tracked Lean or Coq
+   file is not yet parsed, and that surface is the auditor's alone.
 2. **Confirm the checker actually ran.** Read `scripts/harness.sh` and
    verify that `--full` invokes the prover, not only the per-file
    `--changed` path. A Definition-of-Done gate that never calls the prover
@@ -38,10 +46,11 @@ Resolve the plugin root: `${CLAUDE_PLUGIN_ROOT}`, else
    budgets, and solver honesty — everything a count cannot see. It ends
    `VERDICT: SOUND` or `VERDICT: WEAKENED`.
 5. **Treat WEAKENED as harness-red.** Fix the findings; never lower a
-   specification, add an assumption, or re-record the baseline to reach
-   SOUND. Re-recording is legitimate only when a rise is deliberate and
+   specification, add an assumption, or re-record either baseline to reach
+   SOUND. Re-recording is legitimate only when a change is deliberate and
    justified in review — and then the justification belongs in the commit
-   message, not in a silent baseline bump.
+   message or a Decisions row naming the obligation id, not in a silent
+   baseline bump.
 6. Record the outcome in WORK.md's Evidence table: the ratchet result, the
    auditor verdict, and what you ran to establish each. A verification
    claim without a row is treated as false, exactly like any other.
