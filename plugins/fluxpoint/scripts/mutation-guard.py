@@ -47,14 +47,27 @@ Coverage: `cargo-mutants` today. Other toolchains are declared unsupported
 by name rather than silently skipped, because a mutation guard that quietly
 measures nothing is worse than none at all.
 
-Stated plainly: the cargo-mutants adapter was written from the tool's
-documentation, not from a run of the tool itself — no Rust toolchain was
-available where this was built. So the shape it expects may be wrong. What
-is *not* left to chance is the failure mode: an `outcomes.json` this parser
-does not understand yields no score, records nothing, and exits non-zero
-with "nothing was measured", rather than scoring zero and quietly becoming
-the floor everything afterwards is ratcheted against. That behavior is
-pinned by a test. Verify against a real run before relying on the number.
+The adapter reads `mutants.out/outcomes.json` and never the tool's stdout —
+`--json` on cargo-mutants affects only `--list`, so stdout stays human text
+even when asked for JSON. It was written against the schema of 27.1.0 and
+refuses an older one rather than misreading it, because fields have been
+renamed and collapsed between releases.
+
+Three shapes are real output that would otherwise publish a fake number,
+and each is refused by name:
+
+  * A failed baseline still writes an `outcomes.json` — full of zeroes. Read
+    as counters it looks like a clean sweep of a project with no mutants.
+  * `cargo mutants --check` only compiles mutants. Every one is filed
+    `Success`, nothing is caught or missed, and the tool exits 0: a green
+    mutation gate that measured nothing.
+  * `unviable` mutants did not compile. Scoring them would report 0% for a
+    tree the tool itself considers perfectly clean.
+
+And the `outcomes` array is not a list of mutants: it includes the baseline
+run, whose `scenario` is the bare string `"Baseline"` where every mutant's
+is an object. The top-level counters are the source of truth here for
+exactly that reason.
 """
 import argparse
 import datetime
@@ -170,56 +183,121 @@ def run_cargo_mutants(root, extra):
             doc = json.load(fh)
     except (OSError, json.JSONDecodeError) as e:
         return None, [f"{p} is not readable JSON ({e})"]
-    return parse_cargo_mutants(doc), []
+    return parse_cargo_mutants(doc)
+
+
+# The schema this parser was written against and verified on. cargo-mutants
+# has renamed and collapsed fields between releases (`cargo_result` ->
+# `process_status`, `command` -> `argv`, `line`/`return_type` folded into a
+# `function` submessage plus `span`, the `failure` counter removed), and the
+# project's own stability page permits more. A version this has not been
+# read against is reported rather than parsed on optimism.
+CARGO_MUTANTS_TESTED = "27.1.0"
+
+
+def _ver_tuple(s):
+    out = []
+    for part in str(s or "").split("."):
+        digits = "".join(c for c in part if c.isdigit())
+        out.append(int(digits) if digits else 0)
+    return tuple(out[:3]) or (0,)
 
 
 def parse_cargo_mutants(doc):
-    """Counts and survivors from cargo-mutants' outcomes.json.
+    """(measurement, findings) from cargo-mutants' outcomes.json.
 
-    Only `caught` and `missed` are scored. `unviable` mutants did not
-    compile and were never a test of anything; `timeout` and `failure` say
-    the run could not decide. Folding those into the denominator would let a
-    build that got slower look like a suite that got better.
+    The top-level counters are the source of truth. Tallying the `outcomes`
+    array instead would be wrong in two ways the tool documents: the array
+    includes the baseline run (so it is one longer than the mutant count),
+    and its `scenario` is a bare string `"Baseline"` for that entry but an
+    object `{"Mutant": {...}}` for every other — a shape that punishes
+    anything assuming uniformity.
+
+    Scoring follows the mutation-testing-elements convention Stryker
+    publishes: detected = caught + timeout, undetected = missed, and
+    `valid` excludes `unviable`. Unviable mutants did not compile, so they
+    say nothing about the tests; counting them would report 0% for a tree
+    the tool itself considers clean. A timeout is counted as detected
+    because the suite did not silently pass it — but it is recorded
+    separately, since a timeout usually means the limit is wrong rather
+    than that a test did its job.
     """
-    outcomes = doc.get("outcomes")
-    if not isinstance(outcomes, list):
-        return None
-    tally = {"caught": 0, "missed": 0, "unviable": 0, "timeout": 0, "other": 0}
+    if not isinstance(doc, dict):
+        return None, ["outcomes.json is not an object"]
+    ver = doc.get("cargo_mutants_version")
+    findings = []
+    if ver and _ver_tuple(ver) < _ver_tuple(CARGO_MUTANTS_TESTED):
+        findings.append(
+            f"outcomes.json was written by cargo-mutants {ver}; this parser "
+            f"was verified against {CARGO_MUTANTS_TESTED} and the schema has "
+            f"changed between releases. Refusing to parse rather than "
+            f"misreading it — upgrade cargo-mutants, or check this parser "
+            f"against {ver} first.")
+        return None, findings
+
+    counts = {}
+    for k in ("total_mutants", "caught", "missed", "timeout", "unviable", "success"):
+        v = doc.get(k)
+        counts[k] = v if isinstance(v, int) else None
+    if counts["caught"] is None or counts["missed"] is None:
+        return None, ["outcomes.json carries no caught/missed counters — this "
+                      "is not a shape this parser understands"]
+
+    total = counts["total_mutants"] or 0
+    if total == 0:
+        # Written, and empty, when the baseline itself failed: the tool never
+        # tested a mutant. Reading the zeroes as a clean sweep would publish
+        # a perfect score for a broken build.
+        return None, ["cargo-mutants tested 0 mutants — the baseline run "
+                      "failed, so nothing was measured. Fix the suite first: "
+                      "a score computed here would describe a build that "
+                      "never ran."]
+    if (counts["success"] or 0) > 0 and counts["caught"] == 0 and counts["missed"] == 0:
+        # `--check` only compiles mutants; it files every one as Success and
+        # exits 0. A gate trusting that exit reports a green mutation run
+        # that measured nothing at all.
+        return None, ["this looks like `cargo mutants --check`, which only "
+                      "proves mutants compile and never runs the tests. It "
+                      "cannot produce a score — drop --check from the "
+                      "configured args."]
+
+    detected = counts["caught"] + (counts["timeout"] or 0)
+    valid = detected + counts["missed"]
+    if valid == 0:
+        return None, ["no viable mutants were tested — nothing was measured"]
+
     survivors = []
-    for o in outcomes:
-        if not isinstance(o, dict):
+    for o in doc.get("outcomes") or []:
+        if not isinstance(o, dict) or "missed" not in str(o.get("summary", "")).lower():
             continue
-        summary = str(o.get("summary") or o.get("outcome") or "").lower()
-        key = ("caught" if "caught" in summary
-               else "missed" if "missed" in summary
-               else "unviable" if "unviable" in summary
-               else "timeout" if "timeout" in summary
-               else "other")
-        tally[key] += 1
-        if key == "missed" and len(survivors) < 50:
-            scen = o.get("scenario")
-            m = scen.get("Mutant") if isinstance(scen, dict) else None
-            m = m if isinstance(m, dict) else {}
+        scen = o.get("scenario")
+        m = scen.get("Mutant") if isinstance(scen, dict) else None
+        if not isinstance(m, dict):
+            continue
+        span = m.get("span") if isinstance(m.get("span"), dict) else {}
+        start = span.get("start") if isinstance(span.get("start"), dict) else {}
+        if len(survivors) < 50:
             survivors.append({
-                "file": m.get("file") or o.get("file") or "?",
-                "line": m.get("line") or o.get("line") or 0,
-                "what": (m.get("function") or {}).get("function_name")
-                        if isinstance(m.get("function"), dict)
-                        else (m.get("replacement") or o.get("name") or "?"),
+                # The mutated region, not `function.span`, which is the whole
+                # enclosing function.
+                "file": m.get("file") or "?",
+                "line": start.get("line") or 0,
+                # Pre-formatted by the tool as "<file>:<line>:<col>: <what>",
+                # and byte-identical to the lines in missed.txt.
+                "what": m.get("name") or m.get("replacement") or "?",
             })
-    scored = tally["caught"] + tally["missed"]
-    if scored == 0:
-        return None
+
     return {
         "tool": "cargo-mutants",
-        "score": round(tally["caught"] / scored, 4),
-        "killed": tally["caught"],
-        "survived": tally["missed"],
-        "scored": scored,
-        "unviable": tally["unviable"],
-        "timeout": tally["timeout"],
+        "toolVersion": str(ver or "unknown"),
+        "score": round(detected / valid, 4),
+        "killed": counts["caught"],
+        "survived": counts["missed"],
+        "scored": valid,
+        "unviable": counts["unviable"] or 0,
+        "timeout": counts["timeout"] or 0,
         "survivors": survivors,
-    }
+    }, findings
 
 
 # ------------------------------------------------------------------ commands
@@ -231,7 +309,7 @@ def measure(root, cfg, accept, reason, src=None):
         # should not require running it a second time here.
         try:
             with open(src, encoding="utf-8") as fh:
-                rec, findings = parse_cargo_mutants(json.load(fh)), []
+                rec, findings = parse_cargo_mutants(json.load(fh))
         except (OSError, json.JSONDecodeError) as e:
             rec, findings = None, [f"{src} is not readable JSON ({e})"]
         if rec is None and not findings:

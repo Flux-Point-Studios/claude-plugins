@@ -444,7 +444,37 @@ wants it fatal sets `failWhenStale`. A measurement taken at a commit the
 repo no longer has is reported as its own state, distinct from merely old.
 Toolchains this guard cannot parse are named rather than silently skipped.
 
-`#[mutants::skip]` joined `proof-guard`'s ratcheted hatch categories:
+The adapter was then verified against a real run of cargo-mutants 27.1.0
+rather than shipped on documentation, and that caught four things
+documentation alone would not have:
+
+- The `outcomes` array **includes the baseline run**, whose `scenario` is
+  the bare string `"Baseline"` while every mutant's is an object — so it is
+  neither uniform nor one-entry-per-mutant. The top-level counters are the
+  source of truth instead.
+- A survivor's line is `span.start.line`, not a `line` field; `function.span`
+  is the whole enclosing function.
+- A **failed baseline still writes an `outcomes.json`**, full of zeroes.
+  Read as counters that is indistinguishable from a clean sweep, and would
+  publish a perfect score for a build that never ran.
+- **`cargo mutants --check` exits 0 having measured nothing** — it only
+  compiles mutants, filing every one as `Success` with nothing caught or
+  missed. A gate trusting that exit reports a green mutation run.
+
+All four are refused by name. The schema has also churned across releases
+(`cargo_result` → `process_status`, `line` folded into a `function`
+submessage plus `span`, the `failure` counter removed), so an
+`outcomes.json` from a version this parser has not been read against is
+refused rather than parsed on optimism. Scoring follows the convention
+Stryker publishes — `detected = caught + timeout`, `valid` excludes
+`unviable` — with timeouts recorded separately, since a timeout usually
+means the limit is wrong rather than that a test did its job.
+
+`#[mutants::skip]` joined `proof-guard`'s ratcheted hatch categories (along
+with `mutants::exclude_re`, and matched loosely enough to catch the
+`cfg_attr`-nested form the tool also honors — cargo-mutants emits no count
+of skipped mutants anywhere, so grepping the source is the only way to see
+them):
 excusing a mutant is excusing a change no test has to notice, which is the
 same move as excusing a proof obligation, and it should not be free to
 sprinkle wherever this goes red.

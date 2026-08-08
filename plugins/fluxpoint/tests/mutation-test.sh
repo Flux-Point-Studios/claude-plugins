@@ -44,25 +44,48 @@ mkrepo() {
 }
 commit() { git -C "$R" add -A; git -C "$R" -c user.email=t@t -c user.name=t commit -qm "${1:-x}"; }
 
-# Shaped like cargo-mutants' own outcomes.json: a list of outcomes, each
-# with a summary and a scenario carrying the mutant.
-outcomes() { # $1 = caught, $2 = missed, $3 = unviable
-  "$FPL_PY" - "$1" "$2" "$3" >"$R/out.json" <<'PY'
+# Shaped exactly like cargo-mutants 27.1.0's own outcomes.json, verified
+# against a real run of the tool: top-level counters plus an `outcomes`
+# array that INCLUDES the baseline entry, whose `scenario` is the bare
+# string "Baseline" while every mutant's is an object {"Mutant": {...}}.
+# A parser assuming that array is uniform, or that it is one-per-mutant,
+# is wrong on both counts — which is why the fixture carries the baseline.
+outcomes() { # $1 = caught, $2 = missed, $3 = unviable, $4 = timeout
+  "$FPL_PY" - "$1" "$2" "$3" "${4:-0}" >"$R/out.json" <<'PY'
 import json, sys
-caught, missed, unviable = (int(x) for x in sys.argv[1:4])
-o = []
+caught, missed, unviable, timeout = (int(x) for x in sys.argv[1:5])
+o = [{"scenario": "Baseline", "summary": "Success",
+      "phase_results": [{"phase": "Test", "process_status": "Success"}]}]
+
+
+def mutant(line, summary, what):
+    return {"scenario": {"Mutant": {
+                "name": f"src/lib.rs:{line}:5: {what}",
+                "file": "src/lib.rs",
+                "function": {"function_name": "a", "return_type": "",
+                             "span": {"start": {"line": 1, "column": 1},
+                                      "end": {"line": 9, "column": 2}}},
+                "span": {"start": {"line": line, "column": 5},
+                         "end": {"line": line, "column": 9}},
+                "replacement": "()", "genre": "FnValue"}},
+            "summary": summary,
+            "log_path": f"log/src__lib.rs_line_{line}.log"}
+
+
 for i in range(caught):
-    o.append({"summary": "CaughtMutant",
-              "scenario": {"Mutant": {"file": "src/lib.rs", "line": i + 1,
-                                      "replacement": "-> ()"}}})
+    o.append(mutant(i + 1, "CaughtMutant", "replace a with ()"))
 for i in range(missed):
-    o.append({"summary": "MissedMutant",
-              "scenario": {"Mutant": {"file": "src/lib.rs", "line": 100 + i,
-                                      "replacement": "replace a with ()"}}})
+    o.append(mutant(100 + i, "MissedMutant", "replace a with ()"))
 for i in range(unviable):
-    o.append({"summary": "Unviable",
-              "scenario": {"Mutant": {"file": "src/lib.rs", "line": 200 + i}}})
-json.dump({"outcomes": o}, open("/dev/stdout", "w"))
+    o.append(mutant(200 + i, "Unviable", "replace a with Default::default()"))
+for i in range(timeout):
+    o.append(mutant(300 + i, "Timeout", "replace a with loop {}"))
+json.dump({"outcomes": o,
+           "total_mutants": caught + missed + unviable + timeout,
+           "caught": caught, "missed": missed, "timeout": timeout,
+           "unviable": unviable, "success": 0,
+           "cargo_mutants_version": "27.1.0"},
+          open("/dev/stdout", "w"))
 PY
 }
 
@@ -104,8 +127,64 @@ score="$("$FPL_PY" -c '
 import json,sys; print(json.load(open(sys.argv[1]))["mutation"]["score"])' \
   "$R/.fluxpoint-proof-baseline.json")"
 check "unviable mutants are not scored (8/10, not 8/15)" "0.8" "$score"
+line="$("$FPL_PY" -c '
+import json,sys; print(json.load(open(sys.argv[1]))["mutation"]["survivors"][0]["line"])' \
+  "$R/.fluxpoint-proof-baseline.json")"
+check "a survivor's line comes from the mutated span, not the function" 100 "$line"
 
-# The shared baseline file must survive its siblings.
+# A timeout means the suite did not silently pass the mutant, so it counts
+# as detected — the convention Stryker publishes — but it is kept separate
+# because a timeout usually means the limit is wrong, not that a test bit.
+mkrepo
+outcomes 8 2 0 2
+mg --measure --from "$R/out.json" >/dev/null 2>&1
+score="$("$FPL_PY" -c '
+import json,sys
+d = json.load(open(sys.argv[1]))["mutation"]
+print(d["score"], d["timeout"])' "$R/.fluxpoint-proof-baseline.json")"
+check "a timeout counts as detected and is recorded separately" "0.8333 2" "$score"
+
+# ---- the three shapes that would publish a fake number ------------------
+# The baseline failing writes a real outcomes.json full of zeroes. Reading
+# those as a clean sweep would report a perfect score for a broken build.
+mkrepo
+printf '{"outcomes":[{"scenario":"Baseline","summary":"Failure"}],"total_mutants":0,"caught":0,"missed":0,"timeout":0,"unviable":0,"success":0,"cargo_mutants_version":"27.1.0"}' >"$R/out.json"
+out="$(mg --measure --from "$R/out.json" 2>&1)"
+check "a failed baseline is not a clean sweep" 1 "$?"
+case "$out" in *"baseline run failed"*) ok "and says the build never ran" "said" ;;
+  *) bad "and says the build never ran" "${out:0:44}" ;; esac
+
+# `cargo mutants --check` only compiles mutants: every one is Success, and
+# the tool exits 0. A gate trusting that reports a green run that measured
+# nothing.
+mkrepo
+printf '{"outcomes":[{"scenario":"Baseline","summary":"Success"}],"total_mutants":5,"caught":0,"missed":0,"timeout":0,"unviable":0,"success":5,"cargo_mutants_version":"27.1.0"}' >"$R/out.json"
+out="$(mg --measure --from "$R/out.json" 2>&1)"
+check "a --check run cannot produce a score" 1 "$?"
+case "$out" in *"--check"*) ok "and names why" "named" ;;
+  *) bad "and names why" "${out:0:44}" ;; esac
+
+# The schema has churned across releases; an older one is refused rather
+# than misread.
+mkrepo
+outcomes 8 2 0
+"$FPL_PY" - "$R/out.json" <<'PY'
+import json, sys
+p = sys.argv[1]; d = json.load(open(p))
+d["cargo_mutants_version"] = "25.0.0"
+json.dump(d, open(p, "w"))
+PY
+out="$(mg --measure --from "$R/out.json" 2>&1)"
+check "an untested cargo-mutants version is refused" 1 "$?"
+case "$out" in *"schema has changed"*) ok "and says why rather than guessing" "said" ;;
+  *) bad "and says why rather than guessing" "${out:0:44}" ;; esac
+
+# The shared baseline file must survive its siblings: proof-guard owns
+# `counts`, spec-guard owns `spec`, this owns `mutation`, and whichever
+# writes last must not disarm the others.
+mkrepo
+outcomes 8 2 0
+mg --measure --from "$R/out.json" >/dev/null 2>&1
 "$FPL_PY" "$PG" --root "$R" --baseline >/dev/null 2>&1
 has() { "$FPL_PY" -c '
 import json,sys; print("yes" if sys.argv[2] in json.load(open(sys.argv[1])) else "no")' \
@@ -206,7 +285,8 @@ mkrepo
 printf '{"results":[{"status":"killed"}]}' >"$R/wrong.json"
 out="$(mg --measure --from "$R/wrong.json" 2>&1)"
 check "an unrecognized outcomes shape fails, not scores zero" 1 "$?"
-case "$out" in *"no scored mutants"*) ok "and says nothing was measured" "said" ;;
+case "$out" in *"not a shape this parser understands"*)
+  ok "and says nothing was measured" "said" ;;
   *) bad "and says nothing was measured" "${out:0:44}" ;; esac
 [ -f "$R/.fluxpoint-proof-baseline.json" ] \
   && bad "and records nothing to ratchet against later" "wrote a baseline" \

@@ -84,7 +84,8 @@ PATTERNS = [
     # Excusing a mutant is excusing a change no test has to notice, which is
     # the same move as excusing a proof obligation — so it ratchets here
     # rather than being free to sprinkle wherever mutation-guard goes red.
-    ("rust.mutants_skip",   (".rs",),   r"#\[mutants::skip\]"),
+    ("rust.mutants_skip",   (".rs",),   r"mutants::skip\b"),
+    ("rust.mutants_exclude", (".rs",),  r"mutants::exclude_re\b"),
     ("rust.assume",         (".rs",),   r"\b(kani::assume|prusti_assume|assume)\s*\("),
     # --- Isabelle -------------------------------------------------------
     ("isabelle.sorry",      (".thy",),  r"\b(sorry|oops)\b"),
