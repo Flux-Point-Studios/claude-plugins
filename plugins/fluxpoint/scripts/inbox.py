@@ -38,6 +38,7 @@ KINDS = {
     "attest-mismatch": "a node's claimed gate exit contradicts the attested log",
     "cex-ingest-failed": "prover output could not be parsed into a counterexample",
     "cex-pin-inert": "a pinned counterexample was re-found, so its test does not bite",
+    "mutation-stale": "the mutation score no longer describes this tree",
 }
 
 

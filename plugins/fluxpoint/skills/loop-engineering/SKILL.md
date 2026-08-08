@@ -97,7 +97,7 @@ A prover is the best thing that can sit behind this harness: `aiken check`,
 looks — every prover ships a way to discharge an obligation without proving
 it, and an agent told to "make it pass" will find it.
 
-Four rules, in order of how often they are broken:
+Five rules, in order of how often they are broken:
 
 1. **The prover runs in `--full`, not only in `--changed`.** Per-file
    checking on edit is feedback; the gate that decides done must invoke the
@@ -144,7 +144,22 @@ Four rules, in order of how often they are broken:
    What this does not yet claim: the pinned test is recorded as *carrying*
    the counterexample, not re-run against the un-fixed code to prove it
    would have caught it.
-4. **Green is not stronger.** `/fluxpoint:proof-audit` runs the ratchet and
+4. **Can the tests fail?** Every gate above asks whether the suite passes.
+   Mutation score asks whether it can fail: break the implementation on
+   purpose and count how many broken versions the suite notices. It is the
+   one measure that cannot be faked by executing code, and it matters most
+   in loop mode, where the same agent writes the code and the thing that
+   grades it. Declare the tool in `.fluxpoint-mutation.json`;
+   `mutation-guard.py --measure` runs it and is where the ratchet lives —
+   red when the score falls *or* the survivor count rises, because a ratio
+   can hold flat while coverage shrinks. `--check` is the cheap half wired
+   into `--full`: it re-runs nothing and only asks whether a measurement
+   exists and still describes this tree. A mutation run costs minutes to
+   hours, so `--measure` belongs off-session on a Routine; staleness is
+   named and raised in the inbox but does not fail the build unless the
+   repo asks, because a gate that reds over an un-run expensive job is one
+   people switch off.
+5. **Green is not stronger.** `/fluxpoint:proof-audit` runs the ratchet and
    then the `proof-auditor` agent, which looks for what a count cannot see:
    a theorem whose statement got weaker, a property proved about an
    unreachable state, an Aiken `test` that cannot fail, a validator with no

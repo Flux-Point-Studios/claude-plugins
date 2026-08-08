@@ -29,6 +29,8 @@ does.
   `proof-guard.py` (proof-strength ratchet); `spec-guard.py` (statement
   ratchet — what is being proved, not just how); `cex.py` (counterexample
   ledger: a prover's shrunk failing input, pinned to a regression);
+  `mutation-guard.py` (mutation score — whether the tests can fail, not
+  just whether they pass);
   `plutus-budget.py` (on-chain
   size and execution-unit limits); `pair-guard.py` (relation gate over
   declared artifact pairs); `ledger.py` (once-only guard for
@@ -57,7 +59,8 @@ does.
   `proof-guard-test.sh` (the ratchet, per prover), `spec-guard-test.sh`
   (the statement ratchet and its false-positive boundary), `cex-test.sh`
   (the counterexample ledger and every way of appearing to pin without
-  pinning, executed), `budget-test.sh`
+  pinning, executed), `mutation-test.sh` (the score ratchet in both
+  directions, and staleness staying loud rather than fatal), `budget-test.sh`
   (on-chain limits), `ledger-test.py` (the once-only guard, executed
   rather than grepped), `attest-test.sh` (execution attestation and its
   laundering cases, executed), `memory-test.py` (lessons across runs,

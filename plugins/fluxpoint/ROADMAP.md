@@ -417,8 +417,39 @@ Composes: `prove:spec-guard` as the ordered pre-merge gate makes
 spec-freeze a graph-shape property, and an irreversible ceremony's
 mandatory earlier `haltWhen` guard finally consumes a machine-minted exit.
 
-**4c. `mutation-guard.py` — the judge of the judge (route 4: gut the
-tests).** In loop-mode TDD the same agent writes the code and its judge;
+**4c. `mutation-guard.py` — the judge of the judge — shipped in slice 9.**
+The split that made it work is between the two halves: `--measure` is the
+expensive run (minutes to hours, one compile-and-test per mutant) and is
+where the ratchet lives; `--check` is cheap enough for `--full` and re-runs
+nothing, asking only whether a measurement exists and still describes this
+tree. `--measure` belongs on the wake/Routine layer.
+
+Both directions ratchet, and the second is the one a ratio alone misses: a
+score can hold flat while coverage shrinks, so the absolute survivor count
+may fall but never rise. `--accept` re-records a weaker score and demands a
+written reason that is kept in the committed record. `unviable` and
+`timeout` outcomes are excluded from the denominator — a mutant that never
+compiled tested nothing, and folding those in would let a build that got
+slower look like a suite that got better.
+
+`--from` records an `outcomes.json` a CI job already produced instead of
+re-running the tool, which is both the common CI shape and what makes the
+ratchet testable without a Rust toolchain.
+
+Staleness is deliberately **not** fatal by default. It is named with how
+stale, and raised in the inbox so somebody schedules the re-run — a gate
+that reds because an expensive job has not been re-run yet is one people
+switch off, and it would take the rest of the harness with it. A repo that
+wants it fatal sets `failWhenStale`. A measurement taken at a commit the
+repo no longer has is reported as its own state, distinct from merely old.
+Toolchains this guard cannot parse are named rather than silently skipped.
+
+`#[mutants::skip]` joined `proof-guard`'s ratcheted hatch categories:
+excusing a mutant is excusing a change no test has to notice, which is the
+same move as excusing a proof obligation, and it should not be free to
+sprinkle wherever this goes red.
+
+The original design, for reference. In loop-mode TDD the same agent writes the code and its judge;
 proof-guard's structural scans catch only the unambiguous `{ True }`
 vacuities. Mutation score is the one metric that cannot be faked by merely
 executing code. Dispatch by toolchain (cargo-mutants, mutmut, Stryker; for
@@ -476,7 +507,7 @@ existing harness and each is independently shippable.
 | 6 | Gate-authored Evidence rows + classed injection (replaced `--mint`; see Part 2) | **shipped** |
 | 7 | Stop-gate branch-point dirtiness + baseline/trust-base modified-contract warnings | **shipped** |
 | 8 | `decision.py` + PreCompact hook (distill gate behind `FPL_DISTILL=1`) | **shipped** |
-| 9 | `mutation-guard.py` wrapping cargo-mutants, floor + staleness stamp | |
+| 9 | `mutation-guard.py` wrapping cargo-mutants, floor + staleness stamp | **shipped** |
 | 10 | `ExecutionV1` + `verify: "prove:<gate>"` tier + TAMPERED-EXECUTION enforcement | |
 | 11 | `WORK.consolidate.md` + consolidation Routine; evidence `--replay` + graded injection | |
 | 12 | Attack-taxonomy scaffolding in `/fluxpoint:init` for Aiken repos; `WORK.verified.md` | |

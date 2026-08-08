@@ -172,6 +172,12 @@ full() {
   # regression test that carries it. Dormant with nothing recorded.
   cc="$(plugin_script cex.py)"
   [ -n "$cc" ] && "$FPL_PY" "$cc" --check
+  # Mutation score. Every check above asks whether the tests pass; this asks
+  # whether they can fail. Cheap here on purpose — it re-runs nothing and
+  # only asks whether a measurement exists and still describes this tree.
+  # The expensive `--measure` belongs off-session, on a Routine.
+  mg="$(plugin_script mutation-guard.py)"
+  [ -n "$mg" ] && "$FPL_PY" "$mg" --check
   # Relation gate. Every check above measures one artifact; the defects that
   # cost the most are relationships between two, and a suite stays green
   # because each half is individually correct. Dormant without a manifest.

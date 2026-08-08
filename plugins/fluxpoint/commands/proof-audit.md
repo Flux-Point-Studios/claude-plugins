@@ -24,6 +24,13 @@ Resolve the plugin root: `${CLAUDE_PLUGIN_ROOT}`, else
    narrowed fuzzer. None of those move a hatch count, and every checker
    still exits 0. Read the `NOT COVERED` lines too: a tracked Lean or Coq
    file is not yet parsed, and that surface is the auditor's alone.
+1a. **Can the tests fail?** If `.fluxpoint-mutation.json` exists, run
+   `bash "$ROOT/scripts/py.sh" mutation-guard.py --report`. A ratchet on
+   proof strength says nothing about a suite that executes every line and
+   asserts nothing; the mutation score is the only number here that cannot
+   be faked by running code. Read the survivors: each one is a change to the
+   implementation that no test noticed. If the measurement is stale or
+   absent, say so as a gap rather than treating green as measured.
 2. **Confirm the checker actually ran.** Read `scripts/harness.sh` and
    verify that `--full` invokes the prover, not only the per-file
    `--changed` path. A Definition-of-Done gate that never calls the prover
