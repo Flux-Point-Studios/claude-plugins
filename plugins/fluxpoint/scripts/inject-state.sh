@@ -63,6 +63,30 @@ if [ -f "$inbox_py" ]; then
   fi
 fi
 
+# A gate claim the attest log contradicts makes a run's verdict worthless,
+# so it outranks everything below it except what is blocked on a person.
+if [ -f .fluxpoint-gates.json ] && [ -f "$sd/attest.jsonl" ]; then
+  mm="$("$FPL_PY" - "$sd/runs" <<'PY' 2>/dev/null || true
+import json, os, sys
+d = sys.argv[1]
+n = 0
+for fn in os.listdir(d) if os.path.isdir(d) else []:
+    if not fn.endswith(".json"):
+        continue
+    try:
+        with open(os.path.join(d, fn), encoding="utf-8") as fh:
+            a = json.load(fh)
+    except Exception:
+        continue
+    n += ((a.get("attestation") or {}).get("tally", {}) or {}).get("mismatch", 0)
+print(n)
+PY
+)"
+  if [ "${mm:-0}" -gt 0 ] 2>/dev/null; then
+    echo "- ATTESTATION MISMATCH: ${mm} recorded gate claim(s) contradict .claude/fluxpoint/attest.jsonl, which is the hook-minted record of what those commands actually exited. Those runs' verdicts are not trustworthy; /fluxpoint:status lists them."
+  fi
+fi
+
 # Latest graph run, if this repo runs campaigns.
 runs="$sd/runs"
 if [ -d "$runs" ]; then

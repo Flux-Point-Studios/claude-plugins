@@ -35,6 +35,7 @@ KINDS = {
     "wake-expired": "a wake deadline passed with the condition unmet",
     "confirm-required": "an irreversible node refused to fire unconfirmed",
     "budget-exhausted": "an unattended run spent its iteration budget",
+    "attest-mismatch": "a node's claimed gate exit contradicts the attested log",
 }
 
 

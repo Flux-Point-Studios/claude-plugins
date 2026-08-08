@@ -18,9 +18,12 @@ does.
 ## Layout
 
 - `hooks/` — SessionStart state injection, PostToolUse scoped
-  verification, Stop-hook DoD gate.
+  verification on writes and execution attestation on Bash, Stop-hook
+  DoD gate.
 - `scripts/` — `lib.sh`, `inject-state.sh`, `verify-changed.sh`,
   `dod-gate.sh` (loop); `compile-graph.py`, `record-run.py` (graph);
+  `exec-attest.sh`, `attest.py` (hook-minted exit codes for declared
+  gates);
   `proof-guard.py` (proof-strength ratchet); `plutus-budget.py` (on-chain
   size and execution-unit limits); `pair-guard.py` (relation gate over
   declared artifact pairs); `ledger.py` (once-only guard for
@@ -46,7 +49,8 @@ does.
   `migrate-test.sh` (migration against real pre-1.0 fixtures),
   `proof-guard-test.sh` (the ratchet, per prover), `budget-test.sh`
   (on-chain limits), `ledger-test.py` (the once-only guard, executed
-  rather than grepped), `pair-test.sh` (relation gate),
+  rather than grepped), `attest-test.sh` (execution attestation and its
+  laundering cases, executed), `pair-test.sh` (relation gate),
   `unify-test.sh` (state model and compatibility). All of it runs from
   `scripts/harness.sh --full` in CI.
 
@@ -68,6 +72,13 @@ Evidence table both modes append to.
 - The DoD gate arms on two independent signals — the PostToolUse marker
   and dirtiness re-derived from `git` — because the marker cannot see
   source written through the Bash tool.
+- A gate's exit code is minted by a hook, not typed by an agent. Declare
+  the deciding commands in `.fluxpoint-gates.json`; every run of one is
+  recorded to `.claude/fluxpoint/attest.jsonl`, and `record-run.py`
+  cross-checks any node that claims a gate exit. Only the exact declared
+  invocation attests — `|| true` or a pipe reports a different exit and is
+  credited to nothing — and a missing attestation is `UNATTESTED`, never
+  a failure.
 - Compiled `.graph.js` files are build output. Never hand-edit them; edit
   the IR and recompile.
 - Budget is enforced twice and neither check is advisory: `maxNodes` is a

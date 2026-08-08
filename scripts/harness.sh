@@ -126,6 +126,7 @@ case "${1:---full}" in
     step "proof-strength ratchet" bash "$PLUGIN/tests/proof-guard-test.sh"
     step "on-chain budget gate" bash "$PLUGIN/tests/budget-test.sh"
     step "once-only ledger (executed)" "$FPL_PY" "$PLUGIN/tests/ledger-test.py"
+    step "execution attestation (executed)" bash "$PLUGIN/tests/attest-test.sh"
     step "relation gate" bash "$PLUGIN/tests/pair-test.sh"
     step "park layer (executed)" "$FPL_PY" "$PLUGIN/tests/park-test.py"
     step "unified state + compatibility" bash "$PLUGIN/tests/unify-test.sh"

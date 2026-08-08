@@ -230,6 +230,35 @@ def main():
     except Exception as e:  # noqa: BLE001
         print(f"record-run: inbox/waits update failed: {e}", file=sys.stderr)
 
+    # 1c. Cross-check every claimed gate exit against the hook-minted log.
+    # Warn mode: a mismatch is said loudly and filed, but does not rewrite the
+    # outcome yet. The corpus this produces is what earns the enforcing
+    # version — a check that starts by failing runs is a check people turn
+    # off before it has established what normal looks like.
+    attestation = None
+    try:
+        import attest as _attest
+        checks, afindings = _attest.verify_claims(args.root, summary)
+        for f in afindings:
+            print(f"record-run: {f}", file=sys.stderr)
+        if checks:
+            tally = {"checked": len(checks)}
+            for st in ("ATTESTED", "UNATTESTED", "MISMATCH"):
+                n = sum(1 for c in checks if c["status"] == st)
+                if n:
+                    tally[st.lower()] = n
+            attestation = {"tally": tally, "checks": checks}
+            for c in checks:
+                stream = sys.stderr if c["status"] == "MISMATCH" else sys.stdout
+                print(f"record-run: attest [{c['status']}] {c['node']} — {c['detail']}",
+                      file=stream)
+                if c["status"] == "MISMATCH":
+                    import inbox as _ibx
+                    _ibx.add(args.root, "attest-mismatch", c["node"], campaign,
+                             c["detail"])
+    except Exception as e:  # noqa: BLE001 - a witness must never eat the record
+        print(f"record-run: attestation cross-check failed: {e}", file=sys.stderr)
+
     # 1. Durable provenance artifact.
     os.makedirs(args.state_dir, exist_ok=True)
     art = os.path.join(args.state_dir, f"{args.run_id}.json")
@@ -246,6 +275,7 @@ def main():
                 "findings": findings,
                 "harnessExit": harness,
                 "redTeam": red_team,
+                "attestation": attestation,
                 "summary": summary,
             },
             fh,
@@ -269,7 +299,19 @@ def main():
             claim += f" +{len(imported) - 2} more imported decision(s)"
     for p in partial:
         claim += f"; {p.get('node')} INCOMPLETE — {p.get('detail') or 'did not run to exhaustion'}"
+    if attestation:
+        t = attestation["tally"]
+        if t.get("mismatch"):
+            claim += (f"; {t['mismatch']} gate claim(s) CONTRADICT the attested "
+                      f"execution log — the exit codes are not trustworthy")
+        elif t.get("unattested"):
+            claim += (f"; {t['unattested']} gate claim(s) UNATTESTED — self-reported "
+                      f"exit code(s), no hook-minted record")
     proof = f"harness exit {harness}; red-team {red_team}; executor {args.executor}"
+    if attestation:
+        att = attestation["tally"]
+        proof += ("; attestation " + ", ".join(
+            f"{k} {v}" for k, v in sorted(att.items()) if k != "checked"))
     row = f"| {ts} | {args.run_id} | {outcome} | {claim} | {proof} |"
     legacy_row = (
         f"| {ts} | {args.run_id} | {outcome} | {ok}/{dead} | {findings} "

@@ -29,8 +29,9 @@ another layer's missing input:
 | 4 | Loop-mode work → Decisions | The Decisions table is populated only by graph `DecisionV1` nodes; loop mode has no capture step and `hooks.json` wires no PreCompact. | The named failure — "a fresh context silently re-decides the other way" — is still fully open for loop work, which is most work. |
 | 5 | Prover output → anywhere | The shrunk counterexample from `aiken check` (or any prover) lives in `full.log`, clobbered per run. | The single most valuable artifact a prover produces evaporates; a fixed bug carries no pinned regression. |
 | 6 | Frozen decisions → the next campaign | ~~`imports` resolved by the orchestrating agent by hand; the emitted guard checked key presence only.~~ **Closed**: the compiler resolves `imports` from recorded runs and embeds the records (see Part 2, slice 1). | — |
-| 7 | Red-team / proof-audit verdicts → the gate | `SHIP/BLOCK` is typed (`RedTeamV1`) but `proof-auditor`'s `SOUND/WEAKENED` is prose; neither reaches `dod-gate.sh`. | "Treat WEAKENED as harness-red" is policy, not mechanism. |
-| 8 | Evidence → freshness | Rows are never replayed; a row true at write time is injected unchanged after the code it describes was rewritten. | Memory rots silently, and the bootstrap presents rot as fact. |
+| 7 | Real exit codes → claimed exit codes | ~~A gate node typed its own `{"exit": 0}` and nothing could contradict it.~~ **Closed in warn mode**: a PostToolUse hook mints the runtime's exit for declared gates and `record-run.py` cross-checks every claim (see Part 2, slice 2). | — |
+| 8 | Red-team / proof-audit verdicts → the gate | `SHIP/BLOCK` is typed (`RedTeamV1`) but `proof-auditor`'s `SOUND/WEAKENED` is prose; neither reaches `dod-gate.sh`. | "Treat WEAKENED as harness-red" is policy, not mechanism. |
+| 9 | Evidence → freshness | Rows are never replayed; a row true at write time is injected unchanged after the code it describes was rewritten. | Memory rots silently, and the bootstrap presents rot as fact. |
 
 ## Part 2 — the trust chain
 
@@ -56,25 +57,42 @@ exact overturn imports exist to prevent); and `record-run.py` no longer
 re-files imported decisions as fresh rows — the Evidence claim names them
 as `honors <id>@<runId>` instead.
 
-**2. Exit codes inside graphs are transcribed, not captured.** The
-"independent harness gate" node runs `scripts/harness.sh` itself and then
-*writes* `{"exit": 0}` into `HarnessCheckV1` — and that self-reported
-integer is what `haltWhen` consumes before an irreversible effect. The fix
-is attestation: a PostToolUse hook on `Bash` that, when the command matches
-a gate named in a committed `.fluxpoint-gates.json` allowlist, appends
-`{attestId, gate, commandSha, exit, logSha256, ts}` to an append-only
-`.claude/fluxpoint/attest.jsonl` (ledger read discipline: malformed rows
-are hard errors). Then: a `verify: "prove:<gate>"` tier whose gate name
-must resolve in the manifest at compile time (the removed-`harness`-tier
-lesson: a tier must emit something real), an `ExecutionV1` contract
-(`{gate, exit, attestId, logSha256}`, additionalProperties false), and a
-`record-run.py` cross-check that rewrites any harness/execution result
-whose attestId or exit does not match the attest log to
-`TAMPERED-EXECUTION` (the `BLOCKED-REDTEAM` override pattern, reused). An
-agent can still trim prose in a summary; it can no longer mint a green
-exit. First slice: the hook plus the manifest plus the cross-check in
-warn mode — no compiler changes, and the attestation corpus starts
-accruing immediately.
+**2. Exit codes inside graphs were transcribed, not captured — warn mode
+shipped.** The "independent harness gate" node runs `scripts/harness.sh`
+itself and then *writes* `{"exit": 0}` into `HarnessCheckV1`, and that
+self-reported integer is what `haltWhen` consumes before an irreversible
+effect. As of slice 2, a PostToolUse hook on `Bash`
+(`scripts/exec-attest.sh` → `scripts/attest.py --record`) records the
+runtime's own `tool_response.exit_code` for every command declared in a
+committed `.fluxpoint-gates.json`, appending
+`{attestId, gate, command, commandSha, exit, logSha256, headSha, when,
+sessionId, agent}` to `.claude/fluxpoint/attest.jsonl` — ledger read
+discipline, so a malformed row is a hard error rather than a quiet shrink.
+`record-run.py` cross-checks every claimed gate exit against that log and
+reports `ATTESTED`, `UNATTESTED`, or `MISMATCH`; a mismatch is printed to
+stderr, filed as an `attest-mismatch` inbox row, carried into the Evidence
+row and the run artifact's `attestation.tally`, and surfaced at
+SessionStart. Subagent Bash calls fire the hook too, so gates run inside
+graph nodes are attested and the row records which agent ran them.
+
+Two properties worth naming, both pinned by tests. Only the exact declared
+invocation matches (whitespace and a leading `bash `/`./` are normalized,
+nothing else): `scripts/harness.sh --full || true` reports 0 for a red
+harness, so it must not be able to borrow the gate's name — it is attested
+as nothing, and shows up as UNATTESTED. And absence is never guilt: an
+executor that does not route through the Bash tool produces no rows, which
+is reported as its own state rather than as a failure, because the
+alternative is a false-red generator.
+
+Still to come, once the corpus shows what normal looks like: an
+`ExecutionV1` contract (`{gate, exit, attestId, logSha256}`,
+additionalProperties false), a `verify: "prove:<gate>"` tier whose gate
+name must resolve in the manifest at compile time (the
+removed-`harness`-tier lesson: a tier must emit something real), and
+promotion of MISMATCH from warn to `TAMPERED-EXECUTION` via the
+`BLOCKED-REDTEAM` override pattern. Warn mode first is deliberate — a check
+that starts by failing runs gets switched off before it has established a
+baseline.
 
 **3. Loop-mode evidence is self-certified.** `evidence.py --mint` takes a
 claim and a command, **executes the command itself** from an allowlist
@@ -265,8 +283,8 @@ existing harness and each is independently shippable.
 | # | Slice | Status |
 |---|---|---|
 | 1 | Compile-time `imports` resolution + embedding (`resolve_imports`, `DECISIONS_IMPORTED`, record-run dedup, re-decide invariant) | **shipped** with this document |
-| 2 | `exec-attest.sh` + `.fluxpoint-gates.json` + record-run cross-check in warn mode | next |
-| 3 | `memory.py` + record-run filing of findings/objections + `memory.seed` seen-set seeding | |
+| 2 | `exec-attest.sh` + `.fluxpoint-gates.json` + record-run cross-check in warn mode | **shipped** |
+| 3 | `memory.py` + record-run filing of findings/objections + `memory.seed` seen-set seeding | next |
 | 4 | `spec-guard.py` for Aiken + Dafny statements, wired into `templates/harness.sh --full` | |
 | 5 | `cex.py --ingest/--pin/--check` for `aiken check` output | |
 | 6 | `evidence.py --mint` + `WORK_PROMPT.md` requiring minted rows for harness-checkable claims | |

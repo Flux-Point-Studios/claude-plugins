@@ -33,23 +33,29 @@ bad()  { printf 'FAIL  %-52s -> %s\n' "$1" "$2"; fail=$((fail+1)); }
 check(){ [ "$2" = "$3" ] && ok "$1" "$3" || bad "$1" "$3 (wanted $2)"; }
 
 # The command strings the runtime actually executes.
+# An event may carry several groups (PostToolUse has one per tool family),
+# so both helpers take an optional group index. Defaulting to 0 keeps the
+# older cases reading as they did.
 hook_cmd() {
-  "$FPL_PY" - "$PLUGIN/hooks/hooks.json" "$1" <<'PY'
+  "$FPL_PY" - "$PLUGIN/hooks/hooks.json" "$1" "${2:-0}" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
-for group in d["hooks"].get(sys.argv[2], []):
-    for h in group["hooks"]:
+groups = d["hooks"].get(sys.argv[2], [])
+i = int(sys.argv[3])
+if i < len(groups):
+    for h in groups[i]["hooks"]:
         print(h["command"])
-        raise SystemExit
+        break
 PY
 }
 hook_matcher() {
-  "$FPL_PY" - "$PLUGIN/hooks/hooks.json" "$1" <<'PY'
+  "$FPL_PY" - "$PLUGIN/hooks/hooks.json" "$1" "${2:-0}" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
-for group in d["hooks"].get(sys.argv[2], []):
-    print(group.get("matcher", ""))
-    raise SystemExit
+groups = d["hooks"].get(sys.argv[2], [])
+i = int(sys.argv[3])
+if i < len(groups):
+    print(groups[i].get("matcher", ""))
 PY
 }
 
@@ -67,14 +73,17 @@ newrepo() { # $1 = harness exit code, or "none" for no harness
 post_input() { printf '{"session_id":"s","cwd":"%s","tool_input":{"file_path":"%s"}}' "$ROOT/r" "$1"; }
 
 # --- 1. every hook command in hooks.json resolves and runs ---
-for ev in SessionStart PostToolUse Stop; do
-  cmd="$(hook_cmd "$ev")"
-  [ -n "$cmd" ] || { bad "$ev: command present in hooks.json" "missing"; continue; }
+# Every group of every event, not just the first: a second group whose script
+# was renamed would otherwise disarm silently.
+for spec in "SessionStart 0" "PostToolUse 0" "PostToolUse 1" "Stop 0"; do
+  set -- $spec; ev="$1"; idx="$2"
+  cmd="$(hook_cmd "$ev" "$idx")"
+  [ -n "$cmd" ] || { bad "$ev[$idx]: command present in hooks.json" "missing"; continue; }
   # Expand ${CLAUDE_PLUGIN_ROOT} exactly as the runtime does, then check the
   # target exists before running it.
   target="$(eval "printf '%s' \"$(printf '%s' "$cmd" | sed 's/^bash //')\"")"
-  if [ -f "$target" ]; then ok "$ev: script exists at plugin root" "$(basename "$target")"
-  else bad "$ev: script exists at plugin root" "missing $target"; fi
+  if [ -f "$target" ]; then ok "$ev[$idx]: script exists at plugin root" "$(basename "$target")"
+  else bad "$ev[$idx]: script exists at plugin root" "missing $target"; fi
 done
 
 # --- 2. the hook commands execute without error on a clean repo ---
@@ -84,9 +93,47 @@ check "SessionStart: runs via its hooks.json command" 0 "$rc"
 case "$out" in *"Flux Point work context"*) ok "SessionStart: injects context" "yes" ;;
   *) bad "SessionStart: injects context" "no" ;; esac
 
-# --- 3. PostToolUse matcher covers exactly the file-writing tools ---
-m="$(hook_matcher PostToolUse)"
-check "PostToolUse: matcher is Write|Edit|MultiEdit" "Write|Edit|MultiEdit" "$m"
+# --- 3. PostToolUse matchers cover the file-writing tools, then Bash ---
+m="$(hook_matcher PostToolUse 0)"
+check "PostToolUse[0]: matcher is Write|Edit|MultiEdit" "Write|Edit|MultiEdit" "$m"
+m="$(hook_matcher PostToolUse 1)"
+check "PostToolUse[1]: matcher is Bash" "Bash" "$m"
+
+# --- 3a. the Bash hook attests gate runs and is otherwise dormant ---
+bash_input() { # $1 = command, $2 = exit code
+  "$FPL_PY" - "$ROOT/r" "$1" "$2" <<'PY'
+import json, sys
+print(json.dumps({"session_id": "s", "cwd": sys.argv[1], "tool_name": "Bash",
+                  "tool_use_id": "toolu_x",
+                  "tool_input": {"command": sys.argv[2]},
+                  "tool_response": {"exit_code": int(sys.argv[3]), "stdout": "",
+                                    "stderr": ""}}))
+PY
+}
+newrepo 0
+bash_input "scripts/harness.sh --full" 0 | eval "$(hook_cmd PostToolUse 1)" >/dev/null 2>&1
+check "exec-attest: no manifest, no attestation, no error" 0 "$?"
+[ -f .claude/fluxpoint/attest.jsonl ] \
+  && bad "exec-attest: dormant without a manifest" "wrote a log" \
+  || ok "exec-attest: dormant without a manifest" "no log"
+
+printf '{"version":1,"gates":{"harness":"scripts/harness.sh --full"}}' >.fluxpoint-gates.json
+bash_input "scripts/harness.sh --full" 1 | eval "$(hook_cmd PostToolUse 1)" >/dev/null 2>&1
+check "exec-attest: runs via its hooks.json command" 0 "$?"
+if [ -f .claude/fluxpoint/attest.jsonl ] && grep -q '"exit": 1' .claude/fluxpoint/attest.jsonl; then
+  ok "exec-attest: the runtime's red exit is what lands" "exit 1 recorded"
+else
+  bad "exec-attest: the runtime's red exit is what lands" "not recorded"
+fi
+
+# A hook that can no longer attest must say so — once, not per command.
+printf 'broken' >.fluxpoint-gates.json
+out1="$(bash_input "scripts/harness.sh --full" 0 | eval "$(hook_cmd PostToolUse 1)" 2>/dev/null)"
+out2="$(bash_input "scripts/harness.sh --full" 0 | eval "$(hook_cmd PostToolUse 1)" 2>/dev/null)"
+case "$out1" in *DISARMED*) ok "exec-attest: a broken manifest is announced" "announced" ;;
+  *) bad "exec-attest: a broken manifest is announced" "silent: ${out1:0:40}" ;; esac
+[ -z "$out2" ] && ok "exec-attest: announced once per session, not per command" "quiet after" \
+  || bad "exec-attest: announced once per session, not per command" "repeated"
 
 # --- 4. verify-changed.sh: the previously untested hook ---
 newrepo 0

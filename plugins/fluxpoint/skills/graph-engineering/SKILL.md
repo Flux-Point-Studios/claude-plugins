@@ -214,6 +214,19 @@ itself. This is a compiler-enforced invariant because it shipped as a bug
 once: the graph trusts exit codes it re-derived, not adjectives it was
 told.
 
+Independence of *context* is what the compiler can enforce; fidelity of
+*execution* it cannot, because the verifier still types the exit code into
+its contract by hand. So declare the commands that decide things in
+`.fluxpoint-gates.json`, and a PostToolUse hook records the runtime's own
+exit for every one of those runs. `record-run.py` then cross-checks each
+claimed gate exit against that log and reports `ATTESTED`, `UNATTESTED`, or
+`MISMATCH` — a node claiming green over an attested red is caught, filed to
+the inbox, and named in the Evidence row. Two things to know: only the
+exact declared invocation is attested (a pipe or a trailing `|| true`
+reports a different exit and is credited to nothing), and an absent
+attestation is `UNATTESTED`, never a failure — an executor that does not
+route through the Bash tool must not read as guilt.
+
 ## Canonical shapes
 
 - **Fan-out/verify** (`templates/WORK.md`): dimensions → finders →

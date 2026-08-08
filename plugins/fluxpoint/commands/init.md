@@ -57,10 +57,24 @@ step; do not stop at copying files.
    a rise in it is someone making a proof obligation disappear. Confirm
    `harness.sh --full` actually invokes the prover; per-file checking on
    edit is not a Definition-of-Done gate.
-9. Fill in the Merge policy block, asking the user once: may green + SHIP
+9. Declare this repo's gates so their exit codes stop being self-reported.
+   Write `.fluxpoint-gates.json` naming each command whose verdict decides
+   something — at minimum the harness — exactly as it is invoked:
+   ```json
+   {"version": 1, "gates": {"harness": "scripts/harness.sh --full"}}
+   ```
+   A PostToolUse hook then records the runtime's own exit code for every one
+   of those runs to `.claude/fluxpoint/attest.jsonl`, and `record-run.py`
+   cross-checks any campaign node that claims a gate exit against it. Match
+   the declared string to how the command is actually run: a gate invoked
+   with a pipe, a redirect, or a trailing `|| true` reports a different exit
+   and is deliberately not attested, so it shows up as UNATTESTED rather
+   than being credited to the gate. Commit the manifest; it is part of the
+   trust base.
+10. Fill in the Merge policy block, asking the user once: may green + SHIP
    PRs merge autonomously in this repo, and does merging trigger a deploy?
    If auto-merge is on, verify `gh` is authenticated and record the
    required CI check names the merge will wait on.
-10. Finish with a short report: files created, harness verdict, MODE, merge
+11. Finish with a short report: files created, harness verdict, MODE, merge
    policy, and the one command that starts an outer loop
    (`scripts/loop.sh`) or a campaign (`/fluxpoint:graph-run`).
