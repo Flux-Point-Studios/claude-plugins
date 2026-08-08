@@ -82,7 +82,16 @@ Evidence table both modes append to.
   the verdict. The compiler refuses to build a graph that breaks this.
 - The DoD gate arms on two independent signals — the PostToolUse marker
   and dirtiness re-derived from `git` — because the marker cannot see
-  source written through the Bash tool.
+  source written through the Bash tool. Dirtiness is measured against the
+  commit the session started from, not HEAD, so committing work mid-session
+  is not a way to stop being judged; the hygiene scan uses the same
+  baseline. It falls back to HEAD when that commit is not an ancestor of
+  the current one (a rebase or branch switch), because a gate that fires
+  spuriously gets switched off.
+- The files that decide what green means — the harness, the proof and pair
+  baselines, the gates and budget manifests, `package.json`, `Makefile` —
+  are named in the green notice when this session changed any of them.
+  A verdict is only as trustworthy as the contract that produced it.
 - A gate's exit code is minted by a hook, not typed by an agent. Declare
   the deciding commands in `.fluxpoint-gates.json`; every run of one is
   recorded to `.claude/fluxpoint/attest.jsonl`, and `record-run.py`

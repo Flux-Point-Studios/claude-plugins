@@ -158,19 +158,40 @@ SessionStart injection (each row rides in with its replay status and age),
 and DoD lines with a `— proof: <cmd>` tail that `dod-gate.sh` re-runs
 before honoring a checked box.
 
-**Known bypasses to close while the above lands.** (a) Write-via-Bash then
-commit in the same session: `fpl_code_dirty` diffs against HEAD, so a
-committed tree plus a never-fired PostToolUse marker leaves the Stop gate
-disarmed with the harness never run — compare against the branch point or
-the last-gated sha instead. (b) The hygiene scan has the same HEAD blind
-spot for committed markers. (c) `fpl_harness_modified` warns on a green
-pass under an edited `scripts/harness.sh` but guards none of the wider
-trust base — `package.json` scripts, `.fluxpoint-proof-baseline.json`,
-`.fluxpoint-pairs.json`, `.fluxpoint-budget.json` — and an agent can
-re-run `proof-guard.py --baseline` to absorb a rise; baselines deserve
-the same modified-contract warning, or a PreToolUse guard. (d)
-`wake-check.sh` runs `sh -c` on predicates that originate in the IR;
-predicates need the allowlist treatment.
+**Known bypasses — (a), (b) and (c) closed in slice 7.** The gate now
+judges the tree against a **session baseline commit** rather than HEAD.
+`inject-state.sh` records the starting commit once per session (only when
+absent, so resume and post-compaction cannot forgive commits made before
+them), the gate exports it as `FPL_DIFF_BASE`, and it is refreshed on green
+— a tree that just passed is the right thing to measure the next one
+against. Red and timed-out runs leave it alone, having established nothing.
+
+- (a) **Write-via-Bash then commit is closed.** Verified both ways: with the
+  session baseline the gate blocks a red harness; forcing the old HEAD
+  baseline lets the same session stop silently. The work prompt tells the
+  loop to commit every slice, so this was the normal path, not a clever one.
+- (b) **The hygiene scan inherits the same baseline**, so a `TODO` or
+  `.unwrap()` committed mid-session is no longer laundered past the gate.
+  History older than the session is still CI's job.
+- (c) **The trust base is now a list, not one file**: `scripts/harness.sh`
+  plus `.fluxpoint-proof-baseline.json`, `.fluxpoint-pairs.json`,
+  `.fluxpoint-gates.json`, `.fluxpoint-budget.json`, `.fluxpoint-cex.jsonl`,
+  `package.json`, `Makefile`. Any of them changed this session — committed
+  or not — is named in the green notice, so re-recording a baseline to
+  absorb a rise is said out loud. Still a warning, not a block: making it
+  blocking is how a gate gets switched off.
+- (d) `wake-check.sh` still runs `sh -c` on predicates that originate in the
+  IR. Open; it needs the allowlist treatment `.fluxpoint-gates.json` models.
+
+Two properties of the baseline worth knowing. It **falls back to HEAD**
+whenever the recorded commit is not an ancestor of the current one — a
+rebase or a branch switch would otherwise diff the tree against unrelated
+history, arming the gate and flooding the hygiene scan with findings nobody
+introduced; a gate that cries wolf is worse than the bypass it closed. And
+it **depends on SessionStart having run**: with no recorded baseline the
+gate degrades to the previous HEAD comparison, which is the old behavior
+rather than a new hole, but it means `FPL_DISABLE=1` on the SessionStart
+hook alone weakens the Stop gate too.
 
 ## Part 3 — the memory layer
 
@@ -422,7 +443,7 @@ existing harness and each is independently shippable.
 | 4 | `spec-guard.py` for Aiken + Dafny statements, wired into `templates/harness.sh --full` | **shipped** |
 | 5 | `cex.py --ingest/--pin/--check` for `aiken check` output | **shipped** |
 | 6 | Gate-authored Evidence rows + classed injection (replaced `--mint`; see Part 2) | **shipped** |
-| 7 | Stop-gate branch-point dirtiness + baseline/trust-base modified-contract warnings | |
+| 7 | Stop-gate branch-point dirtiness + baseline/trust-base modified-contract warnings | **shipped** |
 | 8 | `decision.py` + PreCompact hook (distill gate behind `FPL_DISTILL=1`) | |
 | 9 | `mutation-guard.py` wrapping cargo-mutants, floor + staleness stamp | |
 | 10 | `ExecutionV1` + `verify: "prove:<gate>"` tier + TAMPERED-EXECUTION enforcement | |

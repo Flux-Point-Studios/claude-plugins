@@ -19,6 +19,10 @@ sid="${sid:-nosession}"
 sd="$(fpl_state_dir)"
 dirty="$sd/$sid.dirty"
 counter="$sd/$sid.blocks"
+# Everything below judges the tree against where this session started, not
+# against HEAD. Committing is not a way to stop being judged.
+FPL_DIFF_BASE="$(fpl_base_ref "$sid")"
+export FPL_DIFF_BASE
 # Two independent signals arm the gate. The PostToolUse marker records edits
 # that were later committed (git-clean but real work); fpl_code_dirty catches
 # everything the marker cannot see, because that hook only matches
@@ -125,10 +129,15 @@ if [ -z "$findings" ]; then
   printf 'PASS %s\n' "$ts" >"$sd/last-harness"
   rm -f "$dirty" "$counter"
   fpl_record_evidence PASS \
-    "Stop-gate DoD: scripts/harness.sh --full green over ${dirty_n} uncommitted path(s), hygiene scan clean" \
+    "Stop-gate DoD: scripts/harness.sh --full green over ${dirty_n} changed path(s), hygiene scan clean" \
     "$proof"
-  if fpl_harness_modified; then
-    fpl_json_obj systemMessage "fluxpoint: gate green, but scripts/harness.sh is itself modified or untracked in this working tree — this pass was produced by a changed contract. Review the harness diff before trusting it."
+  # This tree passed, so it is what the next verdict should be measured
+  # against. Refreshed only on green: a red or timed-out run has not
+  # established anything worth inheriting as a starting point.
+  fpl_set_base "$sid"
+  touched="$(fpl_trust_base_modified | sort -u | tr '\n' ' ')"
+  if [ -n "${touched// /}" ]; then
+    fpl_json_obj systemMessage "fluxpoint: gate green, but this session changed the files that decide what green means: ${touched}. A verdict is only as trustworthy as the contract that produced it — review those diffs before trusting this pass."
   fi
   exit 0
 fi

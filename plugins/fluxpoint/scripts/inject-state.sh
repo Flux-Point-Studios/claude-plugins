@@ -28,7 +28,18 @@ cd "${proj:-.}" 2>/dev/null || exit 0
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || exit 0
 
 sd="$(fpl_state_dir)"
-find "$sd" -maxdepth 1 \( -name '*.dirty' -o -name '*.blocks' \) -mtime +3 -delete 2>/dev/null
+find "$sd" -maxdepth 1 \( -name '*.dirty' -o -name '*.blocks' -o -name '*.base' \
+  -o -name '*.attest-warned' \) -mtime +3 -delete 2>/dev/null
+
+# The commit this session starts from, so the Stop gate can tell work done
+# this session from history it inherited — including work that was committed
+# before the stop, which a diff against HEAD cannot see.
+#
+# Written only when absent: this hook also fires on resume, /clear and
+# post-compaction, and refreshing the baseline there would forgive every
+# commit made before that point. The gate refreshes it itself, on green.
+sid="$(printf '%s' "$input" | fpl_json_get session_id)"
+[ -f "$(fpl_base_file "${sid:-nosession}")" ] || fpl_set_base "${sid:-nosession}"
 
 branch="$(git branch --show-current 2>/dev/null)"
 dirtyn="$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
