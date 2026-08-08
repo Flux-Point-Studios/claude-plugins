@@ -256,6 +256,31 @@ def main():
                     import inbox as _ibx
                     _ibx.add(args.root, "attest-mismatch", c["node"], campaign,
                              c["detail"])
+            # A node that declared `verify: prove:<gate>` asked to be held to
+            # the hook's record. A contradiction there is not a warning: the
+            # run's own verification says its exit codes are not what
+            # happened, and a campaign does not get to file that as clean.
+            # Nodes that merely happen to match a declared gate stay observed
+            # rather than enforced — a check that starts by failing runs gets
+            # switched off, and that lesson still holds for everyone who did
+            # not opt in.
+            tampered = [c for c in checks
+                        if c["status"] == "MISMATCH" and c.get("declared")]
+            unproven = [c for c in checks
+                        if c["status"] == "UNATTESTED" and c.get("declared")]
+            if tampered:
+                outcome = "TAMPERED-EXECUTION"
+                print(f"record-run: {len(tampered)} declared prove: node(s) "
+                      f"contradict the attest log — filing this run as "
+                      f"TAMPERED-EXECUTION", file=sys.stderr)
+            elif unproven and outcome in ("COMPLETE", "UNKNOWN"):
+                # The verification the graph declared did not happen. That is
+                # not tampering — an executor that never routes through the
+                # Bash tool leaves no rows — but it is not a clean run either.
+                outcome = "INCOMPLETE"
+                print(f"record-run: {len(unproven)} declared prove: node(s) cited "
+                      f"no attestation — the declared verification did not run",
+                      file=sys.stderr)
     except Exception as e:  # noqa: BLE001 - a witness must never eat the record
         print(f"record-run: attestation cross-check failed: {e}", file=sys.stderr)
 

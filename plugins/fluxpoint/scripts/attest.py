@@ -217,6 +217,43 @@ def _each(value):
         yield value
 
 
+def _check_cited(rows, node, gate, r):
+    """Hold a `prove:` node to the attestation it cited.
+
+    The node names an attestId; the hook wrote that row when the command
+    actually ran. Every way the two can disagree is a different thing to
+    say, and collapsing them would either accuse an honest executor of
+    tampering or let a real one through.
+    """
+    claimed = r.get("exit")
+    cited = r.get("attestId")
+    base = {"node": node, "gate": gate, "claimedExit": claimed,
+            "declared": True, "attestId": cited}
+    if not cited:
+        return {**base, "status": "UNATTESTED",
+                "detail": (f"declared prove:{gate} but cited no attestId — an "
+                           f"exit code nothing witnessed")}
+    row = next((a for a in rows if a.get("attestId") == cited), None)
+    if row is None:
+        return {**base, "status": "MISMATCH",
+                "detail": (f"cites attestation {cited}, which is not in the log. "
+                           f"Nothing recorded that execution.")}
+    if row.get("gate") != gate:
+        return {**base, "status": "MISMATCH",
+                "detail": (f"cites {cited}, which attests gate "
+                           f"'{row.get('gate')}', not the declared '{gate}'")}
+    if row.get("exit") != claimed:
+        return {**base, "status": "MISMATCH",
+                "detail": (f"claims exit {claimed} citing {cited}, but the hook "
+                           f"recorded exit {row.get('exit')} for that run")}
+    if r.get("logSha256") and r["logSha256"] != row.get("logSha256"):
+        return {**base, "status": "MISMATCH",
+                "detail": (f"cites {cited} but quotes a different log than the "
+                           f"one recorded for it")}
+    return {**base, "status": "ATTESTED",
+            "detail": f"exit {claimed} attested {cited}"}
+
+
 def verify_claims(root, summary):
     """Cross-check a run summary's claimed gate exits against the log.
 
@@ -230,13 +267,23 @@ def verify_claims(root, summary):
     rows = read(root)
     results = (summary or {}).get("results") or {}
     contracts = (summary or {}).get("contracts") or {}
+    # Which nodes declared `verify: prove:<gate>`. Those opted into being
+    # held to the hook's record; everything else is still only observed.
+    proved = (summary or {}).get("prove") or {}
     checks = []
     for node, value in results.items():
         for r in _each(value):
-            if "exit" not in r or "command" not in r:
-                continue
             c = contracts.get(node)
             if c not in (None, "HarnessCheckV1", "ExecutionV1"):
+                continue
+            declared = proved.get(node)
+            if declared:
+                # An ExecutionV1 cites its attestation directly, so the check
+                # is against the id rather than a command string it never
+                # carries.
+                checks.append(_check_cited(rows, node, declared, r))
+                continue
+            if "exit" not in r or "command" not in r:
                 continue
             gate = gate_for(gates, r.get("command"))
             if not gate:

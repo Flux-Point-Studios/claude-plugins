@@ -1,0 +1,26 @@
+{
+  "$id": "ExecutionV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["gate", "exit", "attestId"],
+  "properties": {
+    "gate": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The gate name from .fluxpoint-gates.json that was run. A name, not a command: the command is whatever the committed manifest declares, so a node cannot widen what it claims to have run."
+    },
+    "exit": {
+      "type": "integer",
+      "description": "The exit code the gate produced. Still typed by the node — what makes it worth anything is that record-run.py refuses it unless the attest log, written by a hook the agent does not mediate, agrees."
+    },
+    "attestId": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The row in .claude/fluxpoint/attest.jsonl this claim cites. Minted by the PostToolUse hook at the moment the command ran; a claim citing an id that does not exist, or one whose recorded exit differs, is TAMPERED-EXECUTION."
+    },
+    "logSha256": {
+      "type": "string",
+      "description": "Hash of the run's combined output, as the hook recorded it. Lets a later reader bind a quoted log to the execution it came from."
+    }
+  }
+}

@@ -84,15 +84,31 @@ executor that does not route through the Bash tool produces no rows, which
 is reported as its own state rather than as a failure, because the
 alternative is a false-red generator.
 
-Still to come, once the corpus shows what normal looks like: an
-`ExecutionV1` contract (`{gate, exit, attestId, logSha256}`,
-additionalProperties false), a `verify: "prove:<gate>"` tier whose gate
-name must resolve in the manifest at compile time (the
-removed-`harness`-tier lesson: a tier must emit something real), and
-promotion of MISMATCH from warn to `TAMPERED-EXECUTION` via the
-`BLOCKED-REDTEAM` override pattern. Warn mode first is deliberate — a check
-that starts by failing runs gets switched off before it has established a
-baseline.
+**Enforcement shipped in slice 10.** `ExecutionV1` (`{gate, exit,
+attestId, logSha256}`, `additionalProperties: false`) is the contract a
+`verify: "prove:<gate>"` node returns, and the gate name resolves against
+the manifest **at compile time** — a tier naming nothing refuses to
+compile, which is the removed-`harness`-tier lesson made structural. At
+record time a cited attestation that does not exist, attests a different
+gate, or recorded a different exit files the run `TAMPERED-EXECUTION`.
+
+Two boundaries kept the promotion honest rather than sweeping:
+
+- **Only nodes that opted in are enforced.** A result that merely happens
+  to match a declared gate stays observed and warned about, as before.
+  Opting in is what earns the stricter reading; a check that starts by
+  failing runs everyone's campaigns is one people switch off.
+- **Citing nothing is `INCOMPLETE`, not tampering.** An executor that never
+  routes through the Bash tool leaves no attestations, and accusing it
+  would make this a false-red generator. The declared verification did not
+  run — that is a different sentence from "the exit codes lie", and the
+  outcome says so.
+
+The graph also refuses to compile an `irreversible` node whose mandatory
+earlier guard reports its own exit code, in any repo that declares gates.
+The ordering invariant was always sound in structure and hollow in
+fidelity while the guard typed the number itself; an effect nobody can undo
+may not rest on that.
 
 **3. Loop-mode evidence was self-certified — closed in slice 6, and not the
 way this section proposed.** The design below (an `evidence.py --mint` the
@@ -538,7 +554,7 @@ existing harness and each is independently shippable.
 | 7 | Stop-gate branch-point dirtiness + baseline/trust-base modified-contract warnings | **shipped** |
 | 8 | `decision.py` + PreCompact hook (distill gate behind `FPL_DISTILL=1`) | **shipped** |
 | 9 | `mutation-guard.py` wrapping cargo-mutants, floor + staleness stamp | **shipped** |
-| 10 | `ExecutionV1` + `verify: "prove:<gate>"` tier + TAMPERED-EXECUTION enforcement | |
+| 10 | `ExecutionV1` + `verify: "prove:<gate>"` tier + TAMPERED-EXECUTION enforcement | **shipped** |
 | 11 | `WORK.consolidate.md` + consolidation Routine; evidence `--replay` + graded injection | |
 | 12 | Attack-taxonomy scaffolding in `/fluxpoint:init` for Aiken repos; `WORK.verified.md` | |
 | 13 | Cross-repo federation (`.fluxpoint-federation.json`, org-scope lessons) | |

@@ -223,6 +223,68 @@ PY
 )"
 check "the run artifact records the attestation tally" 1 "$t"
 
+# ================= 9. prove: tiers are held to the log ===================
+# A node declaring `verify: prove:<gate>` opted into being checked against
+# the hook's own record. Nodes that merely happen to match a declared gate
+# stay observed rather than enforced — the warn-mode lesson still holds for
+# everyone who did not opt in.
+prove_summary() { # $1 = claimed exit, $2 = cited attestId
+  "$FPL_PY" - "$1" "$2" <<'PYEOF'
+import json, sys
+print(json.dumps({
+    "campaign": "c", "outcome": "COMPLETE",
+    "results": {"gate": {"gate": "harness", "exit": int(sys.argv[1]),
+                         "attestId": sys.argv[2]}},
+    "contracts": {"gate": "ExecutionV1"},
+    "prove": {"gate": "harness"},
+    "provenance": [{"node": "gate", "status": "OK", "detail": ""}],
+}))
+PYEOF
+}
+runprove() { prove_summary "$1" "$2" | "$FPL_PY" "$RECORD" --run-id "$3" \
+  --graph WORK.md --root "$ROOT/r" --state-dir "$ROOT/r/.claude/fluxpoint/runs" 2>&1; }
+
+newrepo; gates
+rec "scripts/harness.sh --full" 0 >/dev/null
+ATT="$(field attestId)"
+out="$(runprove 0 "$ATT" wf-p1)"
+case "$out" in *"[ATTESTED]"*) ok "a prove: node citing a real attestation passes" "attested" ;;
+  *) bad "a prove: node citing a real attestation passes" "${out:0:56}" ;; esac
+case "$out" in *"| COMPLETE |"*) ok "and the run stays COMPLETE" "COMPLETE" ;;
+  *) bad "and the run stays COMPLETE" "${out:0:56}" ;; esac
+
+# The case this layer exists for: the gate really exited 1, the node claims
+# 0, and it cites the very attestation that says otherwise.
+newrepo; gates
+rec "scripts/harness.sh --full" 1 >/dev/null
+ATT="$(field attestId)"
+out="$(runprove 0 "$ATT" wf-p2)"
+case "$out" in *TAMPERED-EXECUTION*)
+  ok "claiming green over the attestation it cites is TAMPERED" "caught" ;;
+  *) bad "claiming green over the attestation it cites is TAMPERED" "${out:0:56}" ;; esac
+case "$out" in *"| COMPLETE |"*)
+  bad "and the run may not be filed COMPLETE" "filed clean" ;;
+  *) ok "and the run may not be filed COMPLETE" "rewritten" ;; esac
+
+# An attestId nobody minted.
+newrepo; gates
+rec "scripts/harness.sh --full" 0 >/dev/null
+out="$(runprove 0 att_deadbeef1234 wf-p3)"
+case "$out" in *TAMPERED-EXECUTION*)
+  ok "citing an attestation that does not exist is TAMPERED" "caught" ;;
+  *) bad "citing an attestation that does not exist is TAMPERED" "${out:0:56}" ;; esac
+
+# No citation at all: the declared verification did not happen. Not
+# tampering — an executor that never routes through the Bash tool leaves no
+# rows — but not a clean run either.
+newrepo; gates
+out="$(runprove 0 "" wf-p4)"
+case "$out" in *"[UNATTESTED]"*) ok "a prove: node citing nothing is UNATTESTED" "unattested" ;;
+  *) bad "a prove: node citing nothing is UNATTESTED" "${out:0:56}" ;; esac
+case "$out" in *"| INCOMPLETE |"*)
+  ok "and the run is INCOMPLETE — neither tampered nor clean" "INCOMPLETE" ;;
+  *) bad "and the run is INCOMPLETE — neither tampered nor clean" "${out:0:56}" ;; esac
+
 cd /; rm -rf "$ROOT"
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

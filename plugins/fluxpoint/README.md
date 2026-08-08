@@ -39,7 +39,7 @@ does.
   plan/apply/finalize).
 - `contracts/` — versioned named schemas (`FindingsV1`, `VerdictV1`,
   `HarnessCheckV1`, `DesignV1`, `SliceV1`, `RedTeamV1`, `DecisionV1`,
-  `LessonV1`).
+  `LessonV1`, `ExecutionV1`).
 - `commands/` — `/fluxpoint:init`, `:status`, `:migrate`, `:red-team`,
   `:proof-audit`, `:graph-design`, `:graph-run`, `:graph-audit`,
   `:release`.
@@ -83,6 +83,11 @@ Evidence table both modes append to.
 - A node that writes to the tree may not certify its own work. Mark it
   `mutates: true`; a later node with `independent: true` must re-derive
   the verdict. The compiler refuses to build a graph that breaks this.
+- Independence of context is enforceable; fidelity of execution needs the
+  hook. `verify: "prove:<gate>"` makes a node cite the attestation its run
+  produced — a citation that does not exist or disagrees files the run
+  `TAMPERED-EXECUTION`, and citing nothing files it `INCOMPLETE` rather
+  than accusing an executor that never touched the Bash tool.
 - The DoD gate arms on two independent signals — the PostToolUse marker
   and dirtiness re-derived from `git` — because the marker cannot see
   source written through the Bash tool. Dirtiness is measured against the

@@ -24,7 +24,8 @@ IR_FENCE = re.compile(r"```json\s+graph-ir\s*\n(.*?)\n```", re.S)
 # 'harness' is deliberately absent: it was accepted, priced into the budget,
 # and emitted nothing. Verifying that something is green is what
 # mutates + independent already does, properly. See validate().
-TIER = re.compile(r"^(schema-only|skeptic:(\d+)|panel:(\d+))$")
+TIER = re.compile(r"^(schema-only|skeptic:(\d+)|panel:(\d+)|prove:([a-z][a-z0-9-]*))$")
+GATES = ".fluxpoint-gates.json"
 HALT = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*(==|!=|>=|<=|>|<)\s*(-?\d+|'[^']*')\s*$")
 # Hyphens are in the class because decision ids are kebab-case by rule, so
 # {{decisions.vault-window}} has to be a token the substituter can see. An
@@ -202,7 +203,27 @@ def resolve_imports(ir, contracts, runs_dir):
 
 
 # ---------------------------------------------------------------- validation
-def validate(ir, contracts):
+def load_gates(root):
+    """Declared gate names, or None when the repo declares no manifest."""
+    p = os.path.join(root or ".", GATES)
+    if not os.path.exists(p):
+        return None
+    try:
+        with open(p, encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return None
+    gates = doc.get("gates") if isinstance(doc, dict) else None
+    return set(gates) if isinstance(gates, dict) else None
+
+
+def prove_gate(n):
+    """The gate this node's tier proves against, or None."""
+    m = TIER.match(str(n.get("verify", "schema-only")))
+    return m.group(4) if m else None
+
+
+def validate(ir, contracts, gates=None):
     """Return a list of findings. Empty list means the graph may compile."""
     f = []
     if ir.get("version") != 1:
@@ -279,7 +300,34 @@ def validate(ir, contracts):
                 f"real exit code"
             )
         elif not m:
-            f.append(f"{where}: verify must be schema-only | skeptic:N | panel:N")
+            f.append(f"{where}: verify must be schema-only | skeptic:N | panel:N "
+                     f"| prove:<gate>")
+        elif m.group(4):
+            # prove:<gate> — the claim is checked against an execution a hook
+            # recorded, not against refuters who re-read the code. It only
+            # means anything if the gate is a real declared command, so the
+            # name is resolved here rather than at run time. This is the
+            # `verify: harness` lesson: a tier that resolves to nothing must
+            # not compile.
+            gate = m.group(4)
+            if gates is None:
+                f.append(
+                    f"{where}: verify prove:{gate} needs a {GATES} manifest "
+                    f"declaring which commands decide things — without one the "
+                    f"tier resolves to nothing, which is how 'harness' used to "
+                    f"pass while checking nobody")
+            elif gate not in gates:
+                f.append(
+                    f"{where}: verify prove:{gate} names no gate in {GATES} "
+                    f"(declared: {', '.join(sorted(gates)) or 'none'})")
+            if c != "ExecutionV1":
+                f.append(
+                    f"{where}: verify prove:{gate} requires contract ExecutionV1 "
+                    f"(has '{c}') — the attestId is what makes the exit code "
+                    f"checkable, and no other contract carries one")
+            if n.get("verifyOver"):
+                f.append(f"{where}: verify prove:{gate} verifies the node's own "
+                         f"execution, not an array — drop verifyOver")
         else:
             count = m.group(2) or m.group(3)
             if count:
@@ -640,6 +688,21 @@ def validate(ir, contracts):
                     f"gate must be ordered before the effect, because a verifier "
                     f"that runs afterwards cannot undo it"
                 )
+            elif gates and not any(prove_gate(o) for o in guards):
+                # The ordering invariant was sound in structure and hollow in
+                # fidelity: the guard runs the harness and then types its own
+                # exit code into a contract, so the integer standing between a
+                # campaign and an unrepeatable chain write was a transcription.
+                # Where the repo has declared its gates, that is no longer the
+                # cheapest available shape, so it is no longer an allowed one.
+                f.append(
+                    f"{where}: irreversible, and the gate ordered before it "
+                    f"({', '.join(sorted(o['id'] for o in guards))}) reports its "
+                    f"own exit code. This repo declares gates in {GATES}, so the "
+                    f"guard must use verify prove:<gate> and contract "
+                    f"ExecutionV1 — an effect nobody can undo may not rest on a "
+                    f"number the node that ran it typed by hand"
+                )
             if "confirm" not in (ir.get("requiredArgs") or []):
                 f.append(
                     f"{where}: irreversible requires 'confirm' in requiredArgs — "
@@ -926,6 +989,23 @@ def emit(ir, contracts, imports_resolved=None):
             {k: imports_resolved[k]["runId"] for k in sorted(imports)},
             sort_keys=True))
         a("")
+    prove_nodes = [n for n in nodes if prove_gate(n)]
+    if prove_nodes:
+        a("// --- prove: tiers ---")
+        a("// This graph cannot check these itself: the attest log is a file and")
+        a("// this sandbox has none. What it can do is refuse a result that is")
+        a("// not even shaped like a citation, and name which node claimed which")
+        a("// gate so record-run.py can hold each to the hook's own record.")
+        a("const PROVE = " + json.dumps(
+            {n["id"]: prove_gate(n) for n in prove_nodes}, sort_keys=True))
+        a("function citation(id, gate, r) {")
+        a("  if (!r || typeof r !== 'object') return `${id}: no result to prove`")
+        a("  if (r.gate !== gate) return `${id}: claims gate '${r.gate}', declared '${gate}'`")
+        a("  if (typeof r.exit !== 'number') return `${id}: no integer exit`")
+        a("  if (!r.attestId) return `${id}: no attestId — an exit code nothing witnessed`")
+        a("  return null")
+        a("}")
+        a("")
     mem_nodes = [n for n in nodes if n.get("memory")]
     seeds = sorted({n["memory"]["seed"] for n in mem_nodes if n["memory"].get("seed")})
     if mem_nodes:
@@ -1035,6 +1115,8 @@ def emit(ir, contracts, imports_resolved=None):
         extra += ", decisions: DECISIONS"
     if mem_nodes:
         extra += ", memory: MEMORY, memorySeeded: MEMORY_SEEDED"
+    if prove_nodes:
+        extra += ", prove: PROVE"
     if imports:
         # Which run each imported record came from rides out in the summary,
         # so provenance can tell an imported decision from one this campaign
@@ -1368,6 +1450,14 @@ def emit_node(n, ir):
               f"{js_str(nid)}, {js_str(phase)}, {panel}, {need}{sink})")
             a(f"log(`{nid}: ${{{var}.length}} item(s) survived {tier}`)")
 
+    pg = prove_gate(n)
+    if pg:
+        a(f"const cite_{var} = citation({js_str(nid)}, {js_str(pg)}, {var})")
+        a(f"if (cite_{var}) {{")
+        a(f"  log(`UNPROVEN ${{cite_{var}}}`)")
+        a(f"  note({js_str(nid)}, 'UNPROVEN', cite_{var})")
+        a("  INCOMPLETE = true")
+        a("}")
     a(f"RESULTS[{js_str(nid)}] = {var}")
     if n.get("decides"):
         a(f"DECISIONS[{js_str(n['decides'])}] = {var}")
@@ -1476,6 +1566,8 @@ def main():
     ap.add_argument("--contracts", help="contracts directory")
     ap.add_argument("--runs-dir", default=RUNS_DIR,
                     help="recorded-runs directory imports resolve against")
+    ap.add_argument("--gates-root", default=".",
+                    help=f"directory holding {GATES}, which prove: tiers resolve against")
     args = ap.parse_args()
 
     here = os.path.dirname(os.path.abspath(__file__))
@@ -1493,7 +1585,7 @@ def main():
         print(f"graph-compile: no contracts found in {contracts_dir}", file=sys.stderr)
         return 1
 
-    findings = validate(ir, contracts)
+    findings = validate(ir, contracts, load_gates(args.gates_root))
     if findings:
         print("graph-compile: IR rejected\n", file=sys.stderr)
         for f in findings:
