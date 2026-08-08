@@ -40,6 +40,15 @@ Workflow tool requires.
    `--check` rather than the launch. If it does fail there, the campaign
    that makes the decision has to run first; never hand-write or edit a run
    artifact to get past the compiler.
+   If any node declares `memory.seed`, load the lessons earlier runs filed
+   under that tag:
+   ```
+   bash "$ROOT/scripts/py.sh" memory.py --load --tag "<each seed tag>"
+   ```
+   into `args._seen`. Skipping it is not an error — the graph logs that it
+   seeded nothing and the Evidence row says the sweep started cold — but it
+   throws away the whole point of a repeat sweep, which is that the second
+   run starts where the first stopped.
    If the IR contains any `irreversible` node, load the once-only ledger —
    the compiled graph refuses to start without it:
    ```

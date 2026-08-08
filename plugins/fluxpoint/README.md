@@ -23,7 +23,7 @@ does.
 - `scripts/` — `lib.sh`, `inject-state.sh`, `verify-changed.sh`,
   `dod-gate.sh` (loop); `compile-graph.py`, `record-run.py` (graph);
   `exec-attest.sh`, `attest.py` (hook-minted exit codes for declared
-  gates);
+  gates); `memory.py` (lessons a sweep leaves for the next one);
   `proof-guard.py` (proof-strength ratchet); `plutus-budget.py` (on-chain
   size and execution-unit limits); `pair-guard.py` (relation gate over
   declared artifact pairs); `ledger.py` (once-only guard for
@@ -31,7 +31,8 @@ does.
   (the park layer); `migrate.py` (pre-1.0 migration,
   plan/apply/finalize).
 - `contracts/` — versioned named schemas (`FindingsV1`, `VerdictV1`,
-  `HarnessCheckV1`, `DesignV1`, `SliceV1`, `RedTeamV1`).
+  `HarnessCheckV1`, `DesignV1`, `SliceV1`, `RedTeamV1`, `DecisionV1`,
+  `LessonV1`).
 - `commands/` — `/fluxpoint:init`, `:status`, `:migrate`, `:red-team`,
   `:proof-audit`, `:graph-design`, `:graph-run`, `:graph-audit`,
   `:release`.
@@ -50,7 +51,8 @@ does.
   `proof-guard-test.sh` (the ratchet, per prover), `budget-test.sh`
   (on-chain limits), `ledger-test.py` (the once-only guard, executed
   rather than grepped), `attest-test.sh` (execution attestation and its
-  laundering cases, executed), `pair-test.sh` (relation gate),
+  laundering cases, executed), `memory-test.py` (lessons across runs,
+  executed), `pair-test.sh` (relation gate),
   `unify-test.sh` (state model and compatibility). All of it runs from
   `scripts/harness.sh --full` in CI.
 
@@ -89,6 +91,10 @@ Evidence table both modes append to.
 - Ending a discovery sweep on its round ceiling is logged
   `discovery INCOMPLETE, not exhausted` — stopping early and finishing are
   different claims.
+- A lesson seeded from an earlier run is advisory: it reaches a finder's
+  prompt, never the dedup set. A re-found item is judged again rather than
+  dropped, because a finding that comes back is evidence the lesson went
+  stale.
 - Destructive migration is code, not prose. `migrate.py` separates
   plan/apply/finalize so nothing is deleted before the result is checked,
   and `--finalize` refuses when `WORK.md` carries fewer Evidence rows than

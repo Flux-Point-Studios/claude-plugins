@@ -49,7 +49,8 @@ Copy over `WORK.md`'s Campaign section to use it.
         "untilDryRounds": 2,
         "maxRounds": 6,
         "dedupeBy": ["file", "line", "claim"]
-      }
+      },
+      "memory": { "seed": "defect-sweep", "emit": "defect-sweep" }
     }
   ]
 }
@@ -63,6 +64,16 @@ Copy over `WORK.md`'s Campaign section to use it.
   judge-rejected finding each round and the loop would never converge.
 - The panel only ever judges genuinely new items, so cost scales with
   discovery, not with rounds.
+- `memory` carries the sweep across runs. Every judged item is filed as a
+  lesson — survivors *and* the panel's kills with the objection that killed
+  them — and the next run seeds from the same tag, so a second sweep opens
+  where the first one stopped instead of re-arguing it. Load the seed with
+  `memory.py --load --tag defect-sweep` into `args._seen`;
+  `/fluxpoint:graph-run` does it.
+- Seeds are advisory: they reach the finder's prompt and never the dedup
+  set. A re-found item still flows through and is judged again, because a
+  finding that comes back is evidence the lesson went stale, and silently
+  dropping it would hide the regression the sweep exists to catch.
 
 ## Failure policy
 - Dry rule: 2 consecutive rounds with nothing new ends the sweep. This is

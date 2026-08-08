@@ -282,6 +282,24 @@ def main():
             indent=2,
         )
 
+    # 1d. Lessons, filed from the run's own summary. Written after the run
+    # artifact exists on purpose: memory.py refuses provenance that points at
+    # no recorded run, which is the check that stops a fabricated summary
+    # from planting durable knowledge.
+    lessons = None
+    try:
+        import memory as _memory
+        written, mfindings = _memory.append_from_summary(
+            args.root, summary, args.run_id, args.state_dir)
+        for f in mfindings:
+            print(f"record-run: memory {f}", file=sys.stderr)
+        if written:
+            killed = sum(1 for r in written if r["status"] == "killed")
+            lessons = {"filed": len(written), "killed": killed}
+            print(f"record-run: filed {len(written)} lesson(s), {killed} killed")
+    except Exception as e:  # noqa: BLE001 - never lose the Evidence row over this
+        print(f"record-run: lesson filing failed: {e}", file=sys.stderr)
+
     # 2. Evidence row, appended under whichever table header the file carries.
     claim = f"graph run: {ok} node(s) OK, {dead} dead, {findings} produced item(s)"
     if blocked:
@@ -291,6 +309,16 @@ def main():
                   f"({', '.join(blocked_nodes[:3])})")
     if skipped:
         claim += f"; {skipped} SKIPPED on budget — coverage incomplete"
+    seeded = summary.get("memorySeeded") or {}
+    if seeded or lessons:
+        total_seeded = sum(v for v in seeded.values() if isinstance(v, int))
+        # A sweep standing on prior ground and one starting cold produce the
+        # same finding count, so the row has to say which this was.
+        parts = [f"seeded {total_seeded} prior key(s)"] if seeded else []
+        if lessons:
+            parts.append(f"filed {lessons['filed']} lesson(s), "
+                         f"{lessons['killed']} killed")
+        claim += "; memory: " + ", ".join(parts)
     imported = summary.get("decisionsImported") or {}
     if imported:
         claim += ("; honors " + ", ".join(

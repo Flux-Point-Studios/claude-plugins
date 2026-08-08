@@ -48,11 +48,13 @@ NODE_FIELDS = {
     "foreach", "after", "mutates", "independent", "verifies", "verify",
     "verifyOver", "expectItems", "haltWhen", "haltReason", "onRed", "isolation",
     "repeat", "irreversible", "actor", "release", "wake", "decides", "honors",
+    "memory",
 }
 ACTORS = {"agent", "human", "third-party"}
 RELEASE_FIELDS = {"instructions", "proofContract", "whyNotAgent"}
 WAKE_FIELDS = {"check", "everyMinutes", "deadline"}
 REPEAT_FIELDS = {"untilDryRounds", "maxRounds", "dedupeBy"}
+MEMORY_FIELDS = {"seed", "emit", "key"}
 BUDGET_FIELDS = {"maxNodes", "verifyFloorTokens", "nodeFloorTokens"}
 ROLE_FIELDS = {"agentType", "effort", "model"}
 DEFAULTS_FIELDS = {"effort", "model"}
@@ -404,6 +406,79 @@ def validate(ir, contracts):
                         if item_props and k not in item_props:
                             f.append(f"{where}: repeat.dedupeBy '{k}' is not a field of {c}.{n['verifyOver']} items")
 
+        # Lessons: what this node contributes to, and reads from, across
+        # runs. Both directions are declared, because a sweep that silently
+        # inherited state would be unreadable from the IR alone.
+        mem = n.get("memory")
+        if mem is not None:
+            f += _unknown(f"{where} memory", mem, MEMORY_FIELDS)
+            if not isinstance(mem, dict):
+                f.append(f"{where}: memory must be an object")
+            elif not mem.get("seed") and not mem.get("emit"):
+                f.append(
+                    f"{where}: memory declares neither seed nor emit — an empty "
+                    f"block reads as configured and does nothing")
+            else:
+                for side in ("seed", "emit"):
+                    tag = mem.get(side)
+                    if tag is not None and not (isinstance(tag, str) and IDENT.match(tag)):
+                        f.append(f"{where}: memory.{side} must be a lowercase "
+                                 f"kebab-case tag")
+                if mem.get("seed") and not n.get("repeat"):
+                    f.append(
+                        f"{where}: memory.seed without a repeat block — the seed "
+                        f"feeds a discovery sweep's seen-list, and a node that "
+                        f"runs once has nowhere to put it")
+                if mem.get("emit"):
+                    if not panel_size(n):
+                        f.append(
+                            f"{where}: memory.emit needs a verification tier "
+                            f"(skeptic:N or panel:N) — a lesson's worth is its "
+                            f"verdict and the objection behind it, and filing "
+                            f"unjudged output would promote a well-formed guess "
+                            f"to institutional knowledge")
+                    if not n.get("verifyOver"):
+                        f.append(
+                            f"{where}: memory.emit needs verifyOver naming the "
+                            f"array of items to file as lessons")
+                    elif c in contracts:
+                        item_props = (
+                            contracts[c].get("properties", {})
+                            .get(n["verifyOver"], {})
+                            .get("items", {})
+                            .get("properties", {})
+                        )
+                        if item_props and "claim" not in item_props:
+                            f.append(
+                                f"{where}: memory.emit needs {c}.{n['verifyOver']} "
+                                f"items to carry a 'claim' — a lesson without one "
+                                f"is a row no later sweep can act on")
+                key = mem.get("key")
+                if key is not None and n.get("repeat"):
+                    f.append(
+                        f"{where}: memory.key with a repeat block — the dedupe "
+                        f"identity is already declared as repeat.dedupeBy, and two "
+                        f"spellings of one key is how they drift apart")
+                elif mem.get("emit") and not n.get("repeat"):
+                    if not isinstance(key, list) or not key or not all(
+                            isinstance(k, str) and k for k in key):
+                        f.append(
+                            f"{where}: memory.emit on a node with no repeat block "
+                            f"needs memory.key — the cross-run identity of a lesson "
+                            f"cannot be implicit")
+                    elif c in contracts and n.get("verifyOver"):
+                        item_props = (
+                            contracts[c].get("properties", {})
+                            .get(n["verifyOver"], {})
+                            .get("items", {})
+                            .get("properties", {})
+                        )
+                        for k in key:
+                            if item_props and k not in item_props:
+                                f.append(
+                                    f"{where}: memory.key '{k}' is not a field of "
+                                    f"{c}.{n['verifyOver']} items")
+
         # Self-report invariant. A node that changes the tree cannot be the
         # node that certifies the change; some later independent node must
         # verify it. This is the feature.graph.js bug, promoted to a rule.
@@ -666,6 +741,26 @@ def panel_size(n):
     return int(m.group(2) or m.group(3) or 0) if m else 0
 
 
+def lesson_sink(n, need):
+    """JS arrow filing one judged item as a lesson.
+
+    The killed half is the point. Today `verifyItems` filters rejects away
+    and the reasoning dies with them, so the next sweep re-finds the item
+    and pays a fresh panel to reach the verdict that already existed.
+    """
+    mem = n["memory"]
+    keys = (n.get("repeat") or {}).get("dedupeBy") or mem.get("key")
+    keyexpr = " + '|' + ".join(f"String(it[{js_str(k)}])" for k in keys)
+    status = (f"(it.kills || 0) >= {need} ? 'killed' : 'surviving'"
+              if need > 0 else "'surviving'")
+    return (
+        f"it => MEMORY.push({{ tag: {js_str(mem['emit'])}, dedupeKey: {keyexpr}, "
+        f"claim: String(it.claim || ''), status: {status}, "
+        f"objection: (it.objections || [])[0] || '', kills: it.kills || 0, "
+        f"node: {js_str(n['id'])} }})"
+    )
+
+
 def js_str(s):
     return json.dumps(str(s))
 
@@ -831,6 +926,33 @@ def emit(ir, contracts, imports_resolved=None):
             {k: imports_resolved[k]["runId"] for k in sorted(imports)},
             sort_keys=True))
         a("")
+    mem_nodes = [n for n in nodes if n.get("memory")]
+    seeds = sorted({n["memory"]["seed"] for n in mem_nodes if n["memory"].get("seed")})
+    if mem_nodes:
+        a("// --- lessons: what earlier campaigns established ---")
+        a("// Rows are filed by record-run.py from this summary, never written")
+        a("// by an agent, and keyed by the same dedupe fields the IR already")
+        a("// declares — so cross-run identity costs no new vocabulary.")
+        a("const MEMORY = []")
+        a("const MEMORY_SEEDED = {}")
+    if seeds:
+        a("// Seeds are ADVISORY and only ever reach a prompt. Seeding the")
+        a("// dedup set instead would silently drop a re-found item, which is")
+        a("// precisely how a stale lesson hides a live regression: the finder")
+        a("// reports it, the loop discards it as already-known, and the sweep")
+        a("// reads clean. So a seeded key tells the finder where the frontier")
+        a("// was; it never decides what this run is allowed to find.")
+        a("const _seedSrc = (A && A._seen) || {}")
+        for tag in seeds:
+            a(f"MEMORY_SEEDED[{js_str(tag)}] = "
+              f"((_seedSrc[{js_str(tag)}] || {{}}).keys || []).length")
+        a("// A first sweep and one whose loader never ran look identical from")
+        a("// inside; the count rides out in the summary so they do not read")
+        a("// the same in the record.")
+        for tag in seeds:
+            a(f"log(`memory: seeded ${{MEMORY_SEEDED[{js_str(tag)}]}} prior key(s) "
+              f"for tag {tag}`)")
+        a("")
     parked = [n for n in nodes if n.get("actor", "agent") != "agent"]
     if parked:
         a("// --- actors: nodes no agent can run ---")
@@ -911,6 +1033,8 @@ def emit(ir, contracts, imports_resolved=None):
         extra += ", blocked: [...BLOCKED], waits: WAITS, recommendations: RECOMMENDATIONS"
     if decides_any or imports:
         extra += ", decisions: DECISIONS"
+    if mem_nodes:
+        extra += ", memory: MEMORY, memorySeeded: MEMORY_SEEDED"
     if imports:
         # Which run each imported record came from rides out in the summary,
         # so provenance can tell an imported decision from one this campaign
@@ -993,13 +1117,18 @@ def emit(ir, contracts, imports_resolved=None):
         a("")
         a("// Applies a node's declared tier to every item it produced. Used by")
         a("// fan-out and single nodes alike, so a declared tier always runs.")
-        a("async function verifyItems(result, field, label, phase, n, need) {")
+        a("async function verifyItems(result, field, label, phase, n, need, sink) {")
         a("  if (!result) return []")
         a("  const produced = result[field] || []")
         a("  const judged = await parallel(produced.map((it, i) => () =>")
         a("    refute(JSON.stringify(it), `${label}:${i}`, phase, n).then(v => ({ ...it, ...v }))")
         a("  ))")
-        a("  return judged.filter(Boolean).filter(v => v.kills < need)")
+        a("  const all = judged.filter(Boolean)")
+        a("  // The sink sees every verdict, including the kills the filter")
+        a("  // below drops: what a panel rejected, and why, is the half a")
+        a("  // later sweep would otherwise pay to rediscover.")
+        a("  if (sink) all.forEach(sink)")
+        a("  return all.filter(v => v.kills < need)")
         a("}")
         a("")
 
@@ -1233,8 +1362,10 @@ def emit_node(n, ir):
         if verified:
             # A declared tier always runs, fan-out or not.
             need = math.ceil(panel / 2)
+            sink = (", " + lesson_sink(n, need)
+                    if (n.get("memory") or {}).get("emit") else "")
             a(f"const {var} = await verifyItems({raw}, {js_str(over)}, "
-              f"{js_str(nid)}, {js_str(phase)}, {panel}, {need})")
+              f"{js_str(nid)}, {js_str(phase)}, {panel}, {need}{sink})")
             a(f"log(`{nid}: ${{{var}.length}} item(s) survived {tier}`)")
 
     a(f"RESULTS[{js_str(nid)}] = {var}")
@@ -1267,9 +1398,17 @@ def emit_repeat(n, ir, prompt, phase, panel, over):
 
     L = []
     a = L.append
+    mem = n.get("memory") or {}
     a(f"const {var} = []")
     a(f"const seen_{var} = new Set()")
-    a(f"const seenList_{var} = []")
+    if mem.get("seed"):
+        # Prior keys land in the advisory list only. seen_ stays empty on
+        # purpose: it decides what this run discards, and a run must never
+        # discard a finding because an earlier run knew about it.
+        a(f"const seenList_{var} = "
+          f"((_seedSrc[{js_str(mem['seed'])}] || {{}}).keys || []).slice()")
+    else:
+        a(f"const seenList_{var} = []")
     a(f"let dry_{var} = 0, round_{var} = 0")
     keyexpr = " + '|' + ".join(f"String(it[{js_str(k)}])" for k in keys)
     a(f"const key_{var} = it => {keyexpr}")
@@ -1307,6 +1446,8 @@ def emit_repeat(n, ir, prompt, phase, panel, over):
         a(f"    refute(JSON.stringify(it), `{nid}:r${{round_{var}}}:${{i}}`, "
           f"{js_str(phase)}, {panel}).then(v => ({{ ...it, ...v }}))")
         a("  ))")
+        if mem.get("emit"):
+            a(f"  judged_{var}.filter(Boolean).forEach({lesson_sink(n, need)})")
         a(f"  const kept_{var} = judged_{var}.filter(Boolean)"
           f".filter(v => v.kills < {need})")
     else:

@@ -1,0 +1,52 @@
+{
+  "$id": "LessonV1",
+  "type": "object",
+  "required": ["tag", "dedupeKey", "claim", "status", "node", "provenance"],
+  "properties": {
+    "tag": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The knowledge stream this belongs to, declared by the emitting node. A sweep seeds from the same tag it emits to."
+    },
+    "dedupeKey": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Cross-run identity, built from the node's own dedupe fields. Two runs finding the same thing produce the same key."
+    },
+    "claim": {
+      "type": "string",
+      "minLength": 20,
+      "description": "What was found, in the finder's words. A lesson without a claim is a row nobody can act on."
+    },
+    "status": {
+      "enum": ["surviving", "killed", "superseded"],
+      "description": "Whether the panel let it stand. Killed lessons are the valuable half: they are what a later sweep would otherwise re-argue from scratch."
+    },
+    "objection": {
+      "type": "string",
+      "description": "The strongest refuter objection recorded against it — for a killed lesson, why it died; for a survivor, the best case still against it."
+    },
+    "kills": {
+      "type": "integer",
+      "description": "Refuters that voted to kill, out of the panel that judged it."
+    },
+    "node": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The node that produced it."
+    },
+    "provenance": {
+      "type": "object",
+      "required": ["runId"],
+      "description": "The recorded run this came from. Required, and checked against runs/ on append: a lesson with no run behind it is an assertion, and this file only holds findings.",
+      "properties": {
+        "runId": { "type": "string", "minLength": 1 }
+      }
+    },
+    "establishedWhen": { "type": "string" },
+    "supersededBy": {
+      "type": "string",
+      "description": "The runId whose row replaced this one. Supersession appends; nothing here is ever rewritten."
+    }
+  }
+}

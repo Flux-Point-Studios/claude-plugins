@@ -23,8 +23,8 @@ another layer's missing input:
 
 | # | Circuit | Today | Cost of the gap |
 |---|---|---|---|
-| 1 | `runs/*.json` → future campaigns | Write-only. Refuter objections, killed findings with their kill reasons, and advisor recommendations are recorded and never re-injected; `inject-state.sh` shows one summary line and 5 Evidence rows. | Every campaign re-derives what a prior panel already established. |
-| 2 | Discovery seen-sets → the next sweep | `emit_repeat`'s seen-set is an in-run local. | A re-run sweep re-finds and re-judges everything from round one; verification fan-out — the measured dominant cost — is spent re-litigating settled claims. |
+| 1 | `runs/*.json` → future campaigns | ~~Write-only.~~ **Closed for findings**: a node's judged items — survivors and the panel's kills with their objections — are filed as `LessonV1` rows by `record-run.py` (Part 3a). Advisor recommendations and per-node objections beyond the top one remain unindexed. | — |
+| 2 | Discovery seen-sets → the next sweep | ~~`emit_repeat`'s seen-set is an in-run local.~~ **Closed**: `memory: {seed, emit}` carries the frontier across runs; run two opens where run one stopped. | — |
 | 3 | Loop-mode work → Evidence | The agent hand-writes its own rows (`WORK_PROMPT.md` step 4) and checks its own DoD boxes; nothing re-executes a Proof cell. | "A claim without a row is false" has no converse: a fabricated row is injected as ground truth into every future session. |
 | 4 | Loop-mode work → Decisions | The Decisions table is populated only by graph `DecisionV1` nodes; loop mode has no capture step and `hooks.json` wires no PreCompact. | The named failure — "a fresh context silently re-decides the other way" — is still fully open for loop work, which is most work. |
 | 5 | Prover output → anywhere | The shrunk counterexample from `aiken check` (or any prover) lives in `full.log`, clobbered per run. | The single most valuable artifact a prover produces evaporates; a fixed bug carries no pinned regression. |
@@ -133,7 +133,23 @@ core memory, `runs/` is episodic memory, Evidence/Decisions are semantic
 memory — and nothing performs consolidation, so episodic never becomes
 semantic without an agent volunteering it.
 
-**3a. Lessons: `memory.jsonl` + `LessonV1` + IR `memory:`.** A new
+**3a. Lessons: `memory.jsonl` + `LessonV1` + IR `memory:` — shipped in
+slice 3.** What landed matches the design below with one deliberate
+narrowing, and it is the safety-critical part: **a seed reaches the
+finder's prompt and never the dedup set.** Seeding the dedup set — the
+literal reading of "pre-loads the seen-set" — would silently drop a
+re-found item, and a finding that comes back is evidence the lesson went
+stale, which is exactly the regression a sweep exists to catch. So the cost
+saving comes from a finder that knows where the frontier was, not from a
+loop that refuses to look, and a re-found item is judged again on its
+merits. Also enforced beyond the original sketch: `memory.emit` requires a
+verification tier, because filing unjudged finder output would promote a
+well-formed guess to institutional knowledge. Still open from this
+proposal: killed-lesson claims are loaded (`memory.py --load` returns them)
+but do not yet ride into refuter prompts as priors, and there is no
+`--since <git-rev>` staleness filter.
+
+The original design, for reference. A new
 append-only `.claude/fluxpoint/memory.jsonl` owned by `scripts/memory.py`
 (ledger read discipline; identity `tag|dedupeKey`, latest-state-wins like
 the inbox). `record-run.py` grows a filing pass symmetric to its
@@ -284,8 +300,8 @@ existing harness and each is independently shippable.
 |---|---|---|
 | 1 | Compile-time `imports` resolution + embedding (`resolve_imports`, `DECISIONS_IMPORTED`, record-run dedup, re-decide invariant) | **shipped** with this document |
 | 2 | `exec-attest.sh` + `.fluxpoint-gates.json` + record-run cross-check in warn mode | **shipped** |
-| 3 | `memory.py` + record-run filing of findings/objections + `memory.seed` seen-set seeding | next |
-| 4 | `spec-guard.py` for Aiken + Dafny statements, wired into `templates/harness.sh --full` | |
+| 3 | `memory.py` + record-run filing of findings/objections + `memory.seed` frontier seeding | **shipped** |
+| 4 | `spec-guard.py` for Aiken + Dafny statements, wired into `templates/harness.sh --full` | next |
 | 5 | `cex.py --ingest/--pin/--check` for `aiken check` output | |
 | 6 | `evidence.py --mint` + `WORK_PROMPT.md` requiring minted rows for harness-checkable claims | |
 | 7 | Stop-gate branch-point dirtiness + baseline/trust-base modified-contract warnings | |

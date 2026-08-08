@@ -295,6 +295,41 @@ nothing. Raising `maxRounds` from 4 to 6 raises the declared ceiling by
 50% and typical spend by roughly zero. Let the token floors, not the round
 count, be what actually caps cost.
 
+## Sweeps that compound
+
+A `repeat` block makes one sweep exhaustive; it does nothing for the next
+one. Without memory, run two re-finds everything run one found, and pays a
+fresh panel to reach verdicts that already exist — which is where the
+"verification fan-out dominates cost" lesson actually bites.
+
+`memory` closes that loop:
+
+```json
+"memory": { "seed": "defect-sweep", "emit": "defect-sweep" }
+```
+
+`emit` files every judged item as a `LessonV1` row in
+`.claude/fluxpoint/memory.jsonl` — survivors *and* the panel's kills with
+the objection that killed them, which is the half `verifyItems` used to
+discard. `seed` hands the next run that frontier. Rows are written by
+`record-run.py` from the run's own summary, never by an agent, and a row
+whose `provenance.runId` names no recorded run is refused — the opening a
+fabricated summary would use to plant durable knowledge.
+
+The compiler rejects: a `memory` block declaring neither side; `seed`
+without `repeat` (the seed feeds a sweep's seen-list); `emit` without a
+verification tier (filing unjudged output would promote a well-formed guess
+to institutional knowledge) or without `verifyOver`, or on a contract whose
+items carry no `claim`; and `memory.key` alongside `repeat.dedupeBy`, since
+two spellings of one identity is how they drift apart.
+
+**A seed is advisory and never suppressive.** It reaches the finder's
+prompt; it never enters the dedup set. Seeding the dedup set would silently
+drop a re-found item — and a finding that comes back is evidence the lesson
+went stale, exactly the regression a sweep is run to catch. So a re-found
+item is judged again on its merits, and the cost saving comes from a finder
+that knows where the frontier was, not from a loop that refuses to look.
+
 Two rules the compiler enforces because getting them wrong is subtle:
 
 - **Dedup against everything seen, not everything confirmed.** Items enter
