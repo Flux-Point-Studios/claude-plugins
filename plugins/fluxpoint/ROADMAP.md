@@ -25,7 +25,7 @@ another layer's missing input:
 |---|---|---|---|
 | 1 | `runs/*.json` → future campaigns | ~~Write-only.~~ **Closed for findings**: a node's judged items — survivors and the panel's kills with their objections — are filed as `LessonV1` rows by `record-run.py` (Part 3a). Advisor recommendations and per-node objections beyond the top one remain unindexed. | — |
 | 2 | Discovery seen-sets → the next sweep | ~~`emit_repeat`'s seen-set is an in-run local.~~ **Closed**: `memory: {seed, emit}` carries the frontier across runs; run two opens where run one stopped. | — |
-| 3 | Loop-mode work → Evidence | The agent hand-writes its own rows (`WORK_PROMPT.md` step 4) and checks its own DoD boxes; nothing re-executes a Proof cell. | "A claim without a row is false" has no converse: a fabricated row is injected as ground truth into every future session. |
+| 3 | Loop-mode work → Evidence | **Partly closed**: the Stop gate now writes its own `Source: gate` rows and SessionStart labels agent-written rows as assertions (Part 2, slice 6). Still open: `WORK.md` itself is unguarded — `verify-changed.sh` and the hygiene scan both skip `*.md` — so a row can still be edited after the fact, and nothing re-executes a Proof cell. | A forged row is now a *visible* anomaly rather than an invisible one; making it impossible needs the work file guarded. |
 | 4 | Loop-mode work → Decisions | The Decisions table is populated only by graph `DecisionV1` nodes; loop mode has no capture step and `hooks.json` wires no PreCompact. | The named failure — "a fresh context silently re-decides the other way" — is still fully open for loop work, which is most work. |
 | 5 | Prover output → anywhere | The shrunk counterexample from `aiken check` (or any prover) lives in `full.log`, clobbered per run. | The single most valuable artifact a prover produces evaporates; a fixed bug carries no pinned regression. |
 | 6 | Frozen decisions → the next campaign | ~~`imports` resolved by the orchestrating agent by hand; the emitted guard checked key presence only.~~ **Closed**: the compiler resolves `imports` from recorded runs and embeds the records (see Part 2, slice 1). | — |
@@ -94,7 +94,57 @@ promotion of MISMATCH from warn to `TAMPERED-EXECUTION` via the
 that starts by failing runs gets switched off before it has established a
 baseline.
 
-**3. Loop-mode evidence is self-certified.** `evidence.py --mint` takes a
+**3. Loop-mode evidence was self-certified — closed in slice 6, and not the
+way this section proposed.** The design below (an `evidence.py --mint` the
+agent runs, which executes a gate and manufactures a row) was written up,
+adversarially reviewed from four angles, and rejected. The decisive
+objection: *a subprocess an agent launches cannot outrank the agent that
+launched it.* It inherits the agent's environment, PATH, and cwd, so
+identical argv can produce opposite verdicts; it would have added a fourth
+full harness run per iteration; and its attestId would have pointed into
+gitignored state, so the committed row's only verifiable content was
+unresolvable to a reviewer. It also would have laundered free prose through
+a real exit code — `harness --full` green establishes exactly one
+proposition, and any sentence in the Claim cell would have inherited it.
+
+**The witness already existed; what was missing was a reader.**
+`dod-gate.sh` is a *Stop hook*: the runtime invokes it, at the moment the
+agent claims done, and it already re-runs `scripts/harness.sh --full`,
+holds the exit code, the log, and the tree state, and already distinguishes
+PASS from FAIL from TIMEOUT. So the gate now writes its own Evidence row
+(`Source: gate`) through `scripts/evidence.py`, which is a *writer* — it
+imports no `subprocess` and executes nothing, and a test pins that. The
+proof cell names what was actually established: `harness --full exit <n>
+@<sha7> tree:<sha8> dirty:<n> log:<sha8>`. The tree hash matters more than
+the commit: in loop mode HEAD is the pre-work commit for the whole
+iteration, so a verdict taken before the first edit and one taken after the
+last would otherwise be the same row.
+
+Rows are written only where a stop actually happens — green, checkpoint
+yield, or timeout. An ordinary blocked stop is a correction, not an outcome.
+An unchanged verdict is not repeated, so a long green streak is one row.
+
+`inject-state.sh` then renders the two classes separately with reserved
+budgets, so a run of agent-written rows can no longer evict every witnessed
+one from the window a fresh context inherits.
+
+**The property, stated honestly:** not "a row cannot be forged" — `WORK.md`
+is skipped by both `verify-changed.sh` and the hygiene scan, so an agent can
+still type anything into it, including a `gate` row. It is that **there is
+now a row class an honest agent never writes**, so a `gate` row in a diff
+with no corresponding gate run is a reviewable anomaly, and a fresh context
+inherits assertions labelled as assertions. That is a review affordance, not
+a containment boundary. Guarding `WORK.md` itself remains open (circuit 3
+below).
+
+Also fixed here, and independent: `plugin_script` in the scaffolded harness
+ran `find "$HOME/.claude/plugins" … | head -1`, and `find` exits 1 when that
+directory does not exist. Under `set -euo pipefail` the pipeline inherited
+that status and killed `--full` on its first plugin lookup, with no output —
+in exactly the repos the function exists to support, the ones carrying the
+harness without the plugin installed.
+
+The rejected design, for the record. `evidence.py --mint` takes a
 claim and a command, **executes the command itself** from an allowlist
 declared in a committed `.fluxpoint-tools.json`, records the actual exit
 and HEAD sha, and splices the row. The agent requests evidence; the script
@@ -371,7 +421,7 @@ existing harness and each is independently shippable.
 | 3 | `memory.py` + record-run filing of findings/objections + `memory.seed` frontier seeding | **shipped** |
 | 4 | `spec-guard.py` for Aiken + Dafny statements, wired into `templates/harness.sh --full` | **shipped** |
 | 5 | `cex.py --ingest/--pin/--check` for `aiken check` output | **shipped** |
-| 6 | `evidence.py --mint` + `WORK_PROMPT.md` requiring minted rows for harness-checkable claims | |
+| 6 | Gate-authored Evidence rows + classed injection (replaced `--mint`; see Part 2) | **shipped** |
 | 7 | Stop-gate branch-point dirtiness + baseline/trust-base modified-contract warnings | |
 | 8 | `decision.py` + PreCompact hook (distill gate behind `FPL_DISTILL=1`) | |
 | 9 | `mutation-guard.py` wrapping cargo-mutants, floor + staleness stamp | |

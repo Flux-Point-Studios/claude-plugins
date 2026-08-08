@@ -53,7 +53,12 @@ plugin_script() {
   if [ -n "${FPL_PLUGIN_ROOT:-}" ] && [ -f "$FPL_PLUGIN_ROOT/scripts/$1" ]; then
     printf '%s\n' "$FPL_PLUGIN_ROOT/scripts/$1"
   else
-    find "$HOME/.claude/plugins" -type f -name "$1" 2>/dev/null | head -1
+    # `|| true` is load-bearing: find exits 1 when ~/.claude/plugins does not
+    # exist, `pipefail` propagates that through the pipe, and `set -e` then
+    # killed --full on its first plugin lookup — in exactly the repos this
+    # function exists to support, the ones carrying the harness without the
+    # plugin installed. It failed with no output at all.
+    { find "$HOME/.claude/plugins" -type f -name "$1" 2>/dev/null || true; } | head -1
   fi
 }
 

@@ -21,7 +21,9 @@ does.
   verification on writes and execution attestation on Bash, Stop-hook
   DoD gate.
 - `scripts/` — `lib.sh`, `inject-state.sh`, `verify-changed.sh`,
-  `dod-gate.sh` (loop); `compile-graph.py`, `record-run.py` (graph);
+  `dod-gate.sh`, `evidence.py` (loop; the gate authors its own Evidence
+  row and this writes it — it executes nothing);
+  `compile-graph.py`, `record-run.py` (graph);
   `exec-attest.sh`, `attest.py` (hook-minted exit codes for declared
   gates); `memory.py` (lessons a sweep leaves for the next one);
   `proof-guard.py` (proof-strength ratchet); `spec-guard.py` (statement
@@ -49,6 +51,7 @@ does.
 - `tests/` — `compile-test.py` (compiler invariants), `emission-test.py`
   (field-effect probes), `gate-test.sh` (Stop-gate bypass cases),
   `hooks-test.sh` (hooks.json command strings + PostToolUse behavior),
+  `evidence-test.sh` (gate-authored rows and the classed bootstrap),
   `security-test.py` (codegen injection and red-team regressions),
   `migrate-test.sh` (migration against real pre-1.0 fixtures),
   `proof-guard-test.sh` (the ratchet, per prover), `spec-guard-test.sh`
@@ -97,6 +100,11 @@ Evidence table both modes append to.
 - Ending a discovery sweep on its round ceiling is logged
   `discovery INCOMPLETE, not exhausted` — stopping early and finishing are
   different claims.
+- The Stop gate authors its own Evidence rows (`Source: gate`) and no agent
+  writes that class. This is a review affordance, not containment — `WORK.md`
+  is skipped by the PostToolUse hook and the hygiene scan alike, so a row can
+  still be edited; what changed is that doing so is now visible in a diff and
+  that the bootstrap labels asserted rows as asserted.
 - A lesson seeded from an earlier run is advisory: it reaches a finder's
   prompt, never the dedup set. A re-found item is judged again rather than
   dropped, because a finding that comes back is evidence the lesson went

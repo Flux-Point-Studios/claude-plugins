@@ -150,16 +150,48 @@ if dod:
     if len(dod) > 8:
         elided.append(f"{len(dod) - 8} more unmet DoD item(s)")
 
-for name, keep in (("Decisions", 3), ("Evidence", 5)):
-    rows = [b for b in section(name)
-            if b.strip().startswith("|") and not re.match(r"^\|[-| ]+\|$", b.strip())]
-    rows = [r for r in rows[1:]]  # drop the header row itself
-    if rows:
-        out.append("")
-        out.append(f"## {name} — newest {min(keep, len(rows))} of {len(rows)}")
-        out += [r.rstrip() for r in rows[:keep]]
-        if len(rows) > keep:
-            elided.append(f"{len(rows) - keep} older {name} row(s)")
+rows = [b for b in section("Decisions")
+        if b.strip().startswith("|") and not re.match(r"^\|[-:| ]+\|$", b.strip())]
+rows = rows[1:]  # drop the header row itself
+if rows:
+    out.append("")
+    out.append(f"## Decisions — newest {min(3, len(rows))} of {len(rows)}")
+    out += [r.rstrip() for r in rows[:3]]
+    if len(rows) > 3:
+        elided.append(f"{len(rows) - 3} older Decisions row(s)")
+
+# Evidence is the one section a fresh context inherits as fact, and until now
+# every row rode in identically whether a Stop hook recorded it or the agent
+# typed it. They are not the same kind of statement, and the budget was
+# first-come: a run of agent-written rows evicted every witnessed one.
+# So the classes are separated, labelled, and given their own budgets.
+ev = [b for b in section("Evidence")
+      if b.strip().startswith("|") and not re.match(r"^\|[-:| ]+\|$", b.strip())]
+ev = ev[1:]
+
+
+def source_of(row):
+    parts = [p.strip() for p in row.strip().strip("|").split("|")]
+    return parts[1] if len(parts) >= 2 else ""
+
+
+gate_rows = [r for r in ev if source_of(r) == "gate"]
+claim_rows = [r for r in ev if source_of(r) != "gate"]
+if ev:
+    out.append("")
+    out.append(f"## Evidence — {len(ev)} row(s): "
+               f"{len(gate_rows)} recorded by the Stop gate, "
+               f"{len(claim_rows)} asserted by whoever wrote them")
+    if gate_rows:
+        out.append("### Recorded by the gate (the runtime ran the harness itself)")
+        out += [r.rstrip() for r in gate_rows[:3]]
+        if len(gate_rows) > 3:
+            elided.append(f"{len(gate_rows) - 3} older gate row(s)")
+    if claim_rows:
+        out.append("### Asserted, not witnessed — a claim, weighed accordingly")
+        out += [r.rstrip() for r in claim_rows[:3]]
+        if len(claim_rows) > 3:
+            elided.append(f"{len(claim_rows) - 3} older asserted row(s)")
 
 notes = section("Notes for the next iteration") or section("Notes for the next run")
 if notes:

@@ -121,6 +121,7 @@ case "${1:---full}" in
     step "emission coverage" "$FPL_PY" "$PLUGIN/tests/emission-test.py"
     step "codegen injection + red-team regressions" "$FPL_PY" "$PLUGIN/tests/security-test.py"
     step "stop-gate regression" bash "$PLUGIN/tests/gate-test.sh"
+    step "gate-authored evidence" bash "$PLUGIN/tests/evidence-test.sh"
     step "hook wiring + PostToolUse" bash "$PLUGIN/tests/hooks-test.sh"
     step "migration against pre-1.0 fixtures" bash "$PLUGIN/tests/migrate-test.sh"
     step "proof-strength ratchet" bash "$PLUGIN/tests/proof-guard-test.sh"

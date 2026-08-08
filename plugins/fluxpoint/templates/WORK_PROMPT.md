@@ -22,6 +22,12 @@ explicitly parked:
    Source | Outcome | Claim | Proof |`, with `Source: loop` for slices
    (graph runs fill their own rows with a runId): the command run and its
    result, a tx hash, a log excerpt. Unproven claims do not count.
+   **Never write a `Source: gate` row.** That class belongs to the Stop
+   hook, which runs the harness itself and records what it saw; a `gate`
+   row you wrote is a forged one, and it is visible as such in the diff.
+   Your rows are read as assertions — the bootstrap labels them that way to
+   the next context — so name the command and its exit rather than
+   describing the outcome in prose.
 5. Check the finished Plan item off. Commit test and code together with a
    message naming the slice.
 6. Ship it per the Merge policy in WORK.md: push the branch, open or
