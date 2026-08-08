@@ -214,6 +214,40 @@ itself. This is a compiler-enforced invariant because it shipped as a bug
 once: the graph trusts exit codes it re-derived, not adjectives it was
 told.
 
+Independence of *context* is what the compiler can enforce; fidelity of
+*execution* it cannot, because the verifier still types the exit code into
+its contract by hand. So declare the commands that decide things in
+`.fluxpoint-gates.json`, and a PostToolUse hook records the runtime's own
+exit for every one of those runs. `record-run.py` then cross-checks each
+claimed gate exit against that log and reports `ATTESTED`, `UNATTESTED`, or
+`MISMATCH`. Two things to know: only the exact declared invocation is
+attested (a pipe or a trailing `|| true` reports a different exit and is
+credited to nothing), and an absent attestation is `UNATTESTED`, never a
+failure — an executor that does not route through the Bash tool must not
+read as guilt.
+
+**`verify: "prove:<gate>"` turns that observation into enforcement.** The
+node returns `ExecutionV1` — `{gate, exit, attestId}` — and cites the
+attestation its run produced. The gate name is resolved against the
+manifest *at compile time*, so a tier naming nothing refuses to compile;
+that is the `verify: harness` lesson, which once priced a tier into the
+budget and emitted no check at all. At record time a cited attestation that
+does not exist, attests a different gate, or recorded a different exit
+files the whole run `TAMPERED-EXECUTION` — a campaign does not get to
+report clean when its own verification says its exit codes are not what
+happened. A `prove:` node citing nothing is `INCOMPLETE` instead: the
+declared verification did not run, which is not the same accusation.
+
+Nodes that merely happen to match a declared gate stay observed rather than
+enforced. Opting in is what earns the stricter reading, and a check that
+starts by failing runs is a check people switch off.
+
+And where a repo declares gates, an `irreversible` node's mandatory earlier
+guard **must** use `prove:`. The ordering invariant — gate before effect —
+was always sound in structure and hollow in fidelity while the guard typed
+its own exit code. An effect nobody can undo may not rest on a number the
+node that ran it wrote by hand.
+
 ## Canonical shapes
 
 - **Fan-out/verify** (`templates/WORK.md`): dimensions → finders →
@@ -281,6 +315,41 @@ the loop exits the moment it goes dry, so rounds that never run cost
 nothing. Raising `maxRounds` from 4 to 6 raises the declared ceiling by
 50% and typical spend by roughly zero. Let the token floors, not the round
 count, be what actually caps cost.
+
+## Sweeps that compound
+
+A `repeat` block makes one sweep exhaustive; it does nothing for the next
+one. Without memory, run two re-finds everything run one found, and pays a
+fresh panel to reach verdicts that already exist — which is where the
+"verification fan-out dominates cost" lesson actually bites.
+
+`memory` closes that loop:
+
+```json
+"memory": { "seed": "defect-sweep", "emit": "defect-sweep" }
+```
+
+`emit` files every judged item as a `LessonV1` row in
+`.claude/fluxpoint/memory.jsonl` — survivors *and* the panel's kills with
+the objection that killed them, which is the half `verifyItems` used to
+discard. `seed` hands the next run that frontier. Rows are written by
+`record-run.py` from the run's own summary, never by an agent, and a row
+whose `provenance.runId` names no recorded run is refused — the opening a
+fabricated summary would use to plant durable knowledge.
+
+The compiler rejects: a `memory` block declaring neither side; `seed`
+without `repeat` (the seed feeds a sweep's seen-list); `emit` without a
+verification tier (filing unjudged output would promote a well-formed guess
+to institutional knowledge) or without `verifyOver`, or on a contract whose
+items carry no `claim`; and `memory.key` alongside `repeat.dedupeBy`, since
+two spellings of one identity is how they drift apart.
+
+**A seed is advisory and never suppressive.** It reaches the finder's
+prompt; it never enters the dedup set. Seeding the dedup set would silently
+drop a re-found item — and a finding that comes back is evidence the lesson
+went stale, exactly the regression a sweep is run to catch. So a re-found
+item is judged again on its merits, and the cost saving comes from a finder
+that knows where the frontier was, not from a loop that refuses to look.
 
 Two rules the compiler enforces because getting them wrong is subtle:
 

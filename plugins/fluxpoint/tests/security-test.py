@@ -49,10 +49,10 @@ def node(**kw):
             "budget": {"maxNodes": 8}, "nodes": [n]}
 
 
-def emits_inert(name, ir, payload_marker):
+def emits_inert(name, ir, payload_marker, resolved=None):
     """Compile, then run the emitted JS under stubs; the payload must not fire."""
     with tempfile.TemporaryDirectory() as d:
-        js = cg.emit(ir, CONTRACTS)
+        js = cg.emit(ir, CONTRACTS, resolved)
         canary = os.path.join(d, "PWNED")
         js = js.replace("__CANARY__", canary)
         wrapped = os.path.join(d, "w.mjs")
@@ -140,6 +140,36 @@ emits_inert(
         i["nodes"][0].update(foreach="dims", prompt="do {{item.brief}}"), i)[-1])(node()))(),
     "__CANARY__",
 )
+
+# --- Imported decision records are embedded at compile time ----------------
+# The record comes from a run artifact on disk — repo-writable state, so a
+# crafted one is untrusted input to codegen exactly like WORK.md is. It is
+# embedded via json.dumps (ASCII-only, JS-compatible escaping); this pins
+# that a hostile record stays data in the object literal and in the prompt.
+_evil = "`);await import('node:fs').then(m=>m.writeFileSync('__CANARY__','x'));(`"
+with tempfile.TemporaryDirectory() as _runs:
+    _rec = {
+        "question": "a question long enough to satisfy the schema floor?",
+        "options": [{"option": _evil, "argued_by": _evil,
+                     "strongest_objection": "an objection with real length"}],
+        "chosen": _evil,
+        "rationale": "a rationale long enough that a lazy output cannot "
+                     "satisfy it, carrying the payload elsewhere",
+        "overturned_prior": False, "frozen_by": _evil, "reversible": False,
+        "evidence": [_evil, "${process.exit(1)}", "  */ // <!--"],
+    }
+    with open(os.path.join(_runs, "wf-evil.json"), "w", encoding="utf-8") as fh:
+        json.dump({"runId": "wf-evil", "when": "2026-08-08 00:00",
+                   "summary": {"decisions": {"vault-params": _rec}}}, fh)
+    _ir = node(honors=["vault-params"],
+               prompt="build under the frozen {{decisions.vault-params}}")
+    _ir["imports"] = {"vault-params": "latest"}
+    _resolved, _errs = cg.resolve_imports(_ir, CONTRACTS, _runs)
+    report("the hostile record still resolves (it is data, not policy)",
+           not _errs and "vault-params" in _resolved,
+           "resolved" if not _errs else str(_errs)[:40])
+    emits_inert("a hostile decision record embeds inert", _ir, "__CANARY__",
+                resolved=_resolved)
 
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

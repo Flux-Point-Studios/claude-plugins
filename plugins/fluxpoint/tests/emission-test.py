@@ -20,8 +20,10 @@ introduced quietly.
 """
 import copy
 import importlib.util
+import json
 import os
 import sys
+import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PLUGIN = os.path.dirname(HERE)
@@ -33,6 +35,27 @@ cg = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(cg)
 CONTRACTS = cg.load_contracts(os.path.join(PLUGIN, "contracts"))
 
+# imports resolve against recorded runs at compile time, so the probe that
+# sets the field needs a run to resolve from.
+RUNS = tempfile.mkdtemp(prefix="fpl-emission-runs-")
+with open(os.path.join(RUNS, "wf-fixture.json"), "w", encoding="utf-8") as fh:
+    json.dump({"runId": "wf-fixture", "when": "2026-08-08 00:00", "summary": {
+        "decisions": {"vault-params": {
+            "question": "which vault parameters do we freeze at genesis?",
+            "options": [
+                {"option": "conservative", "argued_by": "risk",
+                 "strongest_objection": "slower to adapt once live"},
+                {"option": "aggressive", "argued_by": "growth",
+                 "strongest_objection": "wider attack surface at launch"},
+            ],
+            "chosen": "conservative",
+            "rationale": "the genesis freeze is irreversible, so the option "
+                         "that fails safe wins every tie by default",
+            "overturned_prior": False, "frozen_by": "genesis",
+            "reversible": False,
+            "evidence": ["scripts/harness.sh --full exit 0"],
+        }}}}, fh)
+
 passed = failed = 0
 
 
@@ -41,7 +64,10 @@ def result_of(ir):
     errs = cg.validate(ir, CONTRACTS)
     if errs:
         return ("INVALID", tuple(errs), None, None)
-    return ("VALID", (), cg.plan_node_count(ir), cg.emit(ir, CONTRACTS))
+    resolved, rerrs = cg.resolve_imports(ir, CONTRACTS, RUNS)
+    if rerrs:
+        return ("UNRESOLVED", tuple(rerrs), None, None)
+    return ("VALID", (), cg.plan_node_count(ir), cg.emit(ir, CONTRACTS, resolved))
 
 
 def probe(level, field, base, mutate, note=""):
@@ -177,6 +203,32 @@ probe("IR", "imports", NODE_BASE, lambda ir: (
 ))
 
 
+# memory carries findings across runs: `emit` files a node's judged items
+# (survivors and kills alike) as lessons, `seed` hands a later sweep the
+# frontier an earlier one reached. Probed on a discovery node, since seeding
+# is a repeat concept and emitting requires a verification tier.
+MEM_BASE = copy.deepcopy(NODE_BASE)
+MEM_BASE["nodes"][N].update(
+    verify="panel:3", verifyOver="findings",
+    prompt="find things; already surfaced: {{seen}}",
+    repeat={"untilDryRounds": 2, "maxRounds": 6, "dedupeBy": ["file"]},
+)
+probe("node", "memory", MEM_BASE,
+      lambda ir: ir["nodes"][N].update(memory={"emit": "audit"}))
+
+MEMF_BASE = copy.deepcopy(MEM_BASE)
+MEMF_BASE["nodes"][N]["memory"] = {"emit": "audit"}
+probe("memory", "emit", MEMF_BASE,
+      lambda ir: ir["nodes"][N]["memory"].update(emit="a-different-tag"))
+probe("memory", "seed", MEMF_BASE,
+      lambda ir: ir["nodes"][N]["memory"].update(seed="audit"))
+# key is the cross-run identity for a one-shot emitter; with a repeat block
+# the dedupe key is already declared, so moving it there is a compile error
+# — which is the effect, and why the field is not decorative.
+probe("memory", "key", MEMF_BASE,
+      lambda ir: ir["nodes"][N]["memory"].update(key=["file"]))
+
+
 def _human(ir):
     ir["nodes"][N].update(actor="human", release={
         "instructions": "a person signs this one",
@@ -271,9 +323,10 @@ probed = {
         "foreach", "after", "mutates", "independent", "verifies", "verify",
         "verifyOver", "expectItems", "haltWhen", "haltReason", "onRed",
         "isolation", "repeat", "irreversible", "actor", "release", "wake",
-        "decides", "honors",
+        "decides", "honors", "memory",
     },
     "repeat": {"untilDryRounds", "maxRounds", "dedupeBy"},
+    "memory": {"seed", "emit", "key"},
     "release": {"instructions", "proofContract", "whyNotAgent"},
     "wake": {"check", "everyMinutes", "deadline"},
     "budget": {"maxNodes", "verifyFloorTokens", "nodeFloorTokens"},
@@ -286,6 +339,7 @@ for level, registry in [
     ("node", cg.NODE_FIELDS), ("repeat", cg.REPEAT_FIELDS),
     ("release", cg.RELEASE_FIELDS), ("wake", cg.WAKE_FIELDS),
     ("budget", cg.BUDGET_FIELDS), ("IR", cg.IR_FIELDS),
+    ("memory", cg.MEMORY_FIELDS),
 ]:
     missing = registry - probed[level]
     stale = probed[level] - registry

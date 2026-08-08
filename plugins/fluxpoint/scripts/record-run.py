@@ -34,17 +34,24 @@ def cell(s, n=160):
 
 
 def decision_rows(summary, ts):
-    """A row per DecisionV1 the run produced, newest-run-first order."""
+    """A row per DecisionV1 the run produced, newest-run-first order.
+
+    Imported decisions are excluded: they were decided — and filed — by the
+    run named in decisionsImported, and re-filing them under every honoring
+    campaign would stamp an old choice with a new date once per run.
+    """
     results = summary.get("results") or {}
     contracts = summary.get("contracts") or {}
     decided = summary.get("decisions") or {}
+    imported = summary.get("decisionsImported") or {}
     # Prefer the campaign's own decisions map; fall back to the contract map
     # so a graph that produced a DecisionV1 without `decides` is still filed.
     seen, rows = set(), []
     for did, rec in decided.items():
-        if isinstance(rec, dict):
-            seen.add(id(rec))
-            rows.append((did, rec))
+        if did in imported or not isinstance(rec, dict):
+            continue
+        seen.add(id(rec))
+        rows.append((did, rec))
     for node, value in results.items():
         if contracts.get(node) == "DecisionV1" and isinstance(value, dict):
             if id(value) not in seen:
@@ -223,6 +230,60 @@ def main():
     except Exception as e:  # noqa: BLE001
         print(f"record-run: inbox/waits update failed: {e}", file=sys.stderr)
 
+    # 1c. Cross-check every claimed gate exit against the hook-minted log.
+    # Warn mode: a mismatch is said loudly and filed, but does not rewrite the
+    # outcome yet. The corpus this produces is what earns the enforcing
+    # version — a check that starts by failing runs is a check people turn
+    # off before it has established what normal looks like.
+    attestation = None
+    try:
+        import attest as _attest
+        checks, afindings = _attest.verify_claims(args.root, summary)
+        for f in afindings:
+            print(f"record-run: {f}", file=sys.stderr)
+        if checks:
+            tally = {"checked": len(checks)}
+            for st in ("ATTESTED", "UNATTESTED", "MISMATCH"):
+                n = sum(1 for c in checks if c["status"] == st)
+                if n:
+                    tally[st.lower()] = n
+            attestation = {"tally": tally, "checks": checks}
+            for c in checks:
+                stream = sys.stderr if c["status"] == "MISMATCH" else sys.stdout
+                print(f"record-run: attest [{c['status']}] {c['node']} — {c['detail']}",
+                      file=stream)
+                if c["status"] == "MISMATCH":
+                    import inbox as _ibx
+                    _ibx.add(args.root, "attest-mismatch", c["node"], campaign,
+                             c["detail"])
+            # A node that declared `verify: prove:<gate>` asked to be held to
+            # the hook's record. A contradiction there is not a warning: the
+            # run's own verification says its exit codes are not what
+            # happened, and a campaign does not get to file that as clean.
+            # Nodes that merely happen to match a declared gate stay observed
+            # rather than enforced — a check that starts by failing runs gets
+            # switched off, and that lesson still holds for everyone who did
+            # not opt in.
+            tampered = [c for c in checks
+                        if c["status"] == "MISMATCH" and c.get("declared")]
+            unproven = [c for c in checks
+                        if c["status"] == "UNATTESTED" and c.get("declared")]
+            if tampered:
+                outcome = "TAMPERED-EXECUTION"
+                print(f"record-run: {len(tampered)} declared prove: node(s) "
+                      f"contradict the attest log — filing this run as "
+                      f"TAMPERED-EXECUTION", file=sys.stderr)
+            elif unproven and outcome in ("COMPLETE", "UNKNOWN"):
+                # The verification the graph declared did not happen. That is
+                # not tampering — an executor that never routes through the
+                # Bash tool leaves no rows — but it is not a clean run either.
+                outcome = "INCOMPLETE"
+                print(f"record-run: {len(unproven)} declared prove: node(s) cited "
+                      f"no attestation — the declared verification did not run",
+                      file=sys.stderr)
+    except Exception as e:  # noqa: BLE001 - a witness must never eat the record
+        print(f"record-run: attestation cross-check failed: {e}", file=sys.stderr)
+
     # 1. Durable provenance artifact.
     os.makedirs(args.state_dir, exist_ok=True)
     art = os.path.join(args.state_dir, f"{args.run_id}.json")
@@ -239,11 +300,30 @@ def main():
                 "findings": findings,
                 "harnessExit": harness,
                 "redTeam": red_team,
+                "attestation": attestation,
                 "summary": summary,
             },
             fh,
             indent=2,
         )
+
+    # 1d. Lessons, filed from the run's own summary. Written after the run
+    # artifact exists on purpose: memory.py refuses provenance that points at
+    # no recorded run, which is the check that stops a fabricated summary
+    # from planting durable knowledge.
+    lessons = None
+    try:
+        import memory as _memory
+        written, mfindings = _memory.append_from_summary(
+            args.root, summary, args.run_id, args.state_dir)
+        for f in mfindings:
+            print(f"record-run: memory {f}", file=sys.stderr)
+        if written:
+            killed = sum(1 for r in written if r["status"] == "killed")
+            lessons = {"filed": len(written), "killed": killed}
+            print(f"record-run: filed {len(written)} lesson(s), {killed} killed")
+    except Exception as e:  # noqa: BLE001 - never lose the Evidence row over this
+        print(f"record-run: lesson filing failed: {e}", file=sys.stderr)
 
     # 2. Evidence row, appended under whichever table header the file carries.
     claim = f"graph run: {ok} node(s) OK, {dead} dead, {findings} produced item(s)"
@@ -254,9 +334,37 @@ def main():
                   f"({', '.join(blocked_nodes[:3])})")
     if skipped:
         claim += f"; {skipped} SKIPPED on budget — coverage incomplete"
+    seeded = summary.get("memorySeeded") or {}
+    if seeded or lessons:
+        total_seeded = sum(v for v in seeded.values() if isinstance(v, int))
+        # A sweep standing on prior ground and one starting cold produce the
+        # same finding count, so the row has to say which this was.
+        parts = [f"seeded {total_seeded} prior key(s)"] if seeded else []
+        if lessons:
+            parts.append(f"filed {lessons['filed']} lesson(s), "
+                         f"{lessons['killed']} killed")
+        claim += "; memory: " + ", ".join(parts)
+    imported = summary.get("decisionsImported") or {}
+    if imported:
+        claim += ("; honors " + ", ".join(
+            f"{d}@{imported[d]}" for d in sorted(imported)[:2]))
+        if len(imported) > 2:
+            claim += f" +{len(imported) - 2} more imported decision(s)"
     for p in partial:
         claim += f"; {p.get('node')} INCOMPLETE — {p.get('detail') or 'did not run to exhaustion'}"
+    if attestation:
+        t = attestation["tally"]
+        if t.get("mismatch"):
+            claim += (f"; {t['mismatch']} gate claim(s) CONTRADICT the attested "
+                      f"execution log — the exit codes are not trustworthy")
+        elif t.get("unattested"):
+            claim += (f"; {t['unattested']} gate claim(s) UNATTESTED — self-reported "
+                      f"exit code(s), no hook-minted record")
     proof = f"harness exit {harness}; red-team {red_team}; executor {args.executor}"
+    if attestation:
+        att = attestation["tally"]
+        proof += ("; attestation " + ", ".join(
+            f"{k} {v}" for k, v in sorted(att.items()) if k != "checked"))
     row = f"| {ts} | {args.run_id} | {outcome} | {claim} | {proof} |"
     legacy_row = (
         f"| {ts} | {args.run_id} | {outcome} | {ok}/{dead} | {findings} "

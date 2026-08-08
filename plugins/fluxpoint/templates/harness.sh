@@ -53,7 +53,12 @@ plugin_script() {
   if [ -n "${FPL_PLUGIN_ROOT:-}" ] && [ -f "$FPL_PLUGIN_ROOT/scripts/$1" ]; then
     printf '%s\n' "$FPL_PLUGIN_ROOT/scripts/$1"
   else
-    find "$HOME/.claude/plugins" -type f -name "$1" 2>/dev/null | head -1
+    # `|| true` is load-bearing: find exits 1 when ~/.claude/plugins does not
+    # exist, `pipefail` propagates that through the pipe, and `set -e` then
+    # killed --full on its first plugin lookup — in exactly the repos this
+    # function exists to support, the ones carrying the harness without the
+    # plugin installed. It failed with no output at all.
+    { find "$HOME/.claude/plugins" -type f -name "$1" 2>/dev/null || true; } | head -1
   fi
 }
 
@@ -82,7 +87,37 @@ changed() {
 full() {
   if [ -f aiken.toml ] && has aiken; then
     aiken fmt --check .
-    aiken check
+    # `aiken check` has no --json flag: it emits structured JSON whenever
+    # stdout is not a TTY and sends every diagnostic to stderr, so a plain
+    # redirect buys the machine form for free and the operator still sees
+    # the Compiling/Summary lines.
+    #
+    # Why a file and not `aiken check | cex.py --ingest`: this script runs
+    # under `set -euo pipefail`, where a pipeline reports the last non-zero
+    # status. A parser bug in the recorder would then be indistinguishable
+    # from a failed proof, and the pipeline would abort before anything
+    # downstream ran. Capture, record, re-raise — the prover's exit code
+    # stays the gate and the recorder never gets a vote.
+    #
+    # The seed is fixed so shrinking is reproducible: aiken draws a random
+    # u32 per run otherwise, and the same bug then shrinks to a different
+    # value each time, which would file a new counterexample per run.
+    aiken_out="$(mktemp)"
+    aiken_rc=0
+    aiken check --seed "${FPL_AIKEN_SEED:-1}" >"$aiken_out" || aiken_rc=$?
+    if [ "$aiken_rc" -ne 0 ]; then
+      # Unconditionally, before anything else can drop it: in a repo that
+      # carries this harness without the plugin installed, this file is the
+      # only record of which test failed and why.
+      cat "$aiken_out" >&2
+    fi
+    cx="$(plugin_script cex.py)"
+    if [ -n "$cx" ]; then
+      "$FPL_PY" "$cx" --ingest --tool aiken --from "$aiken_out" \
+        --exit "$aiken_rc" || true
+    fi
+    rm -f "$aiken_out"
+    if [ "$aiken_rc" -ne 0 ]; then return "$aiken_rc"; fi
     # `check` typechecks and runs tests; `build` is what actually produces the
     # on-chain artifact, and it can fail where check passes. A validator that
     # will not build is not done.
@@ -125,11 +160,35 @@ full() {
   # rise. Dormant in repos with no proof-language files.
   pg="$(plugin_script proof-guard.py)"
   [ -n "$pg" ] && "$FPL_PY" "$pg" --check
+  # Statement ratchet. The hatch counts above police proof bodies; this
+  # polices what is being proved, because dropping a conjunct from an
+  # `ensures` or deleting a property test moves no count and keeps every
+  # checker green. Dormant until armed with --baseline.
+  sg="$(plugin_script spec-guard.py)"
+  [ -n "$sg" ] && "$FPL_PY" "$sg" --check
+  # Counterexample ledger. A prover's shrunk failing input is the most
+  # reusable thing it produces and it lives in a log the next command
+  # overwrites. This fails when a pinned counterexample has lost the
+  # regression test that carries it. Dormant with nothing recorded.
+  cc="$(plugin_script cex.py)"
+  [ -n "$cc" ] && "$FPL_PY" "$cc" --check
+  # Mutation score. Every check above asks whether the tests pass; this asks
+  # whether they can fail. Cheap here on purpose — it re-runs nothing and
+  # only asks whether a measurement exists and still describes this tree.
+  # The expensive `--measure` belongs off-session, on a Routine.
+  mg="$(plugin_script mutation-guard.py)"
+  [ -n "$mg" ] && "$FPL_PY" "$mg" --check
   # Relation gate. Every check above measures one artifact; the defects that
   # cost the most are relationships between two, and a suite stays green
   # because each half is individually correct. Dormant without a manifest.
+  #
+  # `if`, not `[ -n "$x" ] && cmd`: as the LAST statement of a function under
+  # `set -e`, that form returns 1 when the variable is empty, so a repo whose
+  # plugin is not installed failed --full for no reason at all.
   pr="$(plugin_script pair-guard.py)"
-  [ -n "$pr" ] && "$FPL_PY" "$pr" --check ${FPL_PAIR_AGAINST:+--against "$FPL_PAIR_AGAINST"}
+  if [ -n "$pr" ]; then
+    "$FPL_PY" "$pr" --check ${FPL_PAIR_AGAINST:+--against "$FPL_PAIR_AGAINST"}
+  fi
 }
 
 case "$mode" in

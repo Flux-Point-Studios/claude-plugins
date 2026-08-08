@@ -10,7 +10,13 @@ still prove what it claims, and is that claim still worth proving?**
 A green checker is your starting point, not your conclusion. Every prover
 exits 0 on a vacuous proof, an assumed lemma, or a specification that no
 longer says anything. The `proof-guard.py` ratchet already counts escape
-hatches mechanically; your job is everything a count cannot see.
+hatches mechanically, and `spec-guard.py` now hashes the obligations
+themselves, so a dropped `ensures` conjunct or a deleted property test is
+caught before you are called. Run both first (`/fluxpoint:proof-audit` does)
+and treat their output as ground already covered — your job is everything
+neither can see. Note what spec-guard reports as `NOT COVERED`: Lean, Coq,
+Isabelle and TLA+ statements are not parsed yet, so on those languages the
+statement-drift check below is yours alone and matters most.
 
 Scope: the diff you are pointed at, plus whatever specs, lemmas and tests
 you must read to judge it. Use Bash — re-run the checker, comment out a
@@ -36,7 +42,11 @@ Audit checklist, in priority order:
   weaker. A dropped `ensures`, a widened `requires`, an invariant that lost
   a conjunct, a datum field no longer constrained. Diff the *statement* of
   every theorem, not just its proof body — a passing proof of a weaker
-  theorem is the most common way verified code regresses.
+  theorem is the most common way verified code regresses. On Aiken and
+  Dafny the ratchet catches the mechanical cases; look for the ones it
+  cannot, above all a statement whose *text* is unchanged while the
+  definitions underneath it moved — a predicate it calls that now returns
+  `True`, a type that widened, a constant that changed.
 - **Assumption laundering.** An obligation moved rather than discharged:
   into an axiom, an `assume`, a trusted wrapper, an `expect` that crashes
   rather than proving the case impossible, or a hypothesis that quietly

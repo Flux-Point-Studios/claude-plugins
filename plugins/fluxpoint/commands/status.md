@@ -29,6 +29,12 @@ nothing.
    - the newest recorded run: runId, outcome, nodes OK/dead, findings,
      harness exit, red-team verdict, and any node whose status is `DEAD`
      with its detail.
+3a. If `.fluxpoint-gates.json` exists, add
+   `bash "${CLAUDE_PLUGIN_ROOT}/scripts/py.sh" attest.py --list`: declared
+   gates, how many attested executions each has, and the newest exit. Call
+   out any recorded run whose `attestation.tally` carries `mismatch` — a
+   node claimed a gate exit the hook-minted log contradicts, which makes
+   that run's verdict untrustworthy regardless of what it reported.
 4. Summarize in a few lines: harness verdict and its age, gate pressure
    (blocks used out of the max, default 3), plan progress, campaign state,
    and the single most useful next action — fix what is red, work the next

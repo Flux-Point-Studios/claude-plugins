@@ -28,7 +28,22 @@ cd "${proj:-.}" 2>/dev/null || exit 0
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || exit 0
 
 sd="$(fpl_state_dir)"
-find "$sd" -maxdepth 1 \( -name '*.dirty' -o -name '*.blocks' \) -mtime +3 -delete 2>/dev/null
+find "$sd" -maxdepth 1 \( -name '*.dirty' -o -name '*.blocks' -o -name '*.base' \
+  -o -name '*.attest-warned' \) -mtime +3 -delete 2>/dev/null
+
+# The commit this session starts from, so the Stop gate can tell work done
+# this session from history it inherited — including work that was committed
+# before the stop, which a diff against HEAD cannot see.
+#
+# Written only when absent: this hook also fires on resume, /clear and
+# post-compaction, and refreshing the baseline there would forgive every
+# commit made before that point. The gate refreshes it itself, on green.
+sid="$(printf '%s' "$input" | fpl_json_get session_id)"
+sid="${sid:-nosession}"
+[ -f "$(fpl_base_file "$sid")" ] || fpl_set_base "$sid"
+# The same rule for the memory snapshot: taken once, at the session's real
+# start, so a later compaction cannot reset the mark it is measured against.
+[ -f "$sd/$sid.snapshot" ] || fpl_memory_sha >"$sd/$sid.snapshot" 2>/dev/null
 
 branch="$(git branch --show-current 2>/dev/null)"
 dirtyn="$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
@@ -60,6 +75,45 @@ if [ -f "$inbox_py" ]; then
   open_items="$("$FPL_PY" "$inbox_py" --count 2>/dev/null || echo 0)"
   if [ "${open_items:-0}" -gt 0 ] 2>/dev/null; then
     echo "- BLOCKED ON YOU: ${open_items} item(s) waiting on a person. Run /fluxpoint:status for the list, /fluxpoint:release <node> to clear one."
+  fi
+fi
+
+# This context may be the one that exists after a compaction. The PreCompact
+# hook recorded whether anything had been written down at that moment; if
+# nothing had, the reasoning behind whatever is in the tree did not survive,
+# and a fresh context should know that rather than assume the diff explains
+# itself.
+compacted="$sd/$sid.compacted"
+if [ -f "$compacted" ]; then
+  cflushed="$(fpl_json_get flushed <"$compacted")"
+  cworked="$(fpl_json_get codeChanged <"$compacted")"
+  cwhen="$(fpl_json_get when <"$compacted")"
+  if [ "$cflushed" = "no" ] && [ "$cworked" = "yes" ]; then
+    echo "- CONTEXT WAS COMPACTED at ${cwhen} with nothing written to Decisions or Notes, while code had changed. The reasoning behind the current diff — what was tried, what was ruled out, why this approach — was in the transcript that got summarized. Treat it as lost: re-derive from the code and the tests rather than assuming a prior decision still holds, and write down what you conclude."
+  fi
+fi
+
+# A gate claim the attest log contradicts makes a run's verdict worthless,
+# so it outranks everything below it except what is blocked on a person.
+if [ -f .fluxpoint-gates.json ] && [ -f "$sd/attest.jsonl" ]; then
+  mm="$("$FPL_PY" - "$sd/runs" <<'PY' 2>/dev/null || true
+import json, os, sys
+d = sys.argv[1]
+n = 0
+for fn in os.listdir(d) if os.path.isdir(d) else []:
+    if not fn.endswith(".json"):
+        continue
+    try:
+        with open(os.path.join(d, fn), encoding="utf-8") as fh:
+            a = json.load(fh)
+    except Exception:
+        continue
+    n += ((a.get("attestation") or {}).get("tally", {}) or {}).get("mismatch", 0)
+print(n)
+PY
+)"
+  if [ "${mm:-0}" -gt 0 ] 2>/dev/null; then
+    echo "- ATTESTATION MISMATCH: ${mm} recorded gate claim(s) contradict .claude/fluxpoint/attest.jsonl, which is the hook-minted record of what those commands actually exited. Those runs' verdicts are not trustworthy; /fluxpoint:status lists them."
   fi
 fi
 
@@ -126,16 +180,48 @@ if dod:
     if len(dod) > 8:
         elided.append(f"{len(dod) - 8} more unmet DoD item(s)")
 
-for name, keep in (("Decisions", 3), ("Evidence", 5)):
-    rows = [b for b in section(name)
-            if b.strip().startswith("|") and not re.match(r"^\|[-| ]+\|$", b.strip())]
-    rows = [r for r in rows[1:]]  # drop the header row itself
-    if rows:
-        out.append("")
-        out.append(f"## {name} — newest {min(keep, len(rows))} of {len(rows)}")
-        out += [r.rstrip() for r in rows[:keep]]
-        if len(rows) > keep:
-            elided.append(f"{len(rows) - keep} older {name} row(s)")
+rows = [b for b in section("Decisions")
+        if b.strip().startswith("|") and not re.match(r"^\|[-:| ]+\|$", b.strip())]
+rows = rows[1:]  # drop the header row itself
+if rows:
+    out.append("")
+    out.append(f"## Decisions — newest {min(3, len(rows))} of {len(rows)}")
+    out += [r.rstrip() for r in rows[:3]]
+    if len(rows) > 3:
+        elided.append(f"{len(rows) - 3} older Decisions row(s)")
+
+# Evidence is the one section a fresh context inherits as fact, and until now
+# every row rode in identically whether a Stop hook recorded it or the agent
+# typed it. They are not the same kind of statement, and the budget was
+# first-come: a run of agent-written rows evicted every witnessed one.
+# So the classes are separated, labelled, and given their own budgets.
+ev = [b for b in section("Evidence")
+      if b.strip().startswith("|") and not re.match(r"^\|[-:| ]+\|$", b.strip())]
+ev = ev[1:]
+
+
+def source_of(row):
+    parts = [p.strip() for p in row.strip().strip("|").split("|")]
+    return parts[1] if len(parts) >= 2 else ""
+
+
+gate_rows = [r for r in ev if source_of(r) == "gate"]
+claim_rows = [r for r in ev if source_of(r) != "gate"]
+if ev:
+    out.append("")
+    out.append(f"## Evidence — {len(ev)} row(s): "
+               f"{len(gate_rows)} recorded by the Stop gate, "
+               f"{len(claim_rows)} asserted by whoever wrote them")
+    if gate_rows:
+        out.append("### Recorded by the gate (the runtime ran the harness itself)")
+        out += [r.rstrip() for r in gate_rows[:3]]
+        if len(gate_rows) > 3:
+            elided.append(f"{len(gate_rows) - 3} older gate row(s)")
+    if claim_rows:
+        out.append("### Asserted, not witnessed — a claim, weighed accordingly")
+        out += [r.rstrip() for r in claim_rows[:3]]
+        if len(claim_rows) > 3:
+            elided.append(f"{len(claim_rows) - 3} older asserted row(s)")
 
 notes = section("Notes for the next iteration") or section("Notes for the next run")
 if notes:

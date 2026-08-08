@@ -24,7 +24,8 @@ IR_FENCE = re.compile(r"```json\s+graph-ir\s*\n(.*?)\n```", re.S)
 # 'harness' is deliberately absent: it was accepted, priced into the budget,
 # and emitted nothing. Verifying that something is green is what
 # mutates + independent already does, properly. See validate().
-TIER = re.compile(r"^(schema-only|skeptic:(\d+)|panel:(\d+))$")
+TIER = re.compile(r"^(schema-only|skeptic:(\d+)|panel:(\d+)|prove:([a-z][a-z0-9-]*))$")
+GATES = ".fluxpoint-gates.json"
 HALT = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*(==|!=|>=|<=|>|<)\s*(-?\d+|'[^']*')\s*$")
 # Hyphens are in the class because decision ids are kebab-case by rule, so
 # {{decisions.vault-window}} has to be a token the substituter can see. An
@@ -48,11 +49,13 @@ NODE_FIELDS = {
     "foreach", "after", "mutates", "independent", "verifies", "verify",
     "verifyOver", "expectItems", "haltWhen", "haltReason", "onRed", "isolation",
     "repeat", "irreversible", "actor", "release", "wake", "decides", "honors",
+    "memory",
 }
 ACTORS = {"agent", "human", "third-party"}
 RELEASE_FIELDS = {"instructions", "proofContract", "whyNotAgent"}
 WAKE_FIELDS = {"check", "everyMinutes", "deadline"}
 REPEAT_FIELDS = {"untilDryRounds", "maxRounds", "dedupeBy"}
+MEMORY_FIELDS = {"seed", "emit", "key"}
 BUDGET_FIELDS = {"maxNodes", "verifyFloorTokens", "nodeFloorTokens"}
 ROLE_FIELDS = {"agentType", "effort", "model"}
 DEFAULTS_FIELDS = {"effort", "model"}
@@ -100,8 +103,127 @@ def load_contracts(contracts_dir):
     return out
 
 
+RUNS_DIR = os.path.join(".claude", "fluxpoint", "runs")
+
+
+def _decision_in(artifact, did):
+    """The DecisionV1 record for `did` in one run artifact, or None.
+
+    Mirrors record-run.py's filing order: the campaign's own decisions map
+    first, then a node whose declared contract is DecisionV1 and whose id is
+    the decision id — the same fallback that files a record produced
+    without `decides`.
+    """
+    summary = artifact.get("summary") or {}
+    rec = (summary.get("decisions") or {}).get(did)
+    if isinstance(rec, dict):
+        return rec
+    rec = (summary.get("results") or {}).get(did)
+    if (summary.get("contracts") or {}).get(did) == "DecisionV1" and isinstance(rec, dict):
+        return rec
+    return None
+
+
+def resolve_imports(ir, contracts, runs_dir):
+    """Resolve the IR's imports from recorded runs, at compile time.
+
+    Returns ({decisionId: {"record": ..., "runId": ...}}, findings).
+
+    This resolution used to be a step the orchestrating agent performed by
+    hand while the compiled graph checked only that *some* record arrived —
+    which left the most-protected artifact class (frozen decisions) with the
+    least-protected loading path: a fabricated or stale map satisfied the
+    launch throw. Resolving here and embedding the record means no
+    hand-assembled map exists for a launch to trust, and a missing decision
+    fails the compile, which is earlier and louder than failing the launch.
+
+    A malformed run artifact is a hard finding, never skipped: what
+    'latest' names must not depend on which artifacts happened to parse.
+    """
+    imports = ir.get("imports") or {}
+    if not imports:
+        return {}, []
+    f = []
+    resolved = {}
+    required = (contracts.get("DecisionV1") or {}).get("required") or []
+    arts = []  # (when, runId, artifact) — runId from the filename, which is
+    # how a run is addressed; an artifact cannot rename itself via its body.
+    if os.path.isdir(runs_dir):
+        for fn in sorted(os.listdir(runs_dir)):
+            if not fn.endswith(".json"):
+                continue
+            p = os.path.join(runs_dir, fn)
+            try:
+                with open(p, encoding="utf-8") as fh:
+                    art = json.load(fh)
+            except (OSError, json.JSONDecodeError) as e:
+                f.append(
+                    f"imports: {p} is not readable JSON ({e}) — restore or "
+                    f"remove the artifact; a malformed run cannot be skipped, "
+                    f"because what 'latest' names must not depend on which "
+                    f"artifacts happened to parse")
+                continue
+            if not isinstance(art, dict):
+                f.append(f"imports: {p} is not a run artifact (not an object)")
+                continue
+            arts.append((str(art.get("when") or ""), fn[: -len(".json")], art))
+    for did in sorted(imports):
+        ref = imports[did]
+        if ref == "latest":
+            hits = []
+            for when, rid, art in arts:
+                rec = _decision_in(art, did)
+                if rec is not None:
+                    hits.append((when, rid, rec))
+            if not hits:
+                f.append(
+                    f"imports.{did}: no recorded run in {runs_dir} carries this "
+                    f"decision — the campaign that decides it has to run first; "
+                    f"never hand-write a run artifact to get past this")
+                continue
+            _, rid, rec = max(hits, key=lambda h: (h[0], h[1]))
+        else:
+            art = next((a for _, rid, a in arts if rid == ref), None)
+            if art is None:
+                f.append(f"imports.{did}: run '{ref}' not found in {runs_dir}")
+                continue
+            rid, rec = ref, _decision_in(art, did)
+            if rec is None:
+                f.append(f"imports.{did}: run '{ref}' does not carry this decision")
+                continue
+        missing = [k for k in required if k not in rec]
+        if missing:
+            f.append(
+                f"imports.{did}: the record in run '{rid}' is missing required "
+                f"DecisionV1 field(s) {missing} — a hand-edited artifact does "
+                f"not count as a decision")
+            continue
+        resolved[did] = {"record": rec, "runId": rid}
+    return resolved, f
+
+
 # ---------------------------------------------------------------- validation
-def validate(ir, contracts):
+def load_gates(root):
+    """Declared gate names, or None when the repo declares no manifest."""
+    p = os.path.join(root or ".", GATES)
+    if not os.path.exists(p):
+        return None
+    try:
+        with open(p, encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return None
+    gates = doc.get("gates") if isinstance(doc, dict) else None
+    return set(gates) if isinstance(gates, dict) else None
+
+
+def prove_gate(n):
+    """The gate this node's tier proves against, or None."""
+    m = TIER.match(str(n.get("verify", "schema-only")))
+    return m.group(4) if m else None
+
+
+def validate(ir, contracts, gates=None):
     """Return a list of findings. Empty list means the graph may compile."""
     f = []
     if ir.get("version") != 1:
@@ -178,7 +300,34 @@ def validate(ir, contracts):
                 f"real exit code"
             )
         elif not m:
-            f.append(f"{where}: verify must be schema-only | skeptic:N | panel:N")
+            f.append(f"{where}: verify must be schema-only | skeptic:N | panel:N "
+                     f"| prove:<gate>")
+        elif m.group(4):
+            # prove:<gate> — the claim is checked against an execution a hook
+            # recorded, not against refuters who re-read the code. It only
+            # means anything if the gate is a real declared command, so the
+            # name is resolved here rather than at run time. This is the
+            # `verify: harness` lesson: a tier that resolves to nothing must
+            # not compile.
+            gate = m.group(4)
+            if gates is None:
+                f.append(
+                    f"{where}: verify prove:{gate} needs a {GATES} manifest "
+                    f"declaring which commands decide things — without one the "
+                    f"tier resolves to nothing, which is how 'harness' used to "
+                    f"pass while checking nobody")
+            elif gate not in gates:
+                f.append(
+                    f"{where}: verify prove:{gate} names no gate in {GATES} "
+                    f"(declared: {', '.join(sorted(gates)) or 'none'})")
+            if c != "ExecutionV1":
+                f.append(
+                    f"{where}: verify prove:{gate} requires contract ExecutionV1 "
+                    f"(has '{c}') — the attestId is what makes the exit code "
+                    f"checkable, and no other contract carries one")
+            if n.get("verifyOver"):
+                f.append(f"{where}: verify prove:{gate} verifies the node's own "
+                         f"execution, not an array — drop verifyOver")
         else:
             count = m.group(2) or m.group(3)
             if count:
@@ -305,6 +454,79 @@ def validate(ir, contracts):
                         if item_props and k not in item_props:
                             f.append(f"{where}: repeat.dedupeBy '{k}' is not a field of {c}.{n['verifyOver']} items")
 
+        # Lessons: what this node contributes to, and reads from, across
+        # runs. Both directions are declared, because a sweep that silently
+        # inherited state would be unreadable from the IR alone.
+        mem = n.get("memory")
+        if mem is not None:
+            f += _unknown(f"{where} memory", mem, MEMORY_FIELDS)
+            if not isinstance(mem, dict):
+                f.append(f"{where}: memory must be an object")
+            elif not mem.get("seed") and not mem.get("emit"):
+                f.append(
+                    f"{where}: memory declares neither seed nor emit — an empty "
+                    f"block reads as configured and does nothing")
+            else:
+                for side in ("seed", "emit"):
+                    tag = mem.get(side)
+                    if tag is not None and not (isinstance(tag, str) and IDENT.match(tag)):
+                        f.append(f"{where}: memory.{side} must be a lowercase "
+                                 f"kebab-case tag")
+                if mem.get("seed") and not n.get("repeat"):
+                    f.append(
+                        f"{where}: memory.seed without a repeat block — the seed "
+                        f"feeds a discovery sweep's seen-list, and a node that "
+                        f"runs once has nowhere to put it")
+                if mem.get("emit"):
+                    if not panel_size(n):
+                        f.append(
+                            f"{where}: memory.emit needs a verification tier "
+                            f"(skeptic:N or panel:N) — a lesson's worth is its "
+                            f"verdict and the objection behind it, and filing "
+                            f"unjudged output would promote a well-formed guess "
+                            f"to institutional knowledge")
+                    if not n.get("verifyOver"):
+                        f.append(
+                            f"{where}: memory.emit needs verifyOver naming the "
+                            f"array of items to file as lessons")
+                    elif c in contracts:
+                        item_props = (
+                            contracts[c].get("properties", {})
+                            .get(n["verifyOver"], {})
+                            .get("items", {})
+                            .get("properties", {})
+                        )
+                        if item_props and "claim" not in item_props:
+                            f.append(
+                                f"{where}: memory.emit needs {c}.{n['verifyOver']} "
+                                f"items to carry a 'claim' — a lesson without one "
+                                f"is a row no later sweep can act on")
+                key = mem.get("key")
+                if key is not None and n.get("repeat"):
+                    f.append(
+                        f"{where}: memory.key with a repeat block — the dedupe "
+                        f"identity is already declared as repeat.dedupeBy, and two "
+                        f"spellings of one key is how they drift apart")
+                elif mem.get("emit") and not n.get("repeat"):
+                    if not isinstance(key, list) or not key or not all(
+                            isinstance(k, str) and k for k in key):
+                        f.append(
+                            f"{where}: memory.emit on a node with no repeat block "
+                            f"needs memory.key — the cross-run identity of a lesson "
+                            f"cannot be implicit")
+                    elif c in contracts and n.get("verifyOver"):
+                        item_props = (
+                            contracts[c].get("properties", {})
+                            .get(n["verifyOver"], {})
+                            .get("items", {})
+                            .get("properties", {})
+                        )
+                        for k in key:
+                            if item_props and k not in item_props:
+                                f.append(
+                                    f"{where}: memory.key '{k}' is not a field of "
+                                    f"{c}.{n['verifyOver']} items")
+
         # Self-report invariant. A node that changes the tree cannot be the
         # node that certifies the change; some later independent node must
         # verify it. This is the feature.graph.js bug, promoted to a rule.
@@ -332,6 +554,12 @@ def validate(ir, contracts):
                 )
             if not IDENT.match(str(n["decides"])):
                 f.append(f"{where}: decides id must be lowercase kebab-case")
+            if n["decides"] in imports:
+                f.append(
+                    f"{where}: decides '{n['decides']}', which this campaign "
+                    f"imports — an imported decision is frozen, and re-deciding "
+                    f"it here is exactly the silent overturn imports exist to "
+                    f"prevent; drop the import or rename the decision")
             if n["decides"] in decided:
                 f.append(f"{where}: decides '{n['decides']}' is already decided by "
                          f"node '{decided[n['decides']]}'")
@@ -460,6 +688,21 @@ def validate(ir, contracts):
                     f"gate must be ordered before the effect, because a verifier "
                     f"that runs afterwards cannot undo it"
                 )
+            elif gates and not any(prove_gate(o) for o in guards):
+                # The ordering invariant was sound in structure and hollow in
+                # fidelity: the guard runs the harness and then types its own
+                # exit code into a contract, so the integer standing between a
+                # campaign and an unrepeatable chain write was a transcription.
+                # Where the repo has declared its gates, that is no longer the
+                # cheapest available shape, so it is no longer an allowed one.
+                f.append(
+                    f"{where}: irreversible, and the gate ordered before it "
+                    f"({', '.join(sorted(o['id'] for o in guards))}) reports its "
+                    f"own exit code. This repo declares gates in {GATES}, so the "
+                    f"guard must use verify prove:<gate> and contract "
+                    f"ExecutionV1 — an effect nobody can undo may not rest on a "
+                    f"number the node that ran it typed by hand"
+                )
             if "confirm" not in (ir.get("requiredArgs") or []):
                 f.append(
                     f"{where}: irreversible requires 'confirm' in requiredArgs — "
@@ -561,6 +804,26 @@ def panel_size(n):
     return int(m.group(2) or m.group(3) or 0) if m else 0
 
 
+def lesson_sink(n, need):
+    """JS arrow filing one judged item as a lesson.
+
+    The killed half is the point. Today `verifyItems` filters rejects away
+    and the reasoning dies with them, so the next sweep re-finds the item
+    and pays a fresh panel to reach the verdict that already existed.
+    """
+    mem = n["memory"]
+    keys = (n.get("repeat") or {}).get("dedupeBy") or mem.get("key")
+    keyexpr = " + '|' + ".join(f"String(it[{js_str(k)}])" for k in keys)
+    status = (f"(it.kills || 0) >= {need} ? 'killed' : 'surviving'"
+              if need > 0 else "'surviving'")
+    return (
+        f"it => MEMORY.push({{ tag: {js_str(mem['emit'])}, dedupeKey: {keyexpr}, "
+        f"claim: String(it.claim || ''), status: {status}, "
+        f"objection: (it.objections || [])[0] || '', kills: it.kills || 0, "
+        f"node: {js_str(n['id'])} }})"
+    )
+
+
 def js_str(s):
     return json.dumps(str(s))
 
@@ -636,7 +899,7 @@ def emit_halt_any(n, var):
     )
 
 
-def emit(ir, contracts):
+def emit(ir, contracts, imports_resolved=None):
     nodes = ir["nodes"]
     lists = ir.get("lists") or {}
     used = sorted({n["contract"] for n in nodes}
@@ -701,18 +964,74 @@ def emit(ir, contracts):
         a("// freezes at genesis the re-decision is unrecoverable.")
         a("const DECISIONS = {}")
     if imports:
+        unresolved = sorted(set(imports) - set(imports_resolved or {}))
+        if unresolved:
+            # Emission-time backstop only: main() resolves before emitting,
+            # and a caller that skips resolution must fail loudly rather
+            # than regenerate the couriered-map hole this closed.
+            raise GraphError(
+                "imports must be resolved before emission (unresolved: "
+                + ", ".join(unresolved) + ") — go through resolve_imports(), "
+                "so the record is embedded rather than couriered by an agent")
         a("// Imported from earlier campaigns. A ten-node ceiling forces a big")
         a("// campaign to split, and the split is lossy unless a frozen choice")
-        a("// can cross the boundary — so an absent one throws at launch")
-        a("// rather than letting this run re-decide it by accident.")
-        a("const _imported = (A && A._decisions) || {}")
+        a("// can cross the boundary. Each record below was resolved from")
+        a("// .claude/fluxpoint/runs at compile time and embedded — no")
+        a("// hand-assembled map exists for a launch to trust, and no model")
+        a("// sits between the recorded choice and this run. Re-deciding it")
+        a("// requires a new deciding campaign, not a different argument.")
         for k in sorted(imports):
-            msg = js_str(
-                f"missing imported decision: {k} — load it with "
-                f"/fluxpoint:graph-run, which resolves imports from "
-                f".claude/fluxpoint/runs")
-            a(f"if (!_imported[{js_str(k)}]) throw new Error({msg})")
-            a(f"DECISIONS[{js_str(k)}] = _imported[{js_str(k)}]")
+            r = imports_resolved[k]
+            a(f"// {k} <- run {js_str(r['runId'])}")
+            a(f"DECISIONS[{js_str(k)}] = "
+              + json.dumps(r["record"], indent=2, sort_keys=True))
+        a("const DECISIONS_IMPORTED = " + json.dumps(
+            {k: imports_resolved[k]["runId"] for k in sorted(imports)},
+            sort_keys=True))
+        a("")
+    prove_nodes = [n for n in nodes if prove_gate(n)]
+    if prove_nodes:
+        a("// --- prove: tiers ---")
+        a("// This graph cannot check these itself: the attest log is a file and")
+        a("// this sandbox has none. What it can do is refuse a result that is")
+        a("// not even shaped like a citation, and name which node claimed which")
+        a("// gate so record-run.py can hold each to the hook's own record.")
+        a("const PROVE = " + json.dumps(
+            {n["id"]: prove_gate(n) for n in prove_nodes}, sort_keys=True))
+        a("function citation(id, gate, r) {")
+        a("  if (!r || typeof r !== 'object') return `${id}: no result to prove`")
+        a("  if (r.gate !== gate) return `${id}: claims gate '${r.gate}', declared '${gate}'`")
+        a("  if (typeof r.exit !== 'number') return `${id}: no integer exit`")
+        a("  if (!r.attestId) return `${id}: no attestId — an exit code nothing witnessed`")
+        a("  return null")
+        a("}")
+        a("")
+    mem_nodes = [n for n in nodes if n.get("memory")]
+    seeds = sorted({n["memory"]["seed"] for n in mem_nodes if n["memory"].get("seed")})
+    if mem_nodes:
+        a("// --- lessons: what earlier campaigns established ---")
+        a("// Rows are filed by record-run.py from this summary, never written")
+        a("// by an agent, and keyed by the same dedupe fields the IR already")
+        a("// declares — so cross-run identity costs no new vocabulary.")
+        a("const MEMORY = []")
+        a("const MEMORY_SEEDED = {}")
+    if seeds:
+        a("// Seeds are ADVISORY and only ever reach a prompt. Seeding the")
+        a("// dedup set instead would silently drop a re-found item, which is")
+        a("// precisely how a stale lesson hides a live regression: the finder")
+        a("// reports it, the loop discards it as already-known, and the sweep")
+        a("// reads clean. So a seeded key tells the finder where the frontier")
+        a("// was; it never decides what this run is allowed to find.")
+        a("const _seedSrc = (A && A._seen) || {}")
+        for tag in seeds:
+            a(f"MEMORY_SEEDED[{js_str(tag)}] = "
+              f"((_seedSrc[{js_str(tag)}] || {{}}).keys || []).length")
+        a("// A first sweep and one whose loader never ran look identical from")
+        a("// inside; the count rides out in the summary so they do not read")
+        a("// the same in the record.")
+        for tag in seeds:
+            a(f"log(`memory: seeded ${{MEMORY_SEEDED[{js_str(tag)}]}} prior key(s) "
+              f"for tag {tag}`)")
         a("")
     parked = [n for n in nodes if n.get("actor", "agent") != "agent"]
     if parked:
@@ -794,6 +1113,15 @@ def emit(ir, contracts):
         extra += ", blocked: [...BLOCKED], waits: WAITS, recommendations: RECOMMENDATIONS"
     if decides_any or imports:
         extra += ", decisions: DECISIONS"
+    if mem_nodes:
+        extra += ", memory: MEMORY, memorySeeded: MEMORY_SEEDED"
+    if prove_nodes:
+        extra += ", prove: PROVE"
+    if imports:
+        # Which run each imported record came from rides out in the summary,
+        # so provenance can tell an imported decision from one this campaign
+        # made — record-run.py files only the latter as new Decisions rows.
+        extra += ", decisionsImported: DECISIONS_IMPORTED"
     a("  return { campaign, outcome: final, results: RESULTS, provenance: PROVENANCE,")
     a(f"           contracts: CONTRACTS{extra} }}")
     a("}")
@@ -871,13 +1199,18 @@ def emit(ir, contracts):
         a("")
         a("// Applies a node's declared tier to every item it produced. Used by")
         a("// fan-out and single nodes alike, so a declared tier always runs.")
-        a("async function verifyItems(result, field, label, phase, n, need) {")
+        a("async function verifyItems(result, field, label, phase, n, need, sink) {")
         a("  if (!result) return []")
         a("  const produced = result[field] || []")
         a("  const judged = await parallel(produced.map((it, i) => () =>")
         a("    refute(JSON.stringify(it), `${label}:${i}`, phase, n).then(v => ({ ...it, ...v }))")
         a("  ))")
-        a("  return judged.filter(Boolean).filter(v => v.kills < need)")
+        a("  const all = judged.filter(Boolean)")
+        a("  // The sink sees every verdict, including the kills the filter")
+        a("  // below drops: what a panel rejected, and why, is the half a")
+        a("  // later sweep would otherwise pay to rediscover.")
+        a("  if (sink) all.forEach(sink)")
+        a("  return all.filter(v => v.kills < need)")
         a("}")
         a("")
 
@@ -1111,10 +1444,20 @@ def emit_node(n, ir):
         if verified:
             # A declared tier always runs, fan-out or not.
             need = math.ceil(panel / 2)
+            sink = (", " + lesson_sink(n, need)
+                    if (n.get("memory") or {}).get("emit") else "")
             a(f"const {var} = await verifyItems({raw}, {js_str(over)}, "
-              f"{js_str(nid)}, {js_str(phase)}, {panel}, {need})")
+              f"{js_str(nid)}, {js_str(phase)}, {panel}, {need}{sink})")
             a(f"log(`{nid}: ${{{var}.length}} item(s) survived {tier}`)")
 
+    pg = prove_gate(n)
+    if pg:
+        a(f"const cite_{var} = citation({js_str(nid)}, {js_str(pg)}, {var})")
+        a(f"if (cite_{var}) {{")
+        a(f"  log(`UNPROVEN ${{cite_{var}}}`)")
+        a(f"  note({js_str(nid)}, 'UNPROVEN', cite_{var})")
+        a("  INCOMPLETE = true")
+        a("}")
     a(f"RESULTS[{js_str(nid)}] = {var}")
     if n.get("decides"):
         a(f"DECISIONS[{js_str(n['decides'])}] = {var}")
@@ -1145,9 +1488,17 @@ def emit_repeat(n, ir, prompt, phase, panel, over):
 
     L = []
     a = L.append
+    mem = n.get("memory") or {}
     a(f"const {var} = []")
     a(f"const seen_{var} = new Set()")
-    a(f"const seenList_{var} = []")
+    if mem.get("seed"):
+        # Prior keys land in the advisory list only. seen_ stays empty on
+        # purpose: it decides what this run discards, and a run must never
+        # discard a finding because an earlier run knew about it.
+        a(f"const seenList_{var} = "
+          f"((_seedSrc[{js_str(mem['seed'])}] || {{}}).keys || []).slice()")
+    else:
+        a(f"const seenList_{var} = []")
     a(f"let dry_{var} = 0, round_{var} = 0")
     keyexpr = " + '|' + ".join(f"String(it[{js_str(k)}])" for k in keys)
     a(f"const key_{var} = it => {keyexpr}")
@@ -1185,6 +1536,8 @@ def emit_repeat(n, ir, prompt, phase, panel, over):
         a(f"    refute(JSON.stringify(it), `{nid}:r${{round_{var}}}:${{i}}`, "
           f"{js_str(phase)}, {panel}).then(v => ({{ ...it, ...v }}))")
         a("  ))")
+        if mem.get("emit"):
+            a(f"  judged_{var}.filter(Boolean).forEach({lesson_sink(n, need)})")
         a(f"  const kept_{var} = judged_{var}.filter(Boolean)"
           f".filter(v => v.kills < {need})")
     else:
@@ -1211,6 +1564,10 @@ def main():
     ap.add_argument("-o", "--out", help="path to write the compiled .graph.js")
     ap.add_argument("--check", action="store_true", help="validate only")
     ap.add_argument("--contracts", help="contracts directory")
+    ap.add_argument("--runs-dir", default=RUNS_DIR,
+                    help="recorded-runs directory imports resolve against")
+    ap.add_argument("--gates-root", default=".",
+                    help=f"directory holding {GATES}, which prove: tiers resolve against")
     args = ap.parse_args()
 
     here = os.path.dirname(os.path.abspath(__file__))
@@ -1228,7 +1585,7 @@ def main():
         print(f"graph-compile: no contracts found in {contracts_dir}", file=sys.stderr)
         return 1
 
-    findings = validate(ir, contracts)
+    findings = validate(ir, contracts, load_gates(args.gates_root))
     if findings:
         print("graph-compile: IR rejected\n", file=sys.stderr)
         for f in findings:
@@ -1241,13 +1598,24 @@ def main():
     for w in warnings(ir):
         print(f"graph-compile: warning — {w}", file=sys.stderr)
 
+    # Resolved for --check too: a missing decision should fail preflight,
+    # not the emission the preflight was supposed to clear.
+    resolved, rfindings = resolve_imports(ir, contracts, args.runs_dir)
+    if rfindings:
+        print("graph-compile: imports unresolved\n", file=sys.stderr)
+        for f in rfindings:
+            print(f"  - {f}", file=sys.stderr)
+        return 1
+
     if args.check:
+        imported = (f", {len(resolved)} imported decision(s) resolved"
+                    if resolved else "")
         print(f"graph-compile: IR valid — {len(ir['nodes'])} node(s), "
               f"{planned} planned agent call(s), budget.maxNodes="
-              f"{(ir.get('budget') or {}).get('maxNodes')}")
+              f"{(ir.get('budget') or {}).get('maxNodes')}{imported}")
         return 0
 
-    js = emit(ir, contracts)
+    js = emit(ir, contracts, resolved)
     if args.out:
         os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
         with open(args.out, "w", encoding="utf-8", newline="\n") as fh:
