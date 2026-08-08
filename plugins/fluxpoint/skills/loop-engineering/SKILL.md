@@ -97,7 +97,7 @@ A prover is the best thing that can sit behind this harness: `aiken check`,
 looks — every prover ships a way to discharge an obligation without proving
 it, and an agent told to "make it pass" will find it.
 
-Three rules, in order of how often they are broken:
+Four rules, in order of how often they are broken:
 
 1. **The prover runs in `--full`, not only in `--changed`.** Per-file
    checking on edit is feedback; the gate that decides done must invoke the
@@ -128,7 +128,23 @@ Three rules, in order of how often they are broken:
    cannot produce the interesting case, or a `fail` test that trips an
    earlier guard than the one it is named for all leave the counts
    untouched, which is why rule 3 exists.
-3. **Green is not stronger.** `/fluxpoint:proof-audit` runs the ratchet and
+3. **A counterexample is evidence — keep it.** The shrunk failing input a
+   property test produces is the most reusable thing a prover makes, and it
+   lives in a log the next command overwrites. In an Aiken repo the
+   scaffolded harness captures `aiken check`'s JSON (there is no `--json`
+   flag: it emits JSON whenever stdout is not a TTY) and `scripts/cex.py`
+   records each failure to the committed `.fluxpoint-cex.jsonl`. Pin one
+   with `cex.py --pin <cexId> --file <path> --test-name <name>` once you
+   have written a real regression test; the pin is refused unless the
+   recorded value is physically in that test's body, on token boundaries,
+   outside comments and strings, in a test that is neither `fail`-annotated
+   nor hollow. `--check` then fails if a pinned counterexample loses its
+   test. Releasing one costs a `--reason` and a Decisions row naming the
+   cexId — the same price spec-guard charges to forgive an obligation.
+   What this does not yet claim: the pinned test is recorded as *carrying*
+   the counterexample, not re-run against the un-fixed code to prove it
+   would have caught it.
+4. **Green is not stronger.** `/fluxpoint:proof-audit` runs the ratchet and
    then the `proof-auditor` agent, which looks for what a count cannot see:
    a theorem whose statement got weaker, a property proved about an
    unreachable state, an Aiken `test` that cannot fail, a validator with no

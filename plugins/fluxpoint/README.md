@@ -25,7 +25,9 @@ does.
   `exec-attest.sh`, `attest.py` (hook-minted exit codes for declared
   gates); `memory.py` (lessons a sweep leaves for the next one);
   `proof-guard.py` (proof-strength ratchet); `spec-guard.py` (statement
-  ratchet — what is being proved, not just how); `plutus-budget.py` (on-chain
+  ratchet — what is being proved, not just how); `cex.py` (counterexample
+  ledger: a prover's shrunk failing input, pinned to a regression);
+  `plutus-budget.py` (on-chain
   size and execution-unit limits); `pair-guard.py` (relation gate over
   declared artifact pairs); `ledger.py` (once-only guard for
   irreversible nodes); `release.py`, `inbox.py`, `wake-check.sh`
@@ -50,7 +52,9 @@ does.
   `security-test.py` (codegen injection and red-team regressions),
   `migrate-test.sh` (migration against real pre-1.0 fixtures),
   `proof-guard-test.sh` (the ratchet, per prover), `spec-guard-test.sh`
-  (the statement ratchet and its false-positive boundary), `budget-test.sh`
+  (the statement ratchet and its false-positive boundary), `cex-test.sh`
+  (the counterexample ledger and every way of appearing to pin without
+  pinning, executed), `budget-test.sh`
   (on-chain limits), `ledger-test.py` (the once-only guard, executed
   rather than grepped), `attest-test.sh` (execution attestation and its
   laundering cases, executed), `memory-test.py` (lessons across runs,

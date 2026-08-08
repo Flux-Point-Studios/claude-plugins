@@ -171,7 +171,54 @@ panels stop re-litigating what earlier panels killed. Seeds are advisory
 `--since <git-rev>` drops lessons older than the last touch of the files
 they name, so a stale kill cannot hide a regression.
 
-**3b. Counterexamples: `cex.jsonl`.** `cex.py --ingest` parses prover
+**3b. Counterexamples: `.fluxpoint-cex.jsonl` — shipped in slice 5.**
+Research settled the parser question outright: `aiken check` has no `--json`
+flag because it emits structured JSON whenever stdout is not a TTY, sending
+diagnostics to stderr — so the harness captures it with a plain redirect and
+nothing parses a terminal box. (The published `--show-json-schema` is wrong
+in two ways that break a schema-driven parser: it declares a `kind`
+discriminator the binary never writes, and names the array `test` where real
+output says `tests`. Kinds are told apart by field presence.)
+
+Four corrections to the sketch below, each from an adversarial pass and each
+now pinned by tests:
+
+- **The store is `.fluxpoint-cex.jsonl` at the repo root, not under
+  `.claude/fluxpoint/`.** That directory is gitignored by this plugin's own
+  installer, so a ratchet placed there exists only on the machine that found
+  the bug — CI and every teammate would take the dormant path and report
+  green. Every other ratchet (`.fluxpoint-proof-baseline.json`,
+  `.fluxpoint-pairs.json`, `.fluxpoint-gates.json`) is already at root; only
+  ephemeral run state belongs under `.claude/`.
+- **A pin cannot be generated, so it is verified instead.** The JSON carries
+  the counterexample but not the test's parameter type or the predicate it
+  broke, so a generated `.ak` would be a guess — and a wrong guess drops a
+  non-compiling file into a tree that was merely red. The agent writes the
+  test; `cex.py` refuses to record it unless the recorded literals are in
+  *that test's own body*, in order, on token boundaries, outside comments
+  and `@"..."` strings, in a test that is neither `fail`-annotated (which
+  inverts the oracle: it passes because the bug is unfixed) nor hollow (bare
+  boolean, self-comparison, or a value bound then ignored). Whole-file
+  containment would have been vacuous for the modal counterexample — `0`,
+  `True`, `[]`.
+- **Containment is over literal leaves, not the whole string.** Opaque types
+  render as something unwritable: `Dict([(#"ab", True)])` must be built with
+  `dict.from_list(...)`, so demanding the word `Dict` would make a
+  legitimate pin impossible. The data inside it is still required.
+- **The harness fixes the seed** (`--seed "${FPL_AIKEN_SEED:-1}"`). Aiken
+  draws a random u32 per run, so the same bug shrinks to a different value
+  each time and dedupe would never fire.
+
+Also fixed here, found while wiring: `[ -n "$x" ] && cmd` as the **last**
+statement of a function returns 1 under `set -e`, so the shipped template's
+final pair-guard line failed `--full` outright in any repo without the
+plugin installed. Converted to an `if`.
+
+Not yet claimed, and named in the docstring: a pinned test is recorded as
+*carrying* the counterexample, not re-run against the un-fixed code to prove
+it would have caught it. That is why `signature` is already in the schema.
+
+The original design, for reference. `cex.py --ingest` parses prover
 output tee'd from the harness (aiken's shrunk counterexample block first;
 Kani traces and Apalache ITF later — parser drift is a loud INGEST-FAILED
 inbox row, never a silent drop). `--pin <id>` generates a concrete
@@ -323,7 +370,7 @@ existing harness and each is independently shippable.
 | 2 | `exec-attest.sh` + `.fluxpoint-gates.json` + record-run cross-check in warn mode | **shipped** |
 | 3 | `memory.py` + record-run filing of findings/objections + `memory.seed` frontier seeding | **shipped** |
 | 4 | `spec-guard.py` for Aiken + Dafny statements, wired into `templates/harness.sh --full` | **shipped** |
-| 5 | `cex.py --ingest/--pin/--check` for `aiken check` output | next |
+| 5 | `cex.py --ingest/--pin/--check` for `aiken check` output | **shipped** |
 | 6 | `evidence.py --mint` + `WORK_PROMPT.md` requiring minted rows for harness-checkable claims | |
 | 7 | Stop-gate branch-point dirtiness + baseline/trust-base modified-contract warnings | |
 | 8 | `decision.py` + PreCompact hook (distill gate behind `FPL_DISTILL=1`) | |

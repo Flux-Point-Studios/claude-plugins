@@ -65,6 +65,11 @@ step; do not stop at copying files.
    not parse yet, so an unarmed corner never reads as a covered one.
    Confirm `harness.sh --full` actually invokes the prover; per-file
    checking on edit is not a Definition-of-Done gate.
+   For Aiken repos the scaffolded harness also captures `aiken check`'s
+   JSON and records any counterexample it finds to `.fluxpoint-cex.jsonl`.
+   That file and `.fluxpoint-cex/` are committed artifacts like the
+   baselines — a ratchet only anyone else can see is one that lives in the
+   tree, so do not add them to `.gitignore`.
 9. Declare this repo's gates so their exit codes stop being self-reported.
    Write `.fluxpoint-gates.json` naming each command whose verdict decides
    something — at minimum the harness — exactly as it is invoked:
