@@ -138,6 +138,57 @@ function loadManifests(root, excludeDirs, problems) {
   return repos;
 }
 
+// ---- deliverables ledger (deliverables.json beside — or without — substrate.json) ----
+// Task boards and scratchpads that hold "built but not yet sent" state do not
+// survive an assistant's context compaction; a file in the repo does. Any entry
+// with a builtAt and no sentAt is an open obligation, surfaced at every session
+// start until someone records the send.
+function fmtAge(ms) {
+  const h = Math.round(ms / 3600000);
+  if (h < 1) return "under an hour";
+  if (h < 48) return `${h}h`;
+  return `${Math.round(h / 24)}d`;
+}
+
+function deliverableAlarms(root, excludeDirs, problems) {
+  const alarms = [];
+  for (const entry of fs.readdirSync(root, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+    if (!entry.isDirectory() || excludeDirs.has(entry.name)) continue;
+    const df = path.join(root, entry.name, "deliverables.json");
+    if (!fs.existsSync(df)) continue;
+    let parsed;
+    try {
+      parsed = JSON.parse(fs.readFileSync(df, "utf8"));
+    } catch (e) {
+      problems.push(`unreadable ledger: ${clean(entry.name)}/deliverables.json (${clean(e.message)})`);
+      continue;
+    }
+    const list = parsed && typeof parsed === "object" && !Array.isArray(parsed) && Array.isArray(parsed.deliverables)
+      ? parsed.deliverables : null;
+    if (!list) {
+      problems.push(`invalid ledger: ${clean(entry.name)}/deliverables.json needs a "deliverables" array`);
+      continue;
+    }
+    for (const d of list) {
+      if (!d || typeof d !== "object" || !isStr(d.id)) {
+        problems.push(`invalid deliverable in ${clean(entry.name)}: each needs a string "id"`);
+        continue;
+      }
+      if (isStr(d.sentAt) && d.sentAt.trim()) continue; // sent — the obligation is closed
+      const built = isStr(d.builtAt) ? Date.parse(d.builtAt) : NaN;
+      if (Number.isNaN(built)) {
+        problems.push(`invalid deliverable ${clean(d.id)} in ${clean(entry.name)}: "builtAt" must be a parseable date`);
+        continue;
+      }
+      // One-line alarms are injected session context — cap every field hard.
+      const who = isStr(d.recipient) && d.recipient.trim() ? clean(d.recipient, 80) : "unnamed recipient";
+      const what = isStr(d.artifact) && d.artifact.trim() ? ` (${clean(d.artifact, 120)})` : "";
+      alarms.push(`UNSENT deliverable: ${clean(entry.name, 80)}/${clean(d.id, 80)} for ${who} — built ${fmtAge(Date.now() - built)} ago${what}`);
+    }
+  }
+  return alarms;
+}
+
 function buildGraph(repos, problems) {
   const nodes = new Map(); // id -> { ...primitive, repo }
   for (const r of repos) {
@@ -352,6 +403,7 @@ function main() {
   const repos = loadManifests(root, config.excludeDirs, problems);
   const graph = buildGraph(repos, problems);
   const { alarms, notes } = stalenessAlarms(repos, root, config);
+  alarms.push(...deliverableAlarms(root, config.excludeDirs, problems));
   if (mode === "emit") {
     writeSubstrateMd(out, emitMarkdown(repos, graph, alarms, notes, problems));
     console.log(`wrote ${out}: ${repos.length} repos, ${graph.nodes.size} primitives, ${graph.edges.length} edges, ${graph.orphans.length} orphans, ${graph.hubs.length} hubs, ${alarms.length} alarms`);

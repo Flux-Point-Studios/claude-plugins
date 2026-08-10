@@ -1,0 +1,106 @@
+// The deliverables ledger: deliverables.json beside (or without) substrate.json.
+// Task boards and scratchpads that hold "built but not yet sent" state do not
+// survive context compaction; this file does, and --check surfaces every open
+// obligation at session start.
+import test from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import { makeWorkspace, writeManifest, run, prim } from "./helpers.mjs";
+
+const HOUR = 3600 * 1000;
+
+function has(text, needle) {
+  assert.ok(text.includes(needle), `expected output to contain:\n${needle}\n--- got ---\n${text}`);
+}
+
+function writeLedger(root, dir, ledger) {
+  const d = path.join(root, dir);
+  fs.mkdirSync(d, { recursive: true });
+  const f = path.join(d, "deliverables.json");
+  fs.writeFileSync(f, JSON.stringify(ledger, null, 2) + "\n");
+  return f;
+}
+
+test("an unsent deliverable alarms at --check, sent ones stay silent", () => {
+  const ws = makeWorkspace();
+  writeManifest(ws, "repoA", { repo: "repoA", primitives: [prim("a-core")] });
+  writeLedger(ws, "repoA", {
+    deliverables: [
+      { id: "vendor-bundle", recipient: "Derek", artifact: "bundle-2026-08-10.zip",
+        builtAt: new Date(Date.now() - 26 * HOUR).toISOString() },
+      { id: "sarah-reply", recipient: "Sarah",
+        builtAt: new Date(Date.now() - 30 * HOUR).toISOString(),
+        sentAt: new Date(Date.now() - 29 * HOUR).toISOString() },
+    ],
+  });
+  const res = run(["--check", "--root", ws]);
+  assert.equal(res.status, 0);
+  has(res.stdout, "ALARM: UNSENT deliverable: repoA/vendor-bundle for Derek — built 26h ago (bundle-2026-08-10.zip)");
+  assert.ok(!res.stdout.includes("sarah-reply"), `sent deliverables are not obligations:\n${res.stdout}`);
+});
+
+test("a ledger alarms even in a repo with no substrate manifest", () => {
+  const ws = makeWorkspace();
+  writeLedger(ws, "notes-only", {
+    deliverables: [{ id: "exec-brief", recipient: "Andrew",
+      builtAt: new Date(Date.now() - 72 * HOUR).toISOString() }],
+  });
+  const res = run(["--check", "--root", ws]);
+  assert.equal(res.status, 0);
+  has(res.stdout, "ALARM: UNSENT deliverable: notes-only/exec-brief for Andrew — built 3d ago");
+});
+
+test("excluded dirs are never scanned for ledgers", () => {
+  const ws = makeWorkspace();
+  writeLedger(ws, "node_modules", {
+    deliverables: [{ id: "phantom", recipient: "nobody", builtAt: new Date().toISOString() }],
+  });
+  const res = run(["--check", "--root", ws]);
+  assert.equal(res.status, 0);
+  assert.ok(!res.stdout.includes("phantom"), `excludeDirs must apply to ledgers too:\n${res.stdout}`);
+});
+
+test("malformed ledgers and undated entries are problems, never crashes or alarms", () => {
+  const ws = makeWorkspace();
+  const d = path.join(ws, "badrepo");
+  fs.mkdirSync(d);
+  fs.writeFileSync(path.join(d, "deliverables.json"), "not json at all\n");
+  writeLedger(ws, "shaperepo", { deliverables: [{ id: "undated", recipient: "X" }] });
+  writeLedger(ws, "arrayrepo", [{ id: "bare-array" }]);
+  const res = run(["--check", "--root", ws]);
+  assert.equal(res.status, 0);
+  has(res.stdout, "PROBLEM: unreadable ledger: badrepo/deliverables.json");
+  has(res.stdout, 'PROBLEM: invalid deliverable undated in shaperepo: "builtAt" must be a parseable date');
+  has(res.stdout, 'PROBLEM: invalid ledger: arrayrepo/deliverables.json needs a "deliverables" array');
+  assert.ok(!res.stdout.includes("ALARM:"), `malformed entries must not alarm:\n${res.stdout}`);
+});
+
+test("ledger strings are sanitized and capped — the output is injected session context", () => {
+  const ws = makeWorkspace();
+  writeLedger(ws, "hostile", {
+    deliverables: [{
+      id: "evil\u001b[31mred\u0007" + "x".repeat(500),
+      recipient: "Bob\u0000\u001b[2J",
+      builtAt: new Date(Date.now() - 2 * HOUR).toISOString(),
+    }],
+  });
+  const res = run(["--check", "--root", ws]);
+  assert.equal(res.status, 0);
+  assert.ok(!res.stdout.includes("\u001b"), "no escape bytes reach the session context");
+  assert.ok(!res.stdout.includes("\u0007"), "no bell bytes either");
+  has(res.stdout, "…"); // the 500-char id was capped
+});
+
+test("emit writes unsent deliverables into SUBSTRATE.md's alarm section", () => {
+  const ws = makeWorkspace();
+  writeManifest(ws, "repoB", { repo: "repoB", primitives: [prim("b-core")] });
+  writeLedger(ws, "repoB", {
+    deliverables: [{ id: "weekly-report", recipient: "Nick",
+      builtAt: new Date(Date.now() - 5 * HOUR).toISOString() }],
+  });
+  const res = run(["--emit", "--root", ws]);
+  assert.equal(res.status, 0);
+  const md = fs.readFileSync(path.join(ws, "SUBSTRATE.md"), "utf8");
+  has(md, "UNSENT deliverable: repoB/weekly-report for Nick");
+});
