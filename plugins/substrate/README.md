@@ -80,6 +80,36 @@ Optional `substrate.config.json` at the workspace root:
 - **git missing from PATH**: one note, staleness skipped for git repos —
   never per-repo error spam. `--check` exits 0 regardless of what it finds.
 
+## Deliverables ledger
+
+Task boards and scratchpads that hold "built but not yet sent" state do not
+survive an assistant's context compaction; a file in the repo does. Any repo
+under the root — with or without a `substrate.json` — may carry a
+`deliverables.json`:
+
+```json
+{
+  "deliverables": [
+    {
+      "id": "vendor-bundle-round-3",
+      "recipient": "Derek",
+      "artifact": "sscl-wizard-bundle-2026-08-10.zip",
+      "builtAt": "2026-08-10T22:00:00Z",
+      "sentAt": null
+    }
+  ]
+}
+```
+
+Every entry with a `builtAt` and no `sentAt` is an open obligation:
+`--check` prints `ALARM: UNSENT deliverable: <repo>/<id> for <recipient> —
+built <age> ago (<artifact>)` at session start, every session, until someone
+records the send by setting `sentAt`. Create the entry when the build
+**starts**, not when it finishes — the half-built state is exactly what a
+compaction orphans. Malformed ledgers and undated entries surface as
+problems, never alarms and never crashes; all fields are sanitized and
+hard-capped before they reach the injected session context.
+
 ## Honest limitations
 
 - Discovery is exactly one level under the root: `root/repo/substrate.json`.

@@ -1,7 +1,7 @@
 {
   "name": "substrate",
-  "version": "1.0.0",
-  "description": "Multi-repo primitive registry: each repo declares its reusable primitives in a substrate.json manifest, a zero-dependency generator compiles them into one SUBSTRATE.md graph — nodes, edges, orphans as dormant value, hubs to harden first — and staleness alarms surface at every session start so new work plugs into what exists instead of running parallel to it.",
+  "version": "1.1.0",
+  "description": "Multi-repo primitive registry: each repo declares its reusable primitives in a substrate.json manifest, a zero-dependency generator compiles them into one SUBSTRATE.md graph \u2014 nodes, edges, orphans as dormant value, hubs to harden first \u2014 and staleness alarms surface at every session start so new work plugs into what exists instead of running parallel to it. A per-repo deliverables.json ledger rides the same check: anything built but not yet sent alarms at session start until the send is recorded.",
   "author": {
     "name": "Flux Point Studios"
   }
