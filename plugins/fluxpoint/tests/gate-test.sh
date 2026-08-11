@@ -189,3 +189,41 @@ else
 ' "a changed tree re-arms the yielded gate" "stuck at $again"; fail=$((fail+1))
 fi
 unset FPL_MAX_BLOCKS
+
+# ---- the gate enforces the contract the REPO names, not a hardcoded --full ----
+# A repo whose --full outgrows the 600s hook ceiling could previously only be
+# rescued by FPL_DISABLE=1, which trades a slow gate for no gate. FPL_HARNESS_ARGS
+# lets it enforce a cheaper contract every stop instead.
+setup 0
+argfile="$ROOT/harness-args"; rm -f "$argfile"
+cat >scripts/harness.sh <<SH
+#!/usr/bin/env bash
+echo "\$@" >>"$argfile"
+exit 0
+SH
+chmod +x scripts/harness.sh
+printf 'print("changed")\n' >>src/app.py
+FPL_HARNESS_ARGS="--changed src/app.py" run_gate >/dev/null
+got="$(cat "$argfile" 2>/dev/null)"
+if [ "$got" = "--changed src/app.py" ]; then
+  printf 'PASS  %-52s -> %s\n' "FPL_HARNESS_ARGS reaches the harness" "$got"; pass=$((pass+1))
+else
+  printf 'FAIL  %-52s -> %s\n' "FPL_HARNESS_ARGS reaches the harness" "${got:-<nothing>}"; fail=$((fail+1))
+fi
+# Unset must still mean --full: this is a widening, not a default change.
+setup 0
+rm -f "$argfile"
+cat >scripts/harness.sh <<SH
+#!/usr/bin/env bash
+echo "\$@" >>"$argfile"
+exit 0
+SH
+chmod +x scripts/harness.sh
+printf 'print("changed again")\n' >>src/app.py
+run_gate >/dev/null
+got="$(cat "$argfile" 2>/dev/null)"
+if [ "$got" = "--full" ]; then
+  printf 'PASS  %-52s -> %s\n' "unset still means --full" "$got"; pass=$((pass+1))
+else
+  printf 'FAIL  %-52s -> %s\n' "unset still means --full" "${got:-<nothing>}"; fail=$((fail+1))
+fi

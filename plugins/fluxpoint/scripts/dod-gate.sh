@@ -46,6 +46,17 @@ state_file="$(fpl_state_file || true)"
 hlog="$sd/full.log"
 yielded="$sd/$sid.yielded"
 
+# WHICH contract the gate enforces is the repo's call, because "full" is not a
+# fixed cost. Measured 2026-08-11: one repo's --full is ~24 minutes against a
+# hook ceiling of 600s that cannot be raised (the hook is killed at 600s
+# whatever FPL_GATE_TIMEOUT says), so the gate could never finish, never
+# disarm, and the only escape was FPL_DISABLE=1 — losing the gate entirely.
+# A cheaper contract enforced every stop beats a perfect one enforced never.
+# Resolved HERE, above the yield guard, because that guard names it too and
+# `set -u` turns a use-before-assign into a crashed gate rather than a warning.
+read -r -a harness_args <<<"${FPL_HARNESS_ARGS:---full}"
+harness_desc="${harness_args[*]}"
+
 # The work file is excluded throughout: this gate writes its own row into it,
 # so counting it would mean every verdict reported a tree one path dirtier
 # than the last — the measurement moving because the measuring happened.
@@ -89,7 +100,7 @@ print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest()[:8])' 2>/dev/null || e
 # into "yielded once, disabled forever".
 guard_sha="$(gate_tree_sha)"
 if [ "$guard_sha" != unknown ] && [ "$(cat "$yielded" 2>/dev/null)" = "$guard_sha" ]; then
-  fpl_json_obj systemMessage "fluxpoint DoD gate: already yielded on this exact tree (${guard_sha}); not re-running the harness until something changes. Run scripts/harness.sh --full yourself to re-establish a verdict."
+  fpl_json_obj systemMessage "fluxpoint DoD gate: already yielded on this exact tree (${guard_sha}); not re-running the harness until something changes. Run scripts/harness.sh ${harness_desc} yourself to re-establish a verdict."
   exit 0
 fi
 # Mark the run as in flight BEFORE starting it. A gate killed mid-run — the
@@ -100,23 +111,23 @@ start_ts="$(date -u +%FT%TZ)"
 printf 'RUNNING %s\n' "$start_ts" >"$sd/last-harness"
 gate_timeout="${FPL_GATE_TIMEOUT:-540}"
 if command -v timeout >/dev/null 2>&1; then
-  timeout "$gate_timeout" bash scripts/harness.sh --full >"$hlog" 2>&1
+  timeout "$gate_timeout" bash scripts/harness.sh "${harness_args[@]}" >"$hlog" 2>&1
   hrc=$?
 else
-  bash scripts/harness.sh --full >"$hlog" 2>&1
+  bash scripts/harness.sh "${harness_args[@]}" >"$hlog" 2>&1
   hrc=$?
 fi
 if [ "$hrc" -eq 124 ] || [ "$hrc" -eq 137 ]; then
   # Not red and not green: nothing was established either way, and saying so
   # is the whole point.
   printf 'TIMEOUT %s\n' "$(date -u +%FT%TZ)" >"$sd/last-harness"
-  findings="harness --full did not finish within ${gate_timeout}s and was killed.${nl}\
+  findings="harness ${harness_desc} did not finish within ${gate_timeout}s and was killed.${nl}\
 This is not a pass and not a failure — nothing was established. Either the${nl}\
 suite got slower than the gate allows or something hung. Run it yourself,${nl}\
 then split it or raise FPL_GATE_TIMEOUT (the hook ceiling is 600s).${nl}\
 Last 40 lines before the kill:${nl}$(tail -n 40 "$hlog")${nl}${nl}"
 elif [ "$hrc" -ne 0 ]; then
-  findings="harness --full RED (last 40 lines):${nl}$(tail -n 40 "$hlog")${nl}${nl}"
+  findings="harness ${harness_desc} RED (last 40 lines):${nl}$(tail -n 40 "$hlog")${nl}${nl}"
 fi
 hy="$(fpl_scan_hygiene | head -n 40)"
 if [ -n "$hy" ]; then
@@ -177,13 +188,13 @@ PY
 # The tree, not just the commit: in loop mode HEAD is the pre-work commit for
 # the whole iteration, so a sha alone cannot tell a verdict about the work
 # from a verdict about the tree before it.
-proof="harness --full exit ${hrc} @${head_sha} tree:${tree_sha} dirty:${dirty_n} log:${log_sha}"
+proof="harness ${harness_desc} exit ${hrc} @${head_sha} tree:${tree_sha} dirty:${dirty_n} log:${log_sha}"
 
 if [ -z "$findings" ]; then
   printf 'PASS %s\n' "$ts" >"$sd/last-harness"
   rm -f "$dirty" "$counter"
   fpl_record_evidence PASS \
-    "Stop-gate DoD: scripts/harness.sh --full green over ${dirty_n} changed path(s), hygiene scan clean" \
+    "Stop-gate DoD: scripts/harness.sh ${harness_desc} green over ${dirty_n} changed path(s), hygiene scan clean" \
     "$proof"
   # This tree passed, so it is what the next verdict should be measured
   # against. Refreshed only on green: a red or timed-out run has not
@@ -207,7 +218,7 @@ if [ "$count" -ge "$max" ]; then
   # correction the agent gets to act on, but a checkpoint is a stop.
   if [ "$hrc" -eq 124 ] || [ "$hrc" -eq 137 ]; then
     fpl_record_evidence TIMEOUT \
-      "Stop-gate DoD: harness --full did not finish within ${gate_timeout}s — nothing was established, neither pass nor failure" \
+      "Stop-gate DoD: harness ${harness_desc} did not finish within ${gate_timeout}s — nothing was established, neither pass nor failure" \
       "$proof"
   else
     fpl_record_evidence FAIL \
@@ -222,5 +233,5 @@ if [ "$count" -ge "$max" ]; then
   exit 0
 fi
 printf '%s\n' "$((count + 1))" >"$counter"
-fpl_json_obj decision block reason "DoD gate red, attempt $((count + 1))/$max. The harness decides done, not the agent. Fix every item below, re-run scripts/harness.sh --full until it exits 0, then stop.${nl}${findings}"
+fpl_json_obj decision block reason "DoD gate red, attempt $((count + 1))/$max. The harness decides done, not the agent. Fix every item below, re-run scripts/harness.sh ${harness_desc} until it exits 0, then stop.${nl}${findings}"
 exit 0
