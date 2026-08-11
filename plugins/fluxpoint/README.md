@@ -47,7 +47,9 @@ does.
   `graph-auditor` (semantic review of a campaign IR), `proof-auditor`
   (did the verification get weaker, not just greener).
 - `skills/` — `loop-engineering` (driver selection, conditions, the gate),
-  `graph-engineering` (escalation rule, primitives, tiers, shapes).
+  `graph-engineering` (escalation rule, primitives, tiers, shapes),
+  `secret-handling` (derive instead of read, so a credential can be worked
+  with rather than denied).
 - `templates/` — `harness.sh` contract, `WORK.md`, `WORK.feature.md`,
   `WORK.discovery.md`, `WORK_PROMPT.md`, `loop.sh`, settings snippet.
 - `tests/` — `compile-test.py` (compiler invariants), `emission-test.py`
