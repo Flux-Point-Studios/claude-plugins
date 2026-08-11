@@ -141,3 +141,51 @@ check "a baseline that is not an ancestor falls back to HEAD" allow "$(run_gate)
 cd /; rm -rf "$ROOT"
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
+
+# ---- a gate that cannot finish must stop RUNNING, not just stop blocking ----
+# Observed 2026-08-11 in a repo whose harness --full takes ~35 min against a
+# 540s ceiling: the gate times out, yields after $max blocks -- and then re-runs
+# the entire suite on EVERY subsequent stop, paying full wall-clock to reach a
+# conclusion it has already abandoned. The operator's only escape was Esc.
+# Yielding is a decision about a tree; it must hold until that tree changes.
+#
+# The run witness lives OUTSIDE the repo on purpose. A counter file inside it
+# is part of `git status`, so writing to it moves the very tree hash the guard
+# compares -- the first draft of this test failed for exactly that reason and
+# the guard was innocent.
+setup 1
+runs="$ROOT/harness-runs"; rm -f "$runs"
+cat >scripts/harness.sh <<SH
+#!/usr/bin/env bash
+echo run >>"$runs"
+exit 1
+SH
+chmod +x scripts/harness.sh
+printf 'print("changed")
+' >>src/app.py
+export FPL_MAX_BLOCKS=1
+run_gate >/dev/null   # attempt 1 of 1 -> block
+run_gate >/dev/null   # count >= max   -> yield, records the tree
+before="$(grep -c . "$runs" 2>/dev/null || echo 0)"
+run_gate >/dev/null   # nothing changed since the yield -> must not run at all
+after="$(grep -c . "$runs" 2>/dev/null || echo 0)"
+if [ "$before" = "$after" ]; then
+  printf 'PASS  %-52s -> %s
+' "yielded gate does not re-run an unchanged tree" "still $after"; pass=$((pass+1))
+else
+  printf 'FAIL  %-52s -> %s
+' "yielded gate does not re-run an unchanged tree" "$before then $after"; fail=$((fail+1))
+fi
+# ...but a real edit must re-arm it, or yielding would disable the gate for good.
+printf 'print("more work")
+' >>src/app.py
+run_gate >/dev/null
+again="$(grep -c . "$runs" 2>/dev/null || echo 0)"
+if [ "$again" -gt "$after" ]; then
+  printf 'PASS  %-52s -> %s
+' "a changed tree re-arms the yielded gate" "$after then $again"; pass=$((pass+1))
+else
+  printf 'FAIL  %-52s -> %s
+' "a changed tree re-arms the yielded gate" "stuck at $again"; fail=$((fail+1))
+fi
+unset FPL_MAX_BLOCKS

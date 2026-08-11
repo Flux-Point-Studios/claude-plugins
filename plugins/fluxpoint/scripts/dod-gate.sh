@@ -44,6 +44,43 @@ nl=$'\n'
 findings=""
 state_file="$(fpl_state_file || true)"
 hlog="$sd/full.log"
+yielded="$sd/$sid.yielded"
+
+head_sha="$(git rev-parse --short HEAD 2>/dev/null || echo none)"
+# The work file is excluded throughout: this gate writes its own row into it,
+# so counting it would mean every verdict reported a tree one path dirtier
+# than the last — the measurement moving because the measuring happened.
+work_file="$(fpl_state_file || true)"
+if [ -n "$work_file" ]; then
+  status_out="$(git status --porcelain -- . ":!$work_file" 2>/dev/null)"
+  diff_out="$(git diff HEAD -- . ":!$work_file" 2>/dev/null)"
+else
+  status_out="$(git status --porcelain 2>/dev/null)"
+  diff_out="$(git diff HEAD 2>/dev/null)"
+fi
+dirty_n="$(printf '%s' "$status_out" | grep -c . | tr -d ' ')"
+# HEAD alone cannot identify what was tested: in loop mode it is the
+# pre-work commit for the whole iteration, so a verdict taken before the
+# first edit and one taken after the last carry the same sha. Hashing the
+# working tree makes the row name the thing the harness actually ran over.
+# Computed BEFORE the run, not after, because the guard below needs to know
+# which tree it is about to spend the harness on.
+tree_sha="$(printf '%s\n%s' "$status_out" "$diff_out" | "$FPL_PY" -c '
+import hashlib, sys
+print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest()[:8])' 2>/dev/null || echo unknown)"
+
+# Yielding is a decision about a TREE, and it has to hold until that tree
+# changes. Without this the gate stops blocking after $max but keeps RUNNING:
+# a harness that cannot finish inside the hook ceiling is re-run in full on
+# every subsequent stop, paying the whole wall-clock to reach a conclusion
+# already abandoned. Measured 2026-08-11 against a 35-minute suite on a 540s
+# ceiling — every turn cost the operator nine minutes and an Esc.
+# Any real edit moves tree_sha, which re-arms the gate, so this cannot decay
+# into "yielded once, disabled forever".
+if [ "$tree_sha" != unknown ] && [ "$(cat "$yielded" 2>/dev/null)" = "$tree_sha" ]; then
+  fpl_json_obj systemMessage "fluxpoint DoD gate: already yielded on this exact tree (${tree_sha}); not re-running the harness until something changes. Run scripts/harness.sh --full yourself to re-establish a verdict."
+  exit 0
+fi
 # Mark the run as in flight BEFORE starting it. A gate killed mid-run — the
 # hook ceiling is 600s, and aiken check plus a few thousand tests can reach
 # it — used to leave the previous PASS sitting there to be read as current.
@@ -112,26 +149,6 @@ fpl_record_evidence() { # outcome, claim, proof
     --outcome "$1" --claim "$2" --proof "$3" >/dev/null 2>&1 || true
 }
 
-head_sha="$(git rev-parse --short HEAD 2>/dev/null || echo none)"
-# The work file is excluded throughout: this gate writes its own row into it,
-# so counting it would mean every verdict reported a tree one path dirtier
-# than the last — the measurement moving because the measuring happened.
-work_file="$(fpl_state_file || true)"
-if [ -n "$work_file" ]; then
-  status_out="$(git status --porcelain -- . ":!$work_file" 2>/dev/null)"
-  diff_out="$(git diff HEAD -- . ":!$work_file" 2>/dev/null)"
-else
-  status_out="$(git status --porcelain 2>/dev/null)"
-  diff_out="$(git diff HEAD 2>/dev/null)"
-fi
-dirty_n="$(printf '%s' "$status_out" | grep -c . | tr -d ' ')"
-# HEAD alone cannot identify what was tested: in loop mode it is the
-# pre-work commit for the whole iteration, so a verdict taken before the
-# first edit and one taken after the last carry the same sha. Hashing the
-# working tree makes the row name the thing the harness actually ran over.
-tree_sha="$(printf '%s\n%s' "$status_out" "$diff_out" | "$FPL_PY" -c '
-import hashlib, sys
-print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest()[:8])' 2>/dev/null || echo unknown)"
 log_sha="$("$FPL_PY" - "$hlog" <<'PY' 2>/dev/null || echo unknown
 import hashlib, sys
 try:
@@ -180,6 +197,10 @@ if [ "$count" -ge "$max" ]; then
       "Stop-gate DoD: still red after ${max} blocked stops; the task is NOT done" \
       "$proof"
   fi
+  # Record WHICH tree was abandoned, so the guard at the top can skip a
+  # re-run that cannot change this outcome. Not the counter: the counter says
+  # how many times we blocked, the tree says what we blocked over.
+  printf '%s\n' "$tree_sha" >"$yielded"
   fpl_json_obj systemMessage "fluxpoint DoD gate: still red after $max blocked stops. Checkpoint: the task is NOT done.${nl}${findings}"
   exit 0
 fi
