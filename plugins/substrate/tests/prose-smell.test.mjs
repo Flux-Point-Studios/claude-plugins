@@ -133,6 +133,57 @@ test("hook mode ignores non-prose files and generated registries", () => {
   assert.equal(runHook({ file_path: path.join(dir, "gone.md") }).status, 0);
 });
 
+test("match-dense files stay inside the hook budget (the quadratic is dead)", () => {
+  // Review bait: ~40k matches once took 20s via per-match slice-and-split
+  // line counting. With O(n) offsets + binary search this finishes in well
+  // under the 15s hook budget; the bound here is generous only for CI noise.
+  const dense = Array(40_000).fill("This is more than just a line.").join("\n");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "smell-perf-"));
+  const file = path.join(dir, "dense.md");
+  fs.writeFileSync(file, dense);
+  const t0 = Date.now();
+  const r = spawnSync("node", [SCRIPT, file], { encoding: "utf8", timeout: 14_000 });
+  const elapsed = Date.now() - t0;
+  assert.equal(r.status, 2, `expected HIGH findings, got ${r.status}: ${r.stderr.slice(0, 200)}`);
+  assert.ok(elapsed < 10_000, `scan took ${elapsed}ms — the quadratic is back`);
+});
+
+test("finding floods are capped, not injected wholesale", () => {
+  const flood = Array(500).fill("This is more than just noise.").join("\n");
+  const r = runOnText(flood);
+  assert.equal(r.status, 2);
+  const lines = r.stderr.trim().split("\n");
+  assert.ok(lines.length < 40, `expected capped output, got ${lines.length} lines`);
+  assert.match(r.stderr, /more HIGH suppressed/);
+});
+
+test("a non-string file_path in hook JSON exits 0 silently", () => {
+  for (const fp of [123, { a: 1 }, ["a.md"], null, true]) {
+    const r = runHook({ file_path: fp });
+    assert.equal(r.status, 0, `file_path=${JSON.stringify(fp)} must exit 0`);
+    assert.equal(r.stderr.trim(), "", `no stack trace for ${JSON.stringify(fp)}`);
+  }
+});
+
+test("the CLI path reports bad arguments in one line, never a stack trace", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "smell-cli-"));
+  const missing = path.join(dir, "missing.md");
+  const r = spawnSync("node", [SCRIPT, missing, dir], { encoding: "utf8" });
+  assert.equal(r.status, 0);
+  assert.match(r.stderr, /not a readable file/);
+  assert.doesNotMatch(r.stderr, /at .*\(node:/);
+});
+
+test("oversized files are skipped, not scanned", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "smell-big-"));
+  const file = path.join(dir, "huge.md");
+  fs.writeFileSync(file,
+    "This isn't just about size — it's about budget.\n".padEnd(2_100_000, "x"));
+  const r = runHook({ file_path: file });
+  assert.equal(r.status, 0);
+  assert.equal(r.stderr.trim(), "");
+});
+
 test("clean prose through the hook is silent", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "smell-hook-"));
   const file = path.join(dir, "note.md");

@@ -60,6 +60,9 @@ const MEDIUM_RULES = [
 
 const EMDASH_PER_100_WORDS = 1.5;
 const EMDASH_MIN_COUNT = 4;
+// Authored prose is small; anything bigger is a generated report or data
+// masquerading as prose, and scanning it would cost memory and hook budget.
+const MAX_BYTES = 2_000_000;
 
 /** Blank out fenced code blocks, preserving line numbers. */
 function stripFences(text) {
@@ -76,24 +79,42 @@ function stripFences(text) {
     .join("\n");
 }
 
-function lineOf(text, index) {
-  return text.slice(0, index).split("\n").length;
+// O(n) once, then O(log n) per match — the naive slice-and-split counter is
+// O(index) per match, which goes quadratic on match-dense files and blew the
+// hook budget in review (66s on a 1.9MB bait file).
+function newlineOffsets(text) {
+  const offsets = [];
+  for (let i = text.indexOf("\n"); i !== -1; i = text.indexOf("\n", i + 1)) {
+    offsets.push(i);
+  }
+  return offsets;
+}
+
+function lineOf(offsets, index) {
+  let lo = 0, hi = offsets.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (offsets[mid] < index) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo + 1;
 }
 
 export function scan(text) {
   const prose = stripFences(text);
+  const offsets = newlineOffsets(prose);
   const findings = [];
   for (const { rule, re } of HIGH_RULES) {
     re.lastIndex = 0;
     for (const m of prose.matchAll(re)) {
-      findings.push({ severity: "high", rule, line: lineOf(prose, m.index),
+      findings.push({ severity: "high", rule, line: lineOf(offsets, m.index),
                       excerpt: m[0].slice(0, 80).trim() });
     }
   }
   for (const { rule, re } of MEDIUM_RULES) {
     re.lastIndex = 0;
     for (const m of prose.matchAll(re)) {
-      findings.push({ severity: "medium", rule, line: lineOf(prose, m.index),
+      findings.push({ severity: "medium", rule, line: lineOf(offsets, m.index),
                       excerpt: m[0].slice(0, 80).trim() });
     }
   }
@@ -110,14 +131,24 @@ export function scan(text) {
   return findings;
 }
 
+// Flood cap, matching the registry's own convention: a wall of findings is
+// suppressed, never injected wholesale into the transcript.
+const MAX_REPORTED = 30;
+
 function report(file, findings) {
   const highs = findings.filter((f) => f.severity === "high");
   const meds = findings.filter((f) => f.severity === "medium");
-  for (const f of meds) {
+  for (const f of meds.slice(0, MAX_REPORTED)) {
     process.stdout.write(`${file}:${f.line} [medium] ${f.rule} — "${f.excerpt}"\n`);
   }
-  for (const f of highs) {
+  if (meds.length > MAX_REPORTED) {
+    process.stdout.write(`${file}: … ${meds.length - MAX_REPORTED} more medium suppressed\n`);
+  }
+  for (const f of highs.slice(0, MAX_REPORTED)) {
     process.stderr.write(`${file}:${f.line} [HIGH] ${f.rule} — "${f.excerpt}"\n`);
+  }
+  if (highs.length > MAX_REPORTED) {
+    process.stderr.write(`${file}: … ${highs.length - MAX_REPORTED} more HIGH suppressed\n`);
   }
   return highs.length;
 }
@@ -131,6 +162,7 @@ function isProseFile(fp) {
 }
 
 function scanFile(fp) {
+  if (fs.statSync(fp).size > MAX_BYTES) return 0;
   return report(fp, scan(fs.readFileSync(fp, "utf8")));
 }
 
@@ -144,7 +176,7 @@ function main() {
     try { raw = fs.readFileSync(0, "utf8"); } catch { process.exit(0); }
     let fp = "";
     try { fp = (JSON.parse(raw).tool_input || {}).file_path || ""; } catch { process.exit(0); }
-    if (!isProseFile(fp) || !fs.existsSync(fp)) process.exit(0);
+    if (typeof fp !== "string" || !isProseFile(fp) || !fs.existsSync(fp)) process.exit(0);
     let highs = 0;
     try { highs = scanFile(fp); } catch { process.exit(0); }
     if (highs > 0) {
@@ -162,7 +194,19 @@ function main() {
     process.exit(0);
   }
   let highs = 0;
-  for (const f of files) highs += scanFile(f);
+  for (const f of files) {
+    // The CLI path takes user-typed arguments: a typo'd or directory path
+    // gets one honest line, never a stack trace.
+    try {
+      if (!fs.existsSync(f) || !fs.statSync(f).isFile()) {
+        process.stderr.write(`prose-smell: not a readable file: ${f}\n`);
+        continue;
+      }
+      highs += scanFile(f);
+    } catch (e) {
+      process.stderr.write(`prose-smell: could not scan ${f}: ${e.code || e.message}\n`);
+    }
+  }
   process.exit(highs > 0 ? 2 : 0);
 }
 
