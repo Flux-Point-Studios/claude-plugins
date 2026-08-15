@@ -57,6 +57,7 @@ the root:
 | `primitives[].paths` | string[] | Repo-relative files or directories that are the primitive. |
 | `primitives[].consumes` | string[] | Ids of primitives this one builds on; `[]` for none. Unknown ids are a manifest problem. |
 | `primitives[].status` | string | e.g. `live`, `core-only`. |
+| `primitives[].terminal` | boolean, optional | A delivered surface a human uses directly. Terminal primitives are listed in their own section and excluded from the orphan list, because zero in-edges is their correct end state rather than dormant value. |
 
 A repo without a manifest is silently ignored: by doctrine, that absence
 marks demos and pitch artifacts as outside the substrate.
@@ -113,6 +114,36 @@ records the send by setting `sentAt`. Create the entry when the build
 compaction orphans. Malformed ledgers and undated entries surface as
 problems, never alarms and never crashes; all fields are sanitized and
 hard-capped before they reach the injected session context.
+
+## The import-scan lint
+
+A graph assembled from hand-written JSON that nobody validates is a map that
+lies, and the sweep-before-build doctrine makes that map the mandatory first
+step. So the emit verifies itself: for every primitive, it walks the declared
+paths, reads each `.js` / `.mjs` / `.cjs` / `.ts` / `.py` file with comment and
+docstring bodies blanked out, resolves the relative and intra-repo imports it
+finds (`import`, `import()`, `require()`, `export … from`, and Python's
+relative, sibling and dotted-package forms), maps each resolved file back to
+its owning primitive, and reports a problem when a real import crosses a
+primitive boundary that no `consumes` edge declares:
+
+```
+problem: import lint: tool -> core undeclared (js/src/tool.mjs:1 imports ./core.mjs)
+```
+
+`--emit` exits 1 on those, so a manifest edit and its emit ride the same
+commit and a stale graph blocks instead of regenerating quietly. One line per
+`from -> to` pair, naming the first site, so closing the list is mechanical.
+
+Ownership rules: a declared directory owns the code files under it, the most
+specific declaration wins (a primitive that names one file keeps it even when
+a sibling declares the whole directory), and an import into a file no
+primitive declares is repo-internal and never a miss.
+
+What the lint cannot see — and what therefore stays hand-declared: HTTP seams
+between processes, Apex and other non-scanned languages, cross-repo imports,
+and dependencies expressed as file handoffs. A green lint means no import
+contradicts the manifest, never that the manifest is complete.
 
 ## Honest limitations
 

@@ -21,6 +21,8 @@ import path from "node:path";
 const DEFAULT_EXCLUDE_DIRS = ["node_modules", ".git", "dist", "build", "out", "coverage", "__pycache__"];
 const WALK_MAX_DEPTH = 6;
 const WALK_MAX_ENTRIES = 5000;
+const IMPORT_EXTS = new Set([".js", ".mjs", ".cjs", ".ts", ".py"]);
+const JS_RESOLVE_SUFFIXES = ["", ".js", ".mjs", ".cjs", ".ts", "/index.js", "/index.mjs", "/index.cjs", "/index.ts"];
 const GIT_MAX_BUFFER = 64 * 1024 * 1024;
 const STRING_CAP = 2000; // one manifest string is one line/cell; long is fine, unbounded is not
 const LIST_CAP = 50; // printed problem/alarm/note lines before "N more suppressed"
@@ -104,6 +106,10 @@ function validateManifest(parsed, dir, problems) {
       problems.push(`invalid primitive ${clean(p.id)} in ${repo}: kind/status/desc must be strings, paths/consumes string arrays`);
       continue;
     }
+    if (p.terminal !== undefined && typeof p.terminal !== "boolean") {
+      problems.push(`invalid primitive ${clean(p.id)} in ${repo}: "terminal" must be a boolean`);
+      continue;
+    }
     primitives.push({
       id: clean(p.id),
       kind: clean(p.kind),
@@ -111,6 +117,7 @@ function validateManifest(parsed, dir, problems) {
       desc: clean(p.desc),
       paths: p.paths.map((x) => clean(x)),
       consumes: (p.consumes || []).map((x) => clean(x)),
+      terminal: p.terminal === true,
     });
   }
   return { repo, primitives };
@@ -190,6 +197,256 @@ function deliverableAlarms(root, excludeDirs, problems) {
   return alarms;
 }
 
+// ---- import-scan lint (the registry verifies itself) ----
+// A manifest nobody validates is a map that lies, and the sweep-before-build
+// doctrine makes that map the mandatory first step. So: walk each primitive's
+// declared source files, resolve their intra-repo imports, map each resolved
+// file back to its owning primitive, and fail the emit when a real import
+// crosses a primitive boundary that no `consumes` edge declares. Resolution is
+// regex-level over comment-blanked source — it finds edges that exist, and it
+// cannot find edges that are not imports (HTTP seams, Apex, cross-repo), which
+// stay hand-declared.
+
+function skipStringLiteral(src, i, quote) {
+  let j = i + 1;
+  while (j < src.length) {
+    if (src[j] === "\\") {
+      j += 2;
+      continue;
+    }
+    if (src[j] === quote) return j + 1;
+    if (quote !== "`" && src[j] === "\n") return j; // unterminated: give up at EOL rather than eat the file
+    j++;
+  }
+  return src.length;
+}
+
+function blankComments(src, isPy) {
+  // Comment bodies become spaces and newlines survive, so line numbers in a
+  // miss line point at the real import site. Prose that quotes an import — and
+  // this codebase's headers are full of it — must never forge an edge.
+  const out = src.split("");
+  const blank = (a, b) => {
+    for (let k = a; k < b; k++) if (out[k] !== "\n") out[k] = " ";
+  };
+  let i = 0;
+  while (i < src.length) {
+    const c = src[i];
+    if (isPy) {
+      if (c === "#") {
+        let j = i;
+        while (j < src.length && src[j] !== "\n") j++;
+        blank(i, j);
+        i = j;
+        continue;
+      }
+      const fence = src.slice(i, i + 3);
+      if (fence === '"""' || fence === "'''") {
+        const end = src.indexOf(fence, i + 3);
+        const j = end === -1 ? src.length : end + 3;
+        blank(i, j);
+        i = j;
+        continue;
+      }
+    } else {
+      if (c === "/" && src[i + 1] === "/") {
+        let j = i;
+        while (j < src.length && src[j] !== "\n") j++;
+        blank(i, j);
+        i = j;
+        continue;
+      }
+      if (c === "/" && src[i + 1] === "*") {
+        const end = src.indexOf("*/", i + 2);
+        const j = end === -1 ? src.length : end + 2;
+        blank(i, j);
+        i = j;
+        continue;
+      }
+    }
+    if (c === '"' || c === "'" || (!isPy && c === "`")) {
+      i = skipStringLiteral(src, i, c);
+      continue;
+    }
+    i++;
+  }
+  return out.join("");
+}
+
+function lineIndex(src) {
+  const starts = [0];
+  for (let i = 0; i < src.length; i++) if (src[i] === "\n") starts.push(i + 1);
+  return (offset) => {
+    let lo = 0, hi = starts.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (starts[mid] <= offset) lo = mid;
+      else hi = mid - 1;
+    }
+    return lo + 1;
+  };
+}
+
+function firstFile(candidates) {
+  for (const c of candidates) {
+    const st = fs.statSync(c, { throwIfNoEntry: false });
+    if (st && st.isFile()) return c;
+  }
+  return null;
+}
+
+function resolvePyModule(roots, parts) {
+  if (!parts.length) return null;
+  for (const r of roots) {
+    const p = path.join(r, ...parts);
+    const hit = firstFile([p + ".py", path.join(p, "__init__.py")]);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+function scanImports(absFile) {
+  // -> [{ line, spec, target }] where target is an absolute path that exists.
+  const ext = path.extname(absFile).toLowerCase();
+  let raw;
+  try {
+    raw = fs.readFileSync(absFile, "utf8");
+  } catch {
+    return [];
+  }
+  const isPy = ext === ".py";
+  const src = blankComments(raw, isPy);
+  const lineOf = lineIndex(src);
+  const dir = path.dirname(absFile);
+  const found = [];
+  if (isPy) {
+    const rel = /^[ \t]*from[ \t]+(\.*)([A-Za-z_][\w.]*)?[ \t]+import[ \t]+([^\n]*)/gm;
+    for (let m; (m = rel.exec(src)); ) {
+      const [, dots, mod, names] = m;
+      let base = dir;
+      for (let k = 1; k < dots.length; k++) base = path.dirname(base);
+      const searchRoots = dots ? [base] : [dir, path.dirname(dir)];
+      const parts = mod ? mod.split(".") : [];
+      const hit = resolvePyModule(searchRoots, parts);
+      if (hit) found.push({ line: lineOf(m.index), spec: dots + (mod || ""), target: hit });
+      // `from pkg import mod` and `from . import mod`: the imported names may
+      // themselves be modules, and those are the real targets.
+      const submoduleRoot = hit && path.basename(hit) === "__init__.py" ? path.dirname(hit) : parts.length ? null : dots ? base : null;
+      if (submoduleRoot) {
+        for (const n of names.split(",")) {
+          const name = n.trim().replace(/[()]/g, "").split(/\s+as\s+/)[0].trim();
+          if (!/^[A-Za-z_]\w*$/.test(name)) continue;
+          const sub = resolvePyModule([submoduleRoot], [name]);
+          if (sub) found.push({ line: lineOf(m.index), spec: dots + (mod ? mod + "." : "") + name, target: sub });
+        }
+      }
+    }
+    const abs = /^[ \t]*import[ \t]+([A-Za-z_][\w.]*(?:[ \t]*,[ \t]*[A-Za-z_][\w.]*)*)/gm;
+    for (let m; (m = abs.exec(src)); ) {
+      for (const mod of m[1].split(",")) {
+        const parts = mod.trim().split(".");
+        const hit = resolvePyModule([dir, path.dirname(dir)], parts);
+        if (hit) found.push({ line: lineOf(m.index), spec: mod.trim(), target: hit });
+      }
+    }
+    // absolute dotted specs are also resolved from the repo root by the caller's
+    // root candidate list below; `import pkg.core` from a repo-root script is
+    // covered by the [dir, parent] roots above.
+    return found;
+  }
+  const js = /(?:\bfrom\s*|\brequire\s*\(\s*|\bimport\s*\(\s*|\bimport\s*)(['"])(\.[^'"\n]*)\1/g;
+  for (let m; (m = js.exec(src)); ) {
+    const spec = m[2];
+    const base = path.resolve(dir, spec);
+    const hit = firstFile(JS_RESOLVE_SUFFIXES.map((s) => base + s));
+    if (hit) found.push({ line: lineOf(m.index), spec, target: hit });
+  }
+  return found;
+}
+
+function collectSourceFiles(repoDir, rel, excludeDirs) {
+  // repo-relative code files under a declared path; the same escape refusal as
+  // the staleness walk, so a manifest cannot aim the scanner outside its repo.
+  const start = path.join(repoDir, rel);
+  const within = path.relative(repoDir, start);
+  if (within.startsWith("..") || path.isAbsolute(within)) return [];
+  const st = fs.statSync(start, { throwIfNoEntry: false });
+  if (!st) return [];
+  const out = [];
+  const stack = [{ p: start, depth: 0 }];
+  let entries = 0;
+  while (stack.length && entries < WALK_MAX_ENTRIES) {
+    const { p: cur, depth } = stack.pop();
+    entries++;
+    const s = fs.statSync(cur, { throwIfNoEntry: false });
+    if (!s) continue;
+    if (s.isDirectory()) {
+      if (excludeDirs.has(path.basename(cur)) || depth >= WALK_MAX_DEPTH) continue;
+      for (const child of fs.readdirSync(cur)) stack.push({ p: path.join(cur, child), depth: depth + 1 });
+    } else if (IMPORT_EXTS.has(path.extname(cur).toLowerCase())) {
+      out.push(cur);
+    }
+  }
+  return out;
+}
+
+function importLint(root, repos, excludeDirs) {
+  const misses = new Map(); // "from->to" -> message, first site wins
+  for (const r of repos) {
+    const repoDir = path.join(root, r.dir);
+    // resolve() normalizes the separators a suffix-joined resolution introduces,
+    // and Windows path casing must not split one file into two owners
+    const key = (abs) => {
+      const r = path.resolve(abs);
+      return process.platform === "win32" ? r.toLowerCase() : r;
+    };
+    const owners = new Map(); // file key -> [{ id, depth }]
+    for (const p of r.primitives) {
+      for (const rel of p.paths) {
+        const depth = rel.split(/[\\/]+/).filter(Boolean).length;
+        for (const f of collectSourceFiles(repoDir, rel, excludeDirs)) {
+          const k = key(f);
+          if (!owners.has(k)) owners.set(k, []);
+          owners.get(k).push({ id: p.id, depth });
+        }
+      }
+    }
+    // The most specific declaration wins: a primitive that names one file owns
+    // it even when a sibling primitive declares the whole directory.
+    const ownersOf = (abs) => {
+      const list = owners.get(key(abs));
+      if (!list) return [];
+      const deepest = Math.max(...list.map((o) => o.depth));
+      return [...new Set(list.filter((o) => o.depth === deepest).map((o) => o.id))].sort();
+    };
+    const consumesOf = new Map(r.primitives.map((p) => [p.id, new Set(p.consumes)]));
+    const files = [];
+    for (const p of r.primitives) {
+      for (const rel of p.paths) for (const f of collectSourceFiles(repoDir, rel, excludeDirs)) files.push(f);
+    }
+    for (const abs of [...new Set(files)].sort()) {
+      const from = ownersOf(abs);
+      if (!from.length) continue;
+      const relFile = path.relative(repoDir, abs).split(path.sep).join("/");
+      for (const imp of scanImports(abs)) {
+        const to = ownersOf(imp.target);
+        if (!to.length) continue;
+        for (const owner of from) {
+          if (to.includes(owner)) continue;
+          if (to.some((t) => consumesOf.get(owner).has(t))) continue;
+          const pair = `${owner}->${to.join("|")}`;
+          if (misses.has(pair)) continue;
+          misses.set(
+            pair,
+            `import lint: ${owner} -> ${to.join("|")} undeclared (${clean(r.dir, 120)}/${clean(relFile, 300)}:${imp.line} imports ${clean(imp.spec, 200)})`,
+          );
+        }
+      }
+    }
+  }
+  return [...misses.values()].sort();
+}
+
 function buildGraph(repos, problems) {
   const nodes = new Map(); // id -> { ...primitive, repo }
   for (const r of repos) {
@@ -213,11 +470,14 @@ function buildGraph(repos, problems) {
     consumers.get(to).push(from);
   }
   const ids = [...nodes.keys()].sort();
-  const orphans = ids.filter((id) => inDegree.get(id) === 0);
+  // A terminal product is a delivered surface a human uses directly: zero
+  // in-edges is its correct end state, not dormant value waiting to be wired.
+  const terminals = ids.filter((id) => nodes.get(id).terminal);
+  const orphans = ids.filter((id) => inDegree.get(id) === 0 && !nodes.get(id).terminal);
   const hubs = ids
     .filter((id) => inDegree.get(id) >= 2)
     .sort((a, b) => inDegree.get(b) - inDegree.get(a) || a.localeCompare(b));
-  return { nodes, edges, inDegree, consumers, orphans, hubs };
+  return { nodes, edges, inDegree, consumers, orphans, hubs, terminals };
 }
 
 function newestUnder(base, rel, sinceMs, excludeDirs) {
@@ -341,18 +601,20 @@ function stalenessAlarms(repos, root, config) {
 }
 
 function emitMarkdown(repos, graph, alarms, notes, problems) {
-  const { nodes, edges, inDegree, consumers, orphans, hubs } = graph;
+  const { nodes, edges, inDegree, consumers, orphans, hubs, terminals } = graph;
   const L = [];
   L.push("# SUBSTRATE — generated primitive registry");
   L.push("");
   L.push(`Generated by \`substrate-graph.mjs\` from ${repos.length} \`substrate.json\` manifests. Do not edit by hand — regenerate with \`/substrate:emit\`. Shipping a primitive means updating that repo's \`substrate.json\` in the same commit.`);
+  L.push("");
+  L.push("**The emit gate.** A manifest edit and the emit ride the same commit. The import-scan lint reads every primitive's declared source, resolves its intra-repo imports, and fails the emit with a named `from -> to` miss list when a real import crosses a primitive boundary no `consumes` edge declares — so a stale graph blocks rather than regenerates quietly. The lint sees imports only: HTTP seams, Apex calls and cross-repo consumers stay hand-declared, and `\"terminal\": true` marks a delivered surface whose zero in-edges are the end state.");
   L.push("");
   L.push(`## Nodes (${nodes.size} primitives, by repo)`);
   for (const r of [...repos].sort((a, b) => a.repo.localeCompare(b.repo))) {
     L.push("");
     L.push(`### ${r.repo}`);
     for (const p of [...(r.primitives || [])].sort((a, b) => a.id.localeCompare(b.id))) {
-      L.push(`- **${p.id}** (${p.kind}, ${p.status}) — ${p.desc}`);
+      L.push(`- **${p.id}** (${p.kind}, ${p.status}${p.terminal ? ", terminal" : ""}) — ${p.desc}`);
       L.push(`  - paths: ${p.paths.map((x) => `\`${x}\``).join(", ")}`);
       if ((p.consumes || []).length) L.push(`  - consumes: ${p.consumes.join(", ")}`);
     }
@@ -367,6 +629,11 @@ function emitMarkdown(repos, graph, alarms, notes, problems) {
   L.push(`### Orphans (${orphans.length} — no in-edges; dormant-value candidates)`);
   L.push("");
   for (const id of orphans) L.push(`- ${id} (${nodes.get(id).repo})`);
+  L.push("");
+  L.push(`### Terminal products (${terminals.length} — delivered surfaces; zero in-edges is the correct end state)`);
+  L.push("");
+  if (terminals.length) for (const id of terminals) L.push(`- ${id} (${nodes.get(id).repo}) — ${nodes.get(id).desc}`);
+  else L.push("- none");
   L.push("");
   L.push(`### Hubs (in-degree ≥ 2 — harden first)`);
   L.push("");
@@ -403,6 +670,7 @@ function main() {
   const config = loadConfig(root, problems);
   const repos = loadManifests(root, config.excludeDirs, problems);
   const graph = buildGraph(repos, problems);
+  problems.push(...importLint(root, repos, config.excludeDirs));
   const { alarms, notes } = stalenessAlarms(repos, root, config);
   alarms.push(...deliverableAlarms(root, config.excludeDirs, problems));
   if (mode === "emit") {
