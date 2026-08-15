@@ -305,16 +305,9 @@ function resolvePyModule(roots, parts) {
   return null;
 }
 
-function scanImports(absFile) {
+function scanImports(absFile, raw) {
   // -> [{ line, spec, target }] where target is an absolute path that exists.
-  const ext = path.extname(absFile).toLowerCase();
-  let raw;
-  try {
-    raw = fs.readFileSync(absFile, "utf8");
-  } catch {
-    return [];
-  }
-  const isPy = ext === ".py";
+  const isPy = path.extname(absFile).toLowerCase() === ".py";
   const src = blankComments(raw, isPy);
   const lineOf = lineIndex(src);
   const dir = path.dirname(absFile);
@@ -428,7 +421,9 @@ function importLint(root, repos, excludeDirs) {
       const from = ownersOf(abs);
       if (!from.length) continue;
       const relFile = path.relative(repoDir, abs).split(path.sep).join("/");
-      for (const imp of scanImports(abs)) {
+      // an unreadable declared source is a hole in the lint, so it is left to
+      // throw: main() reports it and --emit exits 1 rather than passing silently
+      for (const imp of scanImports(abs, fs.readFileSync(abs, "utf8"))) {
         const to = ownersOf(imp.target);
         if (!to.length) continue;
         for (const owner of from) {
