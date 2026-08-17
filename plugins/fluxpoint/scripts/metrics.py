@@ -78,79 +78,150 @@ def _bump(d, k, by=1):
     d[k] = d.get(k, 0) + by
 
 
+def _int(x):
+    """Strict integer read: a mistyped field is the artifact's problem and
+    must fail that artifact's fold, never coerce or crash the report."""
+    if isinstance(x, bool) or not isinstance(x, (int, float)):
+        raise ValueError(f"expected a number, got {type(x).__name__} {x!r}")
+    return int(x)
+
+
+def _empty():
+    return {
+        "runs": 0, "outcomes": {},
+        "nodesOk": 0, "nodesDead": 0, "nodesSkipped": 0, "nodesBlocked": 0,
+        "spawned": 0, "planned": 0, "spent": 0, "runsWithoutSpendData": 0,
+        "discovery": {"rounds": 0, "dryEnded": 0, "ceilingEnded": 0,
+                      "truncated": 0, "halted": 0,
+                      "found": 0, "fresh": 0, "kept": 0},
+        "reduce": {"in": 0, "out": 0},
+        "lessons": {"filed": 0, "killed": 0},
+        "attestation": {},
+        "inboxRaised": 0,
+    }
+
+
+def _merge(into, delta):
+    for k, v in delta.items():
+        if isinstance(v, dict):
+            for k2, v2 in v.items():
+                _bump(into[k], k2, v2)
+        else:
+            into[k] += v
+
+
+def _fold_one(art):
+    """(campaign name, delta dict) for one artifact; raises on a bad one."""
+    summary = art.get("summary") or {}
+    name = str(summary.get("campaign") or "<unnamed>")
+    c = _empty()
+    c["runs"] = 1
+    _bump(c["outcomes"], str(art.get("outcome") or "UNKNOWN"))
+    c["nodesOk"] = _int(art.get("nodesOk") or 0)
+    c["nodesDead"] = _int(art.get("nodesDead") or 0)
+    c["nodesSkipped"] = _int(art.get("nodesSkipped") or 0)
+    if isinstance(summary.get("spawned"), int):
+        c["spawned"] = summary["spawned"]
+        c["planned"] = _int(summary.get("planned") or 0)
+        c["spent"] = _int(summary.get("spent") or 0)
+    else:
+        # A run compiled before these fields existed is a fact about the
+        # history, not a zero to average in.
+        c["runsWithoutSpendData"] = 1
+    att = (art.get("attestation") or {}).get("tally") or {}
+    for k, v in att.items():
+        if isinstance(v, int):
+            _bump(c["attestation"], k, v)
+    # Discovery endings are classified per NODE, not per run — a run with
+    # two sweeps has two endings, and blurring them into one would erase a
+    # convergence or a truncation from the split status.md tells the
+    # operator to quote.
+    round_nodes, ceiling_nodes, skipped_nodes, dead_nodes = set(), set(), set(), set()
+    prov = summary.get("provenance") or []
+    if not isinstance(prov, list):
+        raise ValueError(f"provenance is {type(prov).__name__}, not a list")
+    for p in prov:
+        if not isinstance(p, dict):
+            raise ValueError("provenance row is not an object")
+        node = str(p.get("node") or "")
+        st = p.get("status")
+        if st == "BLOCKED":
+            c["nodesBlocked"] += 1
+        if st == "INCOMPLETE" and "ceiling" in str(p.get("detail") or ""):
+            ceiling_nodes.add(node)
+        if st == "SKIPPED":
+            skipped_nodes.add(node)
+        if st == "DEAD":
+            dead_nodes.add(node)
+        d = p.get("data")
+        if isinstance(d, dict):
+            # Only the per-round tally notes count as rounds: a dead
+            # round's note carries {round, returned, of} and no 'found',
+            # and a partial-death round would otherwise be counted twice.
+            if "round" in d and "found" in d:
+                round_nodes.add(node)
+                c["discovery"]["rounds"] += 1
+                c["discovery"]["found"] += _int(d.get("found") or 0)
+                c["discovery"]["fresh"] += _int(d.get("fresh") or 0)
+                c["discovery"]["kept"] += _int(d.get("kept") or 0)
+            if "before" in d and "after" in d:
+                c["reduce"]["in"] += _int(d.get("before") or 0)
+                c["reduce"]["out"] += _int(d.get("after") or 0)
+    outcome = str(art.get("outcome") or "")
+    for node in round_nodes:
+        # A sweep ends exactly one way: on its ceiling; truncated by the
+        # budget (floor or ceiling-declined spawns file SKIPPED); halted by
+        # onRed with a dead round; or — only when nothing cut it short —
+        # on the dry rule. Filing a truncated sweep as converged reports
+        # convergence where there was truncation.
+        if node in ceiling_nodes:
+            c["discovery"]["ceilingEnded"] += 1
+        elif node in skipped_nodes:
+            c["discovery"]["truncated"] += 1
+        elif outcome == "NODE-DEAD" and node in dead_nodes:
+            c["discovery"]["halted"] += 1
+        else:
+            c["discovery"]["dryEnded"] += 1
+    return name, c
+
+
 def fold(runs, lessons, inbox_rows):
-    """Per-campaign aggregates. Pure fold over the artifacts, no I/O."""
+    """Per-campaign aggregates plus named findings for artifacts that could
+    not be folded. One bad artifact fails alone: it is reported by name and
+    skipped, and never takes the report down with it or half-counts."""
     out = {}
+    findings = []
     run_campaign = {}
     for run_id, art in runs:
-        summary = art.get("summary") or {}
-        name = str(summary.get("campaign") or "<unnamed>")
-        run_campaign[run_id] = name
-        c = out.setdefault(name, {
-            "runs": 0, "outcomes": {},
-            "nodesOk": 0, "nodesDead": 0, "nodesSkipped": 0, "nodesBlocked": 0,
-            "spawned": 0, "planned": 0, "spent": 0, "runsWithoutSpendData": 0,
-            "discovery": {"rounds": 0, "dryEnded": 0, "ceilingEnded": 0,
-                          "found": 0, "fresh": 0, "kept": 0},
-            "reduce": {"in": 0, "out": 0},
-            "lessons": {"filed": 0, "killed": 0},
-            "attestation": {},
-            "inboxRaised": 0,
-        })
-        c["runs"] += 1
-        _bump(c["outcomes"], str(art.get("outcome") or "UNKNOWN"))
-        c["nodesOk"] += int(art.get("nodesOk") or 0)
-        c["nodesDead"] += int(art.get("nodesDead") or 0)
-        c["nodesSkipped"] += int(art.get("nodesSkipped") or 0)
-        if isinstance(summary.get("spawned"), int):
-            c["spawned"] += summary["spawned"]
-            c["planned"] += int(summary.get("planned") or 0)
-            c["spent"] += int(summary.get("spent") or 0)
-        else:
-            # A run compiled before these fields existed is a fact about the
-            # history, not a zero to average in.
-            c["runsWithoutSpendData"] += 1
-        att = (art.get("attestation") or {}).get("tally") or {}
-        for k, v in att.items():
-            if isinstance(v, int):
-                _bump(c["attestation"], k, v)
-        saw_rounds = False
-        ceilinged = False
-        for p in summary.get("provenance") or []:
-            st = p.get("status")
-            if st == "BLOCKED":
-                c["nodesBlocked"] += 1
-            if st == "INCOMPLETE" and "ceiling" in str(p.get("detail") or ""):
-                ceilinged = True
-            d = p.get("data")
-            if isinstance(d, dict):
-                # Only the per-round tally notes count as rounds: a dead
-                # round's note carries {round, returned, of} and no 'found',
-                # and a partial-death round would otherwise be counted twice.
-                if "round" in d and "found" in d:
-                    saw_rounds = True
-                    c["discovery"]["rounds"] += 1
-                    c["discovery"]["found"] += int(d.get("found") or 0)
-                    c["discovery"]["fresh"] += int(d.get("fresh") or 0)
-                    c["discovery"]["kept"] += int(d.get("kept") or 0)
-                if "before" in d and "after" in d:
-                    c["reduce"]["in"] += int(d.get("before") or 0)
-                    c["reduce"]["out"] += int(d.get("after") or 0)
-        if saw_rounds:
-            _bump(c["discovery"], "ceilingEnded" if ceilinged else "dryEnded")
-    for row in lessons:
-        prov = row.get("provenance") or {}
-        name = run_campaign.get(str(prov.get("runId") or ""))
-        if name is None:
+        try:
+            name, delta = _fold_one(art)
+        except Exception as e:  # noqa: BLE001 - the finding IS the handling
+            findings.append(
+                f"MALFORMED run artifact {run_id}: {type(e).__name__}: {e} "
+                f"— skipped, not silently averaged")
             continue
-        out[name]["lessons"]["filed"] += 1
-        if row.get("status") == "killed":
-            out[name]["lessons"]["killed"] += 1
-    for row in inbox_rows:
-        name = str(row.get("campaign") or "")
-        if name in out:
-            out[name]["inboxRaised"] += 1
-    return out
+        run_campaign[run_id] = name
+        c = out.setdefault(name, _empty())
+        _merge(c, delta)
+    for i, row in enumerate(lessons, 1):
+        try:
+            prov = row.get("provenance") or {}
+            name = run_campaign.get(str(prov.get("runId") or ""))
+            if name is None:
+                continue
+            out[name]["lessons"]["filed"] += 1
+            if row.get("status") == "killed":
+                out[name]["lessons"]["killed"] += 1
+        except Exception as e:  # noqa: BLE001
+            findings.append(f"MALFORMED lesson row {i}: {type(e).__name__}: {e}")
+    for i, row in enumerate(inbox_rows, 1):
+        try:
+            name = str(row.get("campaign") or "")
+            if name in out:
+                out[name]["inboxRaised"] += 1
+        except Exception as e:  # noqa: BLE001
+            findings.append(f"MALFORMED inbox row {i}: {type(e).__name__}: {e}")
+    return out, findings
 
 
 def pct(part, whole):
@@ -184,8 +255,10 @@ def render(folded):
             lines.append(
                 f"  discovery: {d['rounds']} round(s), {d['found']} found -> "
                 f"{d['fresh']} new after dedup -> {d['kept']} kept; "
-                f"{d['dryEnded']} sweep(s) ended on the dry rule, "
-                f"{d['ceilingEnded']} on the ceiling")
+                f"endings: {d['dryEnded']} dry rule, "
+                f"{d['ceilingEnded']} ceiling, {d['truncated']} budget-"
+                f"truncated, {d['halted']} halted — only the dry rule is "
+                f"convergence")
         r = c["reduce"]
         if r["in"]:
             lines.append(
@@ -224,10 +297,10 @@ def main():
     inbox_rows, f3 = read_jsonl(os.path.join(args.root, INBOX))
     findings += f2 + f3
 
+    folded, ffold = fold(runs, lessons, inbox_rows)
+    findings += ffold
     for f in findings:
         print(f"metrics: {f}", file=sys.stderr)
-
-    folded = fold(runs, lessons, inbox_rows)
     if args.campaign:
         folded = {k: v for k, v in folded.items() if k == args.campaign}
 

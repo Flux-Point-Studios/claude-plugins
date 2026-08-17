@@ -230,10 +230,13 @@ probe("memory", "key", MEMF_BASE,
 
 
 # reduce is deterministic code between agents; probed by appending a reduce
-# node over the probe node's findings.
+# node over the probe node's findings. The base carries sortBy so that
+# order and topK are probed ALONE — a probe that injects sortBy alongside
+# the field it measures would register sortBy's emission change and let
+# the probed field go inert unnoticed.
 REDUCE_NODE = {"id": "cut", "phase": "P2",
                "reduce": {"from": "probe", "over": "findings",
-                          "dedupeBy": ["file"]}}
+                          "dedupeBy": ["file"], "sortBy": "severity"}}
 probe("node", "reduce", NODE_BASE,
       lambda ir: ir["nodes"].append(copy.deepcopy(REDUCE_NODE)))
 
@@ -247,21 +250,15 @@ def setreduce(**kw):
     return m
 
 
-# from is probed alone: pointing it at a node whose contract lacks the
-# declared over is a compile error — which is the effect, and the reason
-# the field is not decorative.
+# from and over are probed alone: moving either to a target whose contract
+# cannot satisfy the rest is a compile error — which is the effect, and
+# the reason the fields are not decorative.
 probe("reduce", "from", RED_BASE, setreduce(**{"from": "seed"}))
-# over is probed against a DesignV1 source with two array fields, so the
-# change is a different valid emission rather than a rejection.
-RED2 = copy.deepcopy(NODE_BASE)
-RED2["nodes"].append({"id": "cut", "phase": "P2",
-                      "reduce": {"from": "seed", "over": "risks",
-                                 "dedupeBy": ["x"]}})
-probe("reduce", "over", RED2, setreduce(over="files"))
+probe("reduce", "over", RED_BASE, setreduce(over="nope"))
 probe("reduce", "dedupeBy", RED_BASE, setreduce(dedupeBy=["file", "line"]))
-probe("reduce", "sortBy", RED_BASE, setreduce(sortBy="severity"))
-probe("reduce", "order", RED_BASE, setreduce(sortBy="severity", order="desc"))
-probe("reduce", "topK", RED_BASE, setreduce(sortBy="severity", topK=2))
+probe("reduce", "sortBy", RED_BASE, setreduce(sortBy="line"))
+probe("reduce", "order", RED_BASE, setreduce(order="desc"))
+probe("reduce", "topK", RED_BASE, setreduce(topK=2))
 
 
 def _human(ir):

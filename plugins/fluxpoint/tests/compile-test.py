@@ -211,6 +211,11 @@ for src, name, needle, want in [
     (halt_js, "onRed=halt on a fan-out emits the halt", "halting per onRed=halt", True),
     (halt_js, "a dead fan-out worker ends in NODE-DEAD", "summary('NODE-DEAD')", True),
     (drop_js, "onRed=drop+log fan-out does not halt", "halting per onRed=halt", False),
+    # A ceiling-declined spawn is exhaustion, not death: it must file
+    # SKIPPED and, under halt, end BUDGET-EXHAUSTED — never NODE-DEAD.
+    (halt_js, "ceiling declines file SKIPPED, not DEAD", "declined by the node ceiling", True),
+    (halt_js, "ceiling declines halt as exhaustion", "halting as exhausted, not as dead", True),
+    (halt_js, "declined spawns are counted apart from deaths", "DECLINED_LABELS", True),
 ]:
     ok = (needle in src) == want
     print(f"{'PASS' if ok else 'FAIL'}  onRed: {name:<48} -> {'as declared' if ok else 'WRONG'}")
@@ -227,6 +232,8 @@ dead_js = cg.emit(dead_round, CONTRACTS)
 for needle, why in [
     ("a dead round is never a dry round", "dead rounds are named, not counted as converged"),
     ("if (!raw_n_find.length) continue", "an all-dead round skips the dry counter"),
+    ("NOT counted dry", "a PARTIALLY dead round skips the dry counter too"),
+    ("perWorker_n_find[wk] = null", "a dead worker reads null, keyed by identity"),
     ("perWorker", "per-worker unique-new counts recorded for fan-out efficiency"),
 ]:
     ok = needle in dead_js
@@ -499,14 +506,11 @@ case("reduce: cannot also be an agent", reduce_with_prompt,
 
 
 def reduce_over_object(ir):
-    ir["nodes"].append({"id": "slice", "phase": "B", "prompt": "build",
-                        "contract": "SliceV1", "mutates": True})
-    ir["nodes"].append({"id": "gate", "phase": "G", "after": "slice",
-                        "prompt": "verify {{prev}}", "contract": "HarnessCheckV1",
-                        "independent": True, "verifies": "slice"})
-    ir["nodes"].append({"id": "tests", "phase": "R",
-                        "reduce": {"from": "slice", "over": "testsAdded",
-                                   "dedupeBy": ["x"]}})
+    ir["nodes"].append({"id": "scan", "phase": "B", "prompt": "scan the repo",
+                        "contract": "FindingsV1"})
+    ir["nodes"].append({"id": "shortlist", "phase": "R",
+                        "reduce": {"from": "scan", "over": "findings",
+                                   "dedupeBy": ["file"]}})
 
 
 case("reduce: object source requires over (accepted with it)",
@@ -520,6 +524,38 @@ def reduce_object_no_over(ir):
 
 case("reduce: object source without over", reduce_object_no_over,
      "reduce.over required")
+
+
+# Keys over items with no declared fields would read String(undefined) at
+# run time: dedupe would collapse N distinct items to one and file the
+# destruction as deduplication. Rejected outright, never waved through.
+def reduce_schemaless(**ops):
+    def m(ir):
+        ir["nodes"].append({"id": "slice", "phase": "B", "prompt": "build",
+                            "contract": "SliceV1"})
+        ir["nodes"].append({"id": "tests", "phase": "R",
+                            "reduce": {"from": "slice", "over": "testsAdded",
+                                       **ops}})
+    return m
+
+
+case("reduce: dedupe key over schema-less items",
+     reduce_schemaless(dedupeBy=["x"]), "declare no fields")
+case("reduce: sort key over schema-less items",
+     reduce_schemaless(sortBy="x", topK=1), "declare no fields")
+
+
+def parked_on_red(ir):
+    ir["nodes"].append({
+        "id": "sign", "phase": "P", "prompt": "sign it", "actor": "human",
+        "contract": "HarnessCheckV1", "onRed": "halt",
+        "release": {"instructions": "sign with the hardware key",
+                    "whyNotAgent": "key material an agent must not hold",
+                    "proofContract": "HarnessCheckV1"}})
+
+
+case("onRed on a parked node is inert, so it is rejected", parked_on_red,
+     "cannot be combined with 'onRed'")
 
 red_ir = copy.deepcopy(BASE)
 with_reduce()(red_ir)

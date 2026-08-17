@@ -59,6 +59,10 @@ MODERN = {
             {"node": "cut", "status": "OK", "detail": "reduced",
              "data": {"before": 4, "after": 2}},
             {"node": "sign", "status": "BLOCKED", "detail": "waiting"},
+            {"node": "scan2", "status": "OK", "detail": "round 1",
+             "data": {"round": 1, "found": 2, "fresh": 2, "kept": 2}},
+            {"node": "scan2", "status": "SKIPPED",
+             "detail": "stopped at round 2 on budget floor; discovery INCOMPLETE"},
         ],
     },
 }
@@ -95,10 +99,11 @@ with open(os.path.join(ROOT, ".claude", "fluxpoint", "inbox.jsonl"), "w",
 runs, bad = mx.read_runs(RUNS)
 lessons, _ = mx.read_jsonl(os.path.join(ROOT, ".claude", "fluxpoint", "memory.jsonl"))
 inbox_rows, _ = mx.read_jsonl(os.path.join(ROOT, ".claude", "fluxpoint", "inbox.jsonl"))
-folded = mx.fold(runs, lessons, inbox_rows)
+folded, ffold = mx.fold(runs, lessons, inbox_rows)
 c = folded.get("sweep") or {}
 
 check("both runs folded, oldest first", c.get("runs") == 2, c)
+check("clean artifacts produce no fold findings", ffold == [], ffold)
 check("outcome histogram", c.get("outcomes") == {"COMPLETE": 1, "INCOMPLETE": 1},
       c.get("outcomes"))
 check("node totals summed", (c.get("nodesOk"), c.get("nodesDead"),
@@ -109,17 +114,32 @@ check("spawn/spend summed from runs that carry them",
 check("legacy run named, not zero-averaged", c.get("runsWithoutSpendData") == 1, c)
 d = c.get("discovery") or {}
 check("rounds counted once each (death note not double-counted)",
-      d.get("rounds") == 3, d)
+      d.get("rounds") == 4, d)
 check("found/fresh/kept summed", (d.get("found"), d.get("fresh"),
-                                  d.get("kept")) == (11, 8, 6), d)
-check("ceiling vs dry endings split", (d.get("ceilingEnded"),
-                                       d.get("dryEnded")) == (1, 1), d)
+                                  d.get("kept")) == (13, 10, 8), d)
+check("endings classified per node: ceiling / budget-truncated / dry",
+      (d.get("ceilingEnded"), d.get("truncated"), d.get("dryEnded"),
+       d.get("halted")) == (1, 1, 1, 0), d)
 check("reduce compression folded", c.get("reduce") == {"in": 4, "out": 2}, c)
 check("kill rate from lessons, orphans excluded",
       c.get("lessons") == {"filed": 2, "killed": 1}, c)
 check("attestation tally summed", c.get("attestation") == {"checked": 2,
       "attested": 1, "mismatch": 1}, c)
 check("inbox items attributed", c.get("inboxRaised") == 1, c)
+
+# A type-confused but valid-JSON artifact fails ALONE, by name — it must
+# neither crash the fold nor half-count into the campaign totals.
+TYPED_BAD = {"runId": "wf-c", "when": "2026-08-17 00:00", "outcome": "COMPLETE",
+             "nodesOk": "twelve", "summary": {"campaign": "sweep"}}
+with open(os.path.join(RUNS, "wf-c.json"), "w", encoding="utf-8") as fh:
+    json.dump(TYPED_BAD, fh)
+runs2, _ = mx.read_runs(RUNS)
+folded2, ffold2 = mx.fold(runs2, lessons, inbox_rows)
+check("type-confused artifact named, not crashed",
+      any("MALFORMED" in f and "wf-c" in f for f in ffold2), ffold2)
+check("type-confused artifact not half-counted",
+      folded2.get("sweep", {}).get("runs") == 2
+      and folded2.get("sweep", {}).get("nodesOk") == 7, folded2.get("sweep"))
 
 # A malformed artifact is named, never silently dropped.
 with open(os.path.join(RUNS, "wf-broken.json"), "w", encoding="utf-8") as fh:

@@ -171,10 +171,12 @@ with tempfile.TemporaryDirectory() as _runs:
     emits_inert("a hostile decision record embeds inert", _ir, "__CANARY__",
                 resolved=_resolved)
 
-# --- reduce ops are an interpolation surface --------------------------------
-# dedupeBy/sortBy values are field-checked only when the source contract
-# declares item properties; over an array of bare strings (SliceV1.testsAdded)
-# an arbitrary value is accepted, reaches emission, and must stay a string.
+# --- reduce ops are validated before they are an interpolation surface ------
+# dedupeBy/sortBy must name declared item fields, so an arbitrary string can
+# only reach emission by BEING one — repo-committed contract schemas, not
+# WORK.md. Over schema-less items (SliceV1.testsAdded, bare strings) any key
+# is rejected outright: it could not be validated and would collapse
+# distinct items to one at run time.
 _evil_key = "\"+(()=>{require('fs').writeFileSync('__CANARY__','x')})()+\""
 _evil_tpl = "`);require('fs').writeFileSync('__CANARY__','x');(`"
 _red_ir = {
@@ -188,9 +190,21 @@ _red_ir = {
                     "sortBy": _evil_tpl, "order": "desc", "topK": 1}},
     ],
 }
-report("hostile reduce keys are accepted only where no item schema exists",
-       not cg.validate(_red_ir, CONTRACTS), "accepted (itemless array)")
-emits_inert("hostile reduce keys cannot become code", _red_ir, "__CANARY__")
+rejected("hostile reduce keys never reach emission (schema-less items)",
+         _red_ir, "declare no fields")
+
+_red_ir2 = {
+    "version": 1, "name": "t", "campaign": "a campaign for security probes",
+    "budget": {"maxNodes": 8},
+    "nodes": [
+        {"id": "src", "phase": "P", "prompt": "go", "contract": "FindingsV1"},
+        {"id": "cut", "phase": "R",
+         "reduce": {"from": "src", "over": "findings",
+                    "dedupeBy": [_evil_key], "sortBy": _evil_tpl}},
+    ],
+}
+rejected("hostile reduce keys never reach emission (schema'd items)",
+         _red_ir2, "is not a field")
 
 rejected(
     "a hostile reduce.over never reaches emission",

@@ -38,7 +38,8 @@ nothing.
 3b. If `runs/` holds more than one artifact, add
    `bash "${CLAUDE_PLUGIN_ROOT}/scripts/py.sh" metrics.py` — the cross-run
    trend block: death and skip rates, agent calls spawned vs planned,
-   discovery dry-vs-ceiling endings, reduce compression, panel kill rate,
+   sweep endings (dry rule / ceiling / budget-truncated / halted — only
+   the dry rule is convergence), reduce compression, panel kill rate,
    inbox pressure. These are the numbers to tune a campaign against;
    quote them rather than characterizing them. A kill rate of 0% means
    the panels may be decoration; near 100% means the finders are badly

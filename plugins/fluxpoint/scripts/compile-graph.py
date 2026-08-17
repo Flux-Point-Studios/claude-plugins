@@ -312,6 +312,7 @@ def _validate_reduce(n, where, seen, contracts):
     over = red.get("over")
     src_contract = derived_contract(src, seen)
     item_props = {}
+    checkable = False
     if shape == "items":
         if over:
             f.append(
@@ -320,8 +321,10 @@ def _validate_reduce(n, where, seen, contracts):
                 f"there is no contract object to project a field out of")
         fld = derived_item_field(src, seen)
         if src_contract in contracts and fld:
+            checkable = True
             item_props = _item_props(contracts[src_contract], fld)
     else:
+        fld = over
         if not over:
             f.append(
                 f"{where}: reduce.over required — '{src_id}' yields its "
@@ -333,17 +336,31 @@ def _validate_reduce(n, where, seen, contracts):
                 f.append(f"{where}: reduce.over '{over}' is not a field of "
                          f"{src_contract}")
             else:
+                checkable = True
                 item_props = _item_props(contracts[src_contract], over)
     if not any(red.get(k) is not None for k in ("dedupeBy", "sortBy", "topK")):
         f.append(
             f"{where}: reduce declares no operation (dedupeBy, sortBy, topK) "
             f"— an empty reduce reads as configured and does nothing")
+    # Keys over items with no declared fields are rejected outright, not
+    # waved through: at run time every item would key to String(undefined),
+    # dedupe would collapse N distinct items to one, and the note would
+    # file the destruction as deduplication. A reduce that reads as
+    # configured while doing something else is the exact bug class the
+    # closed registries exist to kill.
+    no_fields = (
+        f"the items of {src_contract}.{fld} declare no fields, so the key "
+        f"cannot be validated and at run time every item would read "
+        f"String(undefined) — give the contract's items a schema")
     dd = red.get("dedupeBy")
     if dd is not None:
         if (not isinstance(dd, list) or not dd
                 or not all(isinstance(k, str) and k for k in dd)):
             f.append(f"{where}: reduce.dedupeBy must be a non-empty list of "
                      f"item field names")
+        elif checkable and not item_props:
+            f.append(f"{where}: reduce.dedupeBy — {no_fields}; deduping by "
+                     f"it would collapse distinct items to one")
         else:
             for k in dd:
                 if item_props and k not in item_props:
@@ -353,6 +370,9 @@ def _validate_reduce(n, where, seen, contracts):
     if sb is not None:
         if not isinstance(sb, str) or not sb:
             f.append(f"{where}: reduce.sortBy must be an item field name")
+        elif checkable and not item_props:
+            f.append(f"{where}: reduce.sortBy — {no_fields}; every ordering "
+                     f"it produced would be arbitrary")
         elif item_props and sb not in item_props:
             f.append(f"{where}: reduce.sortBy '{sb}' is not a field of the "
                      f"items being reduced")
@@ -832,12 +852,14 @@ def validate(ir, contracts, gates=None):
                         f"operator pastes, so downstream would be promised a shape "
                         f"the release can never produce"
                     )
-            for bad in ("mutates", "irreversible", "foreach", "repeat", "verify"):
+            for bad in ("mutates", "irreversible", "foreach", "repeat", "verify",
+                        "onRed"):
                 if n.get(bad) and not (bad == "verify" and n.get(bad) == "schema-only"):
                     f.append(
                         f"{where}: actor '{actor}' cannot be combined with "
                         f"'{bad}' — no agent runs this node, so there is nothing "
-                        f"for it to isolate, fan out, or verify"
+                        f"for it to isolate, fan out, verify, or fail; a parked "
+                        f"node blocks, and blocking already has its own policy"
                     )
         wake = n.get("wake")
         if wake is not None:
@@ -1366,8 +1388,12 @@ def emit(ir, contracts, imports_resolved=None):
     # spent is the runtime's own token meter. Without these in the artifact,
     # fan-out efficiency and budget accuracy are vibes, not numbers.
     if (ir.get("budget") or {}).get("maxNodes") is not None:
-        extra += ", spawned: SPAWNED"
-    extra += f", planned: {plan_node_count(ir)}, spent: budget.spent()"
+        extra += ", spawned: SPAWNED, declined: DECLINED"
+    # spent is guarded: it is a newer runtime API than the rest of the
+    # budget surface, and a summary that throws on an older runtime loses
+    # the entire run record over a nice-to-have number.
+    extra += (f", planned: {plan_node_count(ir)}, "
+              "spent: (budget && typeof budget.spent === 'function') ? budget.spent() : null")
     if imports:
         # Which run each imported record came from rides out in the summary,
         # so provenance can tell an imported decision from one this campaign
@@ -1390,13 +1416,21 @@ def emit(ir, contracts, imports_resolved=None):
         a("// counted at run time too.")
         a(f"const MAX_NODES = {int(max_nodes)}")
         a("let SPAWNED = 0")
+        a("// A declined spawn and a dead agent both come back null, and they are")
+        a("// different sentences: one is the campaign hitting its own declared")
+        a("// ceiling, the other is a worker failing. Call sites read these to")
+        a("// file SKIPPED where record-run doctrine says budget-declined work")
+        a("// is neither success nor failure — never DEAD, never a halt reason.")
+        a("let DECLINED = 0")
+        a("const DECLINED_LABELS = new Set()")
         a("// Every agent in this graph is spawned through here, so the ceiling")
-        a("// counts what actually ran. Declining returns null, which every call")
-        a("// site already treats as a dead node.")
+        a("// counts what actually ran.")
         a("async function spawn(prompt, opts) {")
         a("  if (SPAWNED >= MAX_NODES) {")
         a("    log(`budget ceiling: ${opts.label} NOT RUN — ${SPAWNED}/${MAX_NODES} agent call(s) already spawned`)")
         a("    INCOMPLETE = true")
+        a("    DECLINED++")
+        a("    DECLINED_LABELS.add(String(opts.label))")
         a("    return null")
         a("  }")
         a("  SPAWNED++")
@@ -1671,22 +1705,41 @@ def emit_node(n, ir):
         # because that was always its behavior. Declaring halt makes a dead
         # worker end the campaign; before v1.4 the field was accepted on a
         # fan-out and silently did nothing, which read as a policy and
-        # enforced none.
+        # enforced none. A spawn the node ceiling declined is NOT a death:
+        # it files SKIPPED, and under halt it ends the run BUDGET-EXHAUSTED
+        # rather than pinning exhaustion on workers that never ran.
         on_red = n.get("onRed", "drop+log")
+        has_ceiling = (ir.get("budget") or {}).get("maxNodes") is not None
         a(f"let {var} = []")
-        if on_red == "halt":
-            a(f"let dead_{var} = 0")
+        a(f"let dead_{var} = 0")
+        if has_ceiling:
+            a(f"let skipped_{var} = 0")
         a(f"if (!affordable({js_str('node ' + nid)})) {{")
         a(f"  note({js_str(nid)}, 'SKIPPED', 'budget floor reached before fan-out')")
         a("} else {")
         if panel and over:
-            dead_count = f"dead_{var}++; " if on_red == "halt" else ""
+            if has_ceiling:
+                dead_branch = (
+                    f"      if (!prev) {{\n"
+                    f"        if (DECLINED_LABELS.has(`{nid}:${{item.key || i}}`)) {{\n"
+                    f"          skipped_{var}++; note({js_str(nid)}, 'SKIPPED', "
+                    f"`${{item.key || i}} declined by the node ceiling`)\n"
+                    f"        }} else {{\n"
+                    f"          dead_{var}++; note({js_str(nid)}, 'DEAD', `${{item.key || i}} produced nothing`)\n"
+                    f"          log(`node {nid} died for ${{item.key || i}} — dropped`)\n"
+                    f"        }}\n"
+                    f"        return []\n"
+                    f"      }}")
+            else:
+                dead_branch = (
+                    f"      if (!prev) {{ dead_{var}++; note({js_str(nid)}, 'DEAD', "
+                    f"`${{item.key || i}} produced nothing`); "
+                    f"log(`node {nid} died for ${{item.key || i}} — dropped`); return [] }}")
             a(f"  {var} = (await pipeline(")
             a(f"    {lst},")
             a(f"    (item, _o, i) => spawn({prompt}, {opts(n, ir, phase, label)}),")
             a("    async (prev, item, i) => {")
-            a(f"      if (!prev) {{ {dead_count}note({js_str(nid)}, 'DEAD', `${{item.key || i}} produced nothing`); "
-              f"log(`node {nid} died for ${{item.key || i}} — dropped`); return [] }}")
+            a(dead_branch)
             a(f"      const produced = prev[{js_str(over)}] || []")
             a(f"      note({js_str(nid)}, 'OK', `${{item.key || i}}: ${{produced.length}} item(s)`, "
               f"{{ produced: produced.length }})")
@@ -1697,27 +1750,40 @@ def emit_node(n, ir):
             a("    }")
             a("  )).filter(Boolean).flat()")
             a(f"  log(`{nid}: ${{{var}.length}} item(s) survived {tier}`)")
-            if on_red == "halt":
-                a(f"  if (dead_{var}) {{")
-                a(f"    log(`node {nid}: ${{dead_{var}}} worker(s) died — halting per onRed=halt`)")
-                a(f"    RESULTS[{js_str(nid)}] = {var}")
-                a("    return summary('NODE-DEAD')")
-                a("  }")
         else:
+            if has_ceiling:
+                a(f"  const d0_{var} = DECLINED")
             a(f"  {var} = (await parallel({lst}.map((item, i) => () =>")
             a(f"    spawn({prompt}, {opts(n, ir, phase, label)})")
             a("  ))).filter(Boolean)")
-            a(f"  note({js_str(nid)}, {var}.length ? 'OK' : 'DEAD', `${{{var}.length}}/${{{lst}.length}} returned`, "
-              f"{{ returned: {var}.length, of: {lst}.length }})")
-            if on_red == "halt":
-                a(f"  if ({var}.length < {lst}.length) {{")
-                a(f"    log(`node {nid}: ${{{lst}.length - {var}.length}} worker(s) died — halting per onRed=halt`)")
+            if has_ceiling:
+                a(f"  skipped_{var} = DECLINED - d0_{var}")
+            a(f"  dead_{var} = {lst}.length - {var}.length"
+              + (f" - skipped_{var}" if has_ceiling else ""))
+            a(f"  note({js_str(nid)}, {var}.length ? 'OK' : (dead_{var} ? 'DEAD' : 'SKIPPED'), "
+              f"`${{{var}.length}}/${{{lst}.length}} returned`, "
+              f"{{ returned: {var}.length, of: {lst}.length, died: dead_{var}"
+              + (f", declined: skipped_{var}" if has_ceiling else "") + " })")
+            if on_red != "halt":
+                a(f"  if (dead_{var}) log(`{nid}: "
+                  f"${{dead_{var}}} node(s) died — see provenance`)")
+        if has_ceiling:
+            a(f"  if (skipped_{var}) note({js_str(nid)}, 'SKIPPED', "
+              f"`${{skipped_{var}}} spawn(s) declined by the node ceiling — "
+              f"coverage incomplete, not worker death`)")
+        if on_red == "halt":
+            a(f"  if (dead_{var}) {{")
+            a(f"    log(`node {nid}: ${{dead_{var}}} worker(s) died — halting per onRed=halt`)")
+            a(f"    RESULTS[{js_str(nid)}] = {var}")
+            a("    return summary('NODE-DEAD')")
+            a("  }")
+            if has_ceiling:
+                a(f"  if (skipped_{var}) {{")
+                a(f"    log(`node {nid}: ${{skipped_{var}}} spawn(s) declined by the node "
+                  f"ceiling — halting as exhausted, not as dead`)")
                 a(f"    RESULTS[{js_str(nid)}] = {var}")
-                a("    return summary('NODE-DEAD')")
+                a("    return summary('BUDGET-EXHAUSTED')")
                 a("  }")
-            else:
-                a(f"  if ({var}.length < {lst}.length) log(`{nid}: "
-                  f"${{{lst}.length - {var}.length}} node(s) died — see provenance`)")
         a("}")
         if n.get("haltWhen"):
             # One item tripping the condition halts the campaign: a fan-out
@@ -1728,6 +1794,14 @@ def emit_node(n, ir):
         verified = bool(panel and over)
         raw = f"{var}_raw" if verified else var
         on_red = n.get("onRed", "halt")
+        has_ceiling = (ir.get("budget") or {}).get("maxNodes") is not None
+        if has_ceiling:
+            a(f"const d0_{var} = DECLINED")
+        # The floor verdict is taken once: calling affordable() twice logged
+        # the decline twice, and a floor-declined node must not fall through
+        # into the death branch below — declined and dead are different
+        # sentences.
+        a(f"let ok_{var} = true")
         if n.get("irreversible"):
             key = f"k_{var}"
             a(f"const {key} = ledgerKey({js_str(nid)}, {prompt})")
@@ -1749,28 +1823,45 @@ def emit_node(n, ir):
               f"this specific effect.`)")
             a("    return summary('CONFIRM-REQUIRED')")
             a("  }")
-            a(f"  if (!affordable({js_str('node ' + nid)})) {{")
+            a(f"  ok_{var} = affordable({js_str('node ' + nid)})")
+            a(f"  if (!ok_{var}) {{")
             a(f"    note({js_str(nid)}, 'SKIPPED', 'budget floor reached')")
             if on_red == "halt":
                 a("    return summary('BUDGET-EXHAUSTED')")
             a("  }")
-            a(f"  {raw} = affordable({js_str('node ' + nid)}) ? await spawn({prompt}, {opts(n, ir, phase, label)}) : null")
+            a(f"  {raw} = ok_{var} ? await spawn({prompt}, {opts(n, ir, phase, label)}) : null")
             # Recorded the moment it returns, so the row exists even if a later
             # node halts the campaign.
             a(f"  if ({raw}) LEDGER_WRITES.push({{ key: {key}, node: {js_str(nid)}, "
               f"campaign, result: {raw} }})")
             a("}")
         else:
-            a(f"if (!affordable({js_str('node ' + nid)})) {{")
+            a(f"ok_{var} = affordable({js_str('node ' + nid)})")
+            a(f"if (!ok_{var}) {{")
             a(f"  note({js_str(nid)}, 'SKIPPED', 'budget floor reached')")
             if on_red == "halt":
                 a("  return summary('BUDGET-EXHAUSTED')")
             a("}")
-            a(f"const {raw} = affordable({js_str('node ' + nid)}) ? await spawn({prompt}, {opts(n, ir, phase, label)}) : null")
+            a(f"const {raw} = ok_{var} ? await spawn({prompt}, {opts(n, ir, phase, label)}) : null")
         # A node restored from the ledger already carries its provenance.
         if n.get("irreversible"):
             a(f"if (!replayed_{var}) {{")
-        a(f"if (!{raw}) {{")
+        # A null from a ceiling-declined spawn is exhaustion, not death:
+        # it files SKIPPED (record-run doctrine: budget-declined work is
+        # neither success nor failure) and a halt policy ends the run
+        # BUDGET-EXHAUSTED, never NODE-DEAD. A floor-declined node was
+        # already filed SKIPPED above and must not be re-filed dead.
+        a(f"if (!{raw} && !ok_{var}) {{")
+        a("  // declined by the token floor above — nothing died")
+        if has_ceiling:
+            a(f"}} else if (!{raw} && DECLINED > d0_{var}) {{")
+            a(f"  note({js_str(nid)}, 'SKIPPED', 'spawn declined by the node ceiling')")
+            if on_red == "halt":
+                a(f"  log(`node {nid} not run — node ceiling reached; halting as exhausted, not as dead`)")
+                a("  return summary('BUDGET-EXHAUSTED')")
+            a(f"}} else if (!{raw}) {{")
+        else:
+            a(f"}} else if (!{raw}) {{")
         a(f"  note({js_str(nid)}, 'DEAD', 'node returned nothing')")
         if on_red == "halt":
             a(f"  log(`node {nid} died — halting; an unverified gate never passes by default`)")
@@ -1855,22 +1946,46 @@ def emit_repeat(n, ir, prompt, phase, panel, over):
     a("  }")
     # Round 1 of the fan-out, unverified — dedup happens before verification
     # so the panel never re-judges an item a previous round already saw.
+    # The unfiltered array is kept so per-worker attribution survives a
+    # death: filtering first shifted survivors into dead workers' slots.
+    on_red = n.get("onRed", "drop+log")
+    has_ceiling = (ir.get("budget") or {}).get("maxNodes") is not None
+    if has_ceiling:
+        a(f"  const d0r_{var} = DECLINED")
     if lst:
-        a(f"  const raw_{var} = (await parallel({lst}.map((item, i) => () =>")
+        a(f"  const rawAll_{var} = await parallel({lst}.map((item, i) => () =>")
         a(f"    spawn({prompt}, {opts(n, ir, phase, label)})")
-        a("  ))).filter(Boolean)")
+        a("  ))")
         expected = f"{lst}.length"
     else:
         a(f"  const one_{var} = await spawn({prompt}, {opts(n, ir, phase, label)})")
-        a(f"  const raw_{var} = one_{var} ? [one_{var}] : []")
+        a(f"  const rawAll_{var} = [one_{var}]")
         expected = "1"
-    # A dead worker established nothing, so a dead round must not read as a
-    # dry one — count it dry and a finder that keeps crashing would end the
-    # sweep looking converged, which is silent incompleteness with a good
-    # alibi. onRed decides whether a death ends the campaign or the round
-    # carries on with the workers that did return.
-    on_red = n.get("onRed", "drop+log")
-    a(f"  if (raw_{var}.length < {expected}) {{")
+    a(f"  const raw_{var} = rawAll_{var}.filter(Boolean)")
+    # A spawn the node ceiling declined is exhaustion, not death: every
+    # later round would be declined too, so the sweep ends here — SKIPPED
+    # under drop+log, BUDGET-EXHAUSTED under halt, never NODE-DEAD.
+    if has_ceiling:
+        a(f"  const declined_{var} = DECLINED - d0r_{var}")
+        a(f"  if (declined_{var}) {{")
+        a(f"    note({js_str(nid)}, 'SKIPPED', `round ${{round_{var}}}: "
+          f"${{declined_{var}}} spawn(s) declined by the node ceiling — "
+          f"discovery INCOMPLETE`, {{ round: round_{var}, declined: declined_{var} }})")
+        if on_red == "halt":
+            a(f"    log(`node {nid}: node ceiling reached in round ${{round_{var}}} — "
+              f"halting as exhausted, not as dead`)")
+            a(f"    RESULTS[{js_str(nid)}] = {var}")
+            a("    return summary('BUDGET-EXHAUSTED')")
+        else:
+            a("    break")
+        a("  }")
+    # A round that lost a worker proves nothing about that worker's ground,
+    # so it must never count toward the dry rule — count it and a finder
+    # that keeps crashing ends the sweep looking converged, which is silent
+    # incompleteness with a good alibi. onRed decides whether a death ends
+    # the campaign or the round carries on with the workers that returned.
+    a(f"  const deadRound_{var} = raw_{var}.length < {expected}")
+    a(f"  if (deadRound_{var}) {{")
     a(f"    note({js_str(nid)}, 'DEAD', `round ${{round_{var}}}: only "
       f"${{raw_{var}.length}}/${{{expected}}} worker(s) returned`, "
       f"{{ round: round_{var}, returned: raw_{var}.length, of: {expected} }})")
@@ -1885,12 +2000,19 @@ def emit_repeat(n, ir, prompt, phase, panel, over):
           f"per onRed=drop+log; a dead round is never a dry round`)")
         a(f"    if (!raw_{var}.length) continue")
     a("  }")
-    # Per-worker unique-new counts, attributed first-seen in worker order:
+    # Per-worker unique-new counts, attributed first-seen in worker order
+    # and KEYED by the worker's list identity — a positional array over the
+    # survivors would shift counts into dead workers' slots. A dead worker
+    # reads null, distinct from a live worker that found nothing (0):
     # fan-out efficiency (which parallel worker still surfaces new ground)
     # is unmeasurable once the round's results are merged.
+    wk = (f"String(({lst}[wi] || {{}}).key || wi)" if lst else "String(wi)")
     a(f"  let found_{var} = 0")
     a(f"  const fresh_{var} = []")
-    a(f"  const perWorker_{var} = raw_{var}.map(r => {{")
+    a(f"  const perWorker_{var} = {{}}")
+    a(f"  rawAll_{var}.forEach((r, wi) => {{")
+    a(f"    const wk = {wk}")
+    a(f"    if (!r) {{ perWorker_{var}[wk] = null; return }}")
     a("    let c = 0")
     a(f"    for (const it of (r[{js_str(over)}] || [])) {{")
     a(f"      found_{var}++")
@@ -1901,15 +2023,22 @@ def emit_repeat(n, ir, prompt, phase, panel, over):
     a("        c++")
     a("      }")
     a("    }")
-    a("    return c")
+    a(f"    perWorker_{var}[wk] = c")
     a("  })")
     a(f"  log(`{nid} round ${{round_{var}}}: ${{found_{var}}} found, "
       f"${{fresh_{var}.length}} new`)")
     a(f"  if (!fresh_{var}.length) {{")
-    a(f"    dry_{var}++")
-    a(f"    note({js_str(nid)}, 'OK', `round ${{round_{var}}} dry "
+    a(f"    if (deadRound_{var}) {{")
+    a(f"      note({js_str(nid)}, 'OK', `round ${{round_{var}}}: nothing new "
+      f"from survivors — NOT counted dry; a round with dead workers proves "
+      f"nothing about their ground`, {{ round: round_{var}, "
+      f"found: found_{var}, fresh: 0, kept: 0, perWorker: perWorker_{var} }})")
+    a("    } else {")
+    a(f"      dry_{var}++")
+    a(f"      note({js_str(nid)}, 'OK', `round ${{round_{var}}} dry "
       f"(${{dry_{var}}}/{dry_target})`, {{ round: round_{var}, "
       f"found: found_{var}, fresh: 0, kept: 0, perWorker: perWorker_{var} }})")
+    a("    }")
     a("    continue")
     a("  }")
     a(f"  dry_{var} = 0")
@@ -1931,10 +2060,11 @@ def emit_repeat(n, ir, prompt, phase, panel, over):
       f"perWorker: perWorker_{var} }})")
     a("}")
     a(f"if (round_{var} >= {max_rounds} && dry_{var} < {dry_target}) {{")
-    a(f"  log(`{nid}: hit maxRounds {max_rounds} while still finding new items — "
+    a(f"  log(`{nid}: hit maxRounds {max_rounds} before the dry rule fired — "
+      f"new items still arriving, or rounds kept losing workers; "
       f"discovery INCOMPLETE, not exhausted`)")
     a(f"  note({js_str(nid)}, 'INCOMPLETE', `ended on the {max_rounds}-round ceiling "
-      f"with new items still arriving; the sweep is not exhaustive`)")
+      f"before the dry rule fired; the sweep is not exhaustive`)")
     a("  INCOMPLETE = true")
     a("}")
     a(f"log(`{nid}: ${{{var}.length}} item(s) kept across ${{round_{var}}} round(s)`)")

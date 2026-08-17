@@ -88,12 +88,18 @@ compiler rejects, at compile time:
   ReferenceError, which is the exact failure the scope check exists for
 - `onRed` outside `halt | drop+log` — a misspelling used to fall back to
   a default silently, weakening the declared failure policy in the
-  permissive direction. On fan-out and discovery nodes the field is now
-  real, too: `halt` ends the campaign on a dead worker, and a fully dead
-  discovery round never counts toward the dry rule
+  permissive direction — and `onRed` on a parked node, where nothing can
+  die. On fan-out and discovery nodes the field is now real, too: `halt`
+  ends the campaign on a dead worker, and a round that lost ANY worker
+  never counts toward the dry rule — a finder that keeps crashing must
+  not end a sweep looking converged. A spawn the node ceiling declined
+  is a different sentence from a death: it files SKIPPED, and under
+  `halt` the run ends `BUDGET-EXHAUSTED`, never `NODE-DEAD`
 - a `reduce` node with no operation, an `over` that is not a field of its
   source's contract, `over` on a source that already yields items, a
-  dedupe/sort key outside the item schema, `order` without `sortBy`,
+  dedupe/sort key outside the item schema — or over items that declare no
+  fields at all, where every key would read `String(undefined)` and
+  dedupe would collapse distinct items to one — `order` without `sortBy`,
   `topK` without a ranking, or combined with any agent-node field
 - a `repeat` block missing its dry rule, round ceiling, or dedup key, or
   whose dry rule can never fire; a dedup key that is not a field of the
@@ -421,13 +427,16 @@ first.
 
 Tune campaigns against numbers, not transcripts. Every run already
 records them: the summary carries `spawned` (agent calls that really went
-out) against `planned` (the compile-time worst case) and `spent` (the
-runtime's own token meter); discovery rounds carry structured
-found/fresh/kept tallies with per-worker unique-new counts (fan-out
-efficiency: a worker whose count hits zero is width without coverage);
-reduces carry before/after (compression). `scripts/metrics.py` folds
-`runs/*.json`, `memory.jsonl`, and `inbox.jsonl` into per-campaign rates
-— node death and skip rates, dry-rule vs ceiling endings, panel kill
+out) and `declined` (calls the node ceiling refused) against `planned`
+(the compile-time worst case) and `spent` (the runtime's own token
+meter); discovery rounds carry structured found/fresh/kept tallies with
+per-worker unique-new counts keyed by worker identity (fan-out
+efficiency: a worker at zero is width without coverage, and a dead
+worker reads null, never a shifted neighbor's count); reduces carry
+before/after (compression). `scripts/metrics.py` folds `runs/*.json`,
+`memory.jsonl`, and `inbox.jsonl` into per-campaign rates — node death
+and skip rates, sweep endings split four ways (dry rule, ceiling,
+budget-truncated, halted — only the dry rule is convergence), panel kill
 rate, inbox pressure — and `/fluxpoint:status` reports the trend block. A
 kill rate near 0% means the panels may be decoration; near 100% means
 the finders are badly scoped. One number is knowingly absent: per-node
