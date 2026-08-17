@@ -140,6 +140,98 @@ case(
     lambda ir: ir["nodes"][0].update(after="ghost"),
     "is not a node defined earlier",
 )
+
+
+def phantom_after(ir):
+    ir["nodes"].append(
+        {"id": "next", "phase": "P", "after": "find", "prompt": "carry on",
+         "contract": "DesignV1"})
+
+
+case("after whose prompt never consumes {{prev}}", phantom_after, "never uses")
+
+
+def prev_without_after(ir):
+    ir["nodes"].append(
+        {"id": "next", "phase": "P", "prompt": "use {{prev}} anyway",
+         "contract": "DesignV1"})
+
+
+case("{{prev}} with no after edge", prev_without_after, "hidden coupling")
+
+# --- {{prev.<field>}} projection ------------------------------------------
+# The trap this closes: a dotted prev token used to pass validation on its
+# root and emit `${prev.<field>}` with no JS binding — a graph that compiled
+# clean and died at launch with a ReferenceError.
+
+
+def projector(prompt, pred=None):
+    def m(ir):
+        ir["nodes"].append(pred or {
+            "id": "gate", "phase": "G", "prompt": "run it",
+            "contract": "HarnessCheckV1"})
+        ir["nodes"].append({
+            "id": "reader", "phase": "G", "after": ir["nodes"][-1]["id"],
+            "prompt": prompt, "contract": "DesignV1"})
+    return m
+
+
+case("prev projection of a real field accepted",
+     projector("the exit was {{prev.exit}}"), None)
+case("prev projection of an unknown field",
+     projector("the exit was {{prev.nope}}"), "is not a field of")
+case("prev projection more than one hop deep",
+     projector("{{prev.a.b}}"), "single-hop")
+case("prev projection against an item-array predecessor",
+     projector("{{prev.findings}}", pred={
+         "id": "hunt", "phase": "H", "prompt": "hunt", "contract": "FindingsV1",
+         "verify": "skeptic:1", "verifyOver": "findings", "expectItems": 2}),
+     "consume {{prev}} whole")
+
+proj = copy.deepcopy(BASE)
+projector("the exit was {{prev.exit}} of {{prev.command}}")(proj)
+proj_js = cg.emit(proj, CONTRACTS)
+for needle, why in [
+    ('(RESULTS["gate"] || {})["exit"] ?? null', "field is bound via bracket access, not a bare identifier"),
+    ('["command"] ?? null', "every projected field gets its own binding"),
+]:
+    ok = needle in proj_js
+    print(f"{'PASS' if ok else 'FAIL'}  projection: {why:<44} -> {'found' if ok else 'MISSING'}")
+    passed, failed = (passed + ok, failed + (not ok))
+
+# --- onRed is a closed registry and real on fan-out -----------------------
+case("onRed outside the registry",
+     lambda ir: ir["nodes"][0].update(onRed="Halt"), "onRed must be one of")
+
+halt_fan = copy.deepcopy(BASE)
+halt_fan["nodes"][0].update(onRed="halt")
+halt_js = cg.emit(halt_fan, CONTRACTS)
+drop_js = cg.emit(BASE, CONTRACTS)
+for src, name, needle, want in [
+    (halt_js, "onRed=halt on a fan-out emits the halt", "halting per onRed=halt", True),
+    (halt_js, "a dead fan-out worker ends in NODE-DEAD", "summary('NODE-DEAD')", True),
+    (drop_js, "onRed=drop+log fan-out does not halt", "halting per onRed=halt", False),
+]:
+    ok = (needle in src) == want
+    print(f"{'PASS' if ok else 'FAIL'}  onRed: {name:<48} -> {'as declared' if ok else 'WRONG'}")
+    passed, failed = (passed + ok, failed + (not ok))
+
+# A dead discovery round must never read as a dry one — a finder that
+# keeps crashing would end the sweep looking converged.
+dead_round = copy.deepcopy(BASE)
+dead_round["nodes"][0]["repeat"] = {
+    "untilDryRounds": 2, "maxRounds": 4, "dedupeBy": ["file", "line"]}
+dead_round["nodes"][0]["prompt"] = "hunt, seen: {{seen}}"
+dead_round["budget"]["maxNodes"] = 200
+dead_js = cg.emit(dead_round, CONTRACTS)
+for needle, why in [
+    ("a dead round is never a dry round", "dead rounds are named, not counted as converged"),
+    ("if (!raw_n_find.length) continue", "an all-dead round skips the dry counter"),
+    ("perWorker", "per-worker unique-new counts recorded for fan-out efficiency"),
+]:
+    ok = needle in dead_js
+    print(f"{'PASS' if ok else 'FAIL'}  discovery: {why:<45} -> {'found' if ok else 'MISSING'}")
+    passed, failed = (passed + ok, failed + (not ok))
 case(
     "foreach references unknown list",
     lambda ir: ir["nodes"][0].update(foreach="ghosts"),
@@ -360,12 +452,103 @@ print(f"{'PASS' if ok else 'FAIL'}  irreversible: {'no ledger code without the f
       f"-> {'clean' if ok else 'LEAKED'}")
 passed, failed = (passed + ok, failed + (not ok))
 
+# --- reduce: deterministic code between agents ----------------------------
+# Models for ambiguity, code for plumbing: dedupe/rank/cut must not cost a
+# spawn, and a reduce that silently dropped work would read as coverage.
+REDUCE = {"id": "cut", "phase": "Reduce",
+          "reduce": {"from": "find", "dedupeBy": ["file", "line"],
+                     "sortBy": "severity", "order": "desc", "topK": 5}}
+
+
+def with_reduce(**over):
+    def m(ir):
+        node = copy.deepcopy(REDUCE)
+        node["reduce"].update(over)
+        for k, v in list(node["reduce"].items()):
+            if v is None:
+                del node["reduce"][k]
+        ir["nodes"].append(node)
+    return m
+
+
+case("reduce: sound reduce accepted", with_reduce(), None)
+case("reduce: from must exist", with_reduce(**{"from": "ghost"}),
+     "must name a node defined earlier")
+case("reduce: over on an item-array source", with_reduce(over="findings"),
+     "reduce.over is not allowed")
+case("reduce: no operation declared",
+     with_reduce(dedupeBy=None, sortBy=None, order=None, topK=None),
+     "declares no operation")
+case("reduce: dedupe key outside the item schema",
+     with_reduce(dedupeBy=["nope"]), "not a field of the items")
+case("reduce: order without sortBy",
+     with_reduce(sortBy=None, topK=None), "orders nothing")
+case("reduce: topK without a ranking",
+     with_reduce(sortBy=None, order=None), "name the ranking")
+case("reduce: unknown op is an error",
+     with_reduce(groupBy="file"), "unknown field")
+
+
+def reduce_with_prompt(ir):
+    with_reduce()(ir)
+    ir["nodes"][-1]["prompt"] = "also do this"
+
+
+case("reduce: cannot also be an agent", reduce_with_prompt,
+     "cannot be combined with")
+
+
+def reduce_over_object(ir):
+    ir["nodes"].append({"id": "slice", "phase": "B", "prompt": "build",
+                        "contract": "SliceV1", "mutates": True})
+    ir["nodes"].append({"id": "gate", "phase": "G", "after": "slice",
+                        "prompt": "verify {{prev}}", "contract": "HarnessCheckV1",
+                        "independent": True, "verifies": "slice"})
+    ir["nodes"].append({"id": "tests", "phase": "R",
+                        "reduce": {"from": "slice", "over": "testsAdded",
+                                   "dedupeBy": ["x"]}})
+
+
+case("reduce: object source requires over (accepted with it)",
+     reduce_over_object, None)
+
+
+def reduce_object_no_over(ir):
+    reduce_over_object(ir)
+    del ir["nodes"][-1]["reduce"]["over"]
+
+
+case("reduce: object source without over", reduce_object_no_over,
+     "reduce.over required")
+
+red_ir = copy.deepcopy(BASE)
+with_reduce()(red_ir)
+red_ir["nodes"].append({"id": "synth", "phase": "S", "after": "cut",
+                        "prompt": "synthesize {{prev}}", "contract": "DesignV1"})
+ok = cg.plan_node_count(red_ir) == cg.plan_node_count(BASE) + 1  # synth only
+print(f"{'PASS' if ok else 'FAIL'}  reduce: {'costs zero planned agent calls':<47} -> "
+      f"{'yes' if ok else cg.plan_node_count(red_ir)}")
+passed, failed = (passed + ok, failed + (not ok))
+
+red_js = cg.emit(red_ir, CONTRACTS)
+for needle, why in [
+    ("const seen = new Set()", "dedupe is a Set, not a model"),
+    ("no silent caps", "a topK cut names how many it dropped"),
+    ("before: before_n_cut, after: n_cut.length", "compression is recorded as structured data"),
+    ('"cut": "FindingsV1"', "reduce node carries its source's contract"),
+    ('reducers: ["cut"]', "reducers are named in the summary"),
+]:
+    ok = needle in red_js
+    print(f"{'PASS' if ok else 'FAIL'}  reduce: {why:<47} -> {'found' if ok else 'MISSING'}")
+    passed, failed = (passed + ok, failed + (not ok))
+
 # Emission smoke: the sound graph produces JS containing its guarantees.
 js = cg.emit(BASE, CONTRACTS)
 for needle, why in [
     ("typeof args === 'object'", "args normalizer present"),
     ("VERIFY_FLOOR", "budget floor present"),
     ("Attempt to REFUTE", "refuters attack, never confirm"),
+    ("Default to refuted=true when uncertain", "uncertainty kills, never carries"),
     ("kills < need", "survival is decided by the majority threshold"),
     ('"Find", 3, 2)', "panel:3 passes need=2, a true majority"),
     ("PROVENANCE", "provenance recorded"),

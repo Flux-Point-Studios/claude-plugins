@@ -35,6 +35,14 @@ nothing.
    out any recorded run whose `attestation.tally` carries `mismatch` — a
    node claimed a gate exit the hook-minted log contradicts, which makes
    that run's verdict untrustworthy regardless of what it reported.
+3b. If `runs/` holds more than one artifact, add
+   `bash "${CLAUDE_PLUGIN_ROOT}/scripts/py.sh" metrics.py` — the cross-run
+   trend block: death and skip rates, agent calls spawned vs planned,
+   discovery dry-vs-ceiling endings, reduce compression, panel kill rate,
+   inbox pressure. These are the numbers to tune a campaign against;
+   quote them rather than characterizing them. A kill rate of 0% means
+   the panels may be decoration; near 100% means the finders are badly
+   scoped — say which reading applies.
 4. Summarize in a few lines: harness verdict and its age, gate pressure
    (blocks used out of the max, default 3), plan progress, campaign state,
    and the single most useful next action — fix what is red, work the next

@@ -67,16 +67,22 @@ def decision_rows(summary, ts):
     return out
 
 
-def count_items(results):
+def count_items(results, reducers=()):
     """Total array items across all node results.
 
     Deliberately generic: a review campaign's arrays are findings, a build
     campaign's are tests and evidence lines. The Evidence row therefore says
     "item(s)", not "finding(s)" — calling a slice's test list "verified
     findings" would overstate what the run actually established.
+
+    Reduce nodes are excluded: their output is the source node's items,
+    fewer, and counting both sides of a reduce would inflate "produced" by
+    exactly the work the reducer exists to remove.
     """
     n = 0
-    for v in (results or {}).values():
+    for node, v in (results or {}).items():
+        if node in reducers:
+            continue
         if isinstance(v, list):
             n += len(v)
         elif isinstance(v, dict):
@@ -157,7 +163,8 @@ def main():
     skipped = sum(1 for p in prov if p.get("status") == "SKIPPED")
     partial = [p for p in prov if p.get("status") == "INCOMPLETE"]
     outcome = summary.get("outcome", "UNKNOWN")
-    findings = count_items(summary.get("results"))
+    findings = count_items(summary.get("results"),
+                           set(summary.get("reducers") or []))
     ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M")
 
     # Derived beats declared: the flags are a fallback for a run whose

@@ -229,6 +229,41 @@ probe("memory", "key", MEMF_BASE,
       lambda ir: ir["nodes"][N]["memory"].update(key=["file"]))
 
 
+# reduce is deterministic code between agents; probed by appending a reduce
+# node over the probe node's findings.
+REDUCE_NODE = {"id": "cut", "phase": "P2",
+               "reduce": {"from": "probe", "over": "findings",
+                          "dedupeBy": ["file"]}}
+probe("node", "reduce", NODE_BASE,
+      lambda ir: ir["nodes"].append(copy.deepcopy(REDUCE_NODE)))
+
+RED_BASE = copy.deepcopy(NODE_BASE)
+RED_BASE["nodes"].append(copy.deepcopy(REDUCE_NODE))
+
+
+def setreduce(**kw):
+    def m(ir):
+        ir["nodes"][2]["reduce"].update(kw)
+    return m
+
+
+# from is probed alone: pointing it at a node whose contract lacks the
+# declared over is a compile error — which is the effect, and the reason
+# the field is not decorative.
+probe("reduce", "from", RED_BASE, setreduce(**{"from": "seed"}))
+# over is probed against a DesignV1 source with two array fields, so the
+# change is a different valid emission rather than a rejection.
+RED2 = copy.deepcopy(NODE_BASE)
+RED2["nodes"].append({"id": "cut", "phase": "P2",
+                      "reduce": {"from": "seed", "over": "risks",
+                                 "dedupeBy": ["x"]}})
+probe("reduce", "over", RED2, setreduce(over="files"))
+probe("reduce", "dedupeBy", RED_BASE, setreduce(dedupeBy=["file", "line"]))
+probe("reduce", "sortBy", RED_BASE, setreduce(sortBy="severity"))
+probe("reduce", "order", RED_BASE, setreduce(sortBy="severity", order="desc"))
+probe("reduce", "topK", RED_BASE, setreduce(sortBy="severity", topK=2))
+
+
 def _human(ir):
     ir["nodes"][N].update(actor="human", release={
         "instructions": "a person signs this one",
@@ -323,9 +358,10 @@ probed = {
         "foreach", "after", "mutates", "independent", "verifies", "verify",
         "verifyOver", "expectItems", "haltWhen", "haltReason", "onRed",
         "isolation", "repeat", "irreversible", "actor", "release", "wake",
-        "decides", "honors", "memory",
+        "decides", "honors", "memory", "reduce",
     },
     "repeat": {"untilDryRounds", "maxRounds", "dedupeBy"},
+    "reduce": {"from", "over", "dedupeBy", "sortBy", "order", "topK"},
     "memory": {"seed", "emit", "key"},
     "release": {"instructions", "proofContract", "whyNotAgent"},
     "wake": {"check", "everyMinutes", "deadline"},
@@ -339,7 +375,7 @@ for level, registry in [
     ("node", cg.NODE_FIELDS), ("repeat", cg.REPEAT_FIELDS),
     ("release", cg.RELEASE_FIELDS), ("wake", cg.WAKE_FIELDS),
     ("budget", cg.BUDGET_FIELDS), ("IR", cg.IR_FIELDS),
-    ("memory", cg.MEMORY_FIELDS),
+    ("memory", cg.MEMORY_FIELDS), ("reduce", cg.REDUCE_FIELDS),
 ]:
     missing = registry - probed[level]
     stale = probed[level] - registry

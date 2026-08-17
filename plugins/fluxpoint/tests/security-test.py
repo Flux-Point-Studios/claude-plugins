@@ -60,7 +60,7 @@ def emits_inert(name, ir, payload_marker, resolved=None):
             fh.write(
                 "const agent=async()=>({exit:1,command:'x',findings:[]}),"
                 "parallel=async()=>[],pipeline=async()=>[],log=()=>{},phase=()=>{},"
-                "args={},budget={total:null,remaining:()=>1e9},workflow=0;\n"
+                "args={},budget={total:null,remaining:()=>1e9,spent:()=>0},workflow=0;\n"
                 "(async () => {\n"
                 + js.replace("export const meta", "const meta")
                 + "\n})()\n"
@@ -170,6 +170,37 @@ with tempfile.TemporaryDirectory() as _runs:
            "resolved" if not _errs else str(_errs)[:40])
     emits_inert("a hostile decision record embeds inert", _ir, "__CANARY__",
                 resolved=_resolved)
+
+# --- reduce ops are an interpolation surface --------------------------------
+# dedupeBy/sortBy values are field-checked only when the source contract
+# declares item properties; over an array of bare strings (SliceV1.testsAdded)
+# an arbitrary value is accepted, reaches emission, and must stay a string.
+_evil_key = "\"+(()=>{require('fs').writeFileSync('__CANARY__','x')})()+\""
+_evil_tpl = "`);require('fs').writeFileSync('__CANARY__','x');(`"
+_red_ir = {
+    "version": 1, "name": "t", "campaign": "a campaign for security probes",
+    "budget": {"maxNodes": 8},
+    "nodes": [
+        {"id": "src", "phase": "P", "prompt": "go", "contract": "SliceV1"},
+        {"id": "cut", "phase": "R",
+         "reduce": {"from": "src", "over": "testsAdded",
+                    "dedupeBy": [_evil_key, _evil_tpl],
+                    "sortBy": _evil_tpl, "order": "desc", "topK": 1}},
+    ],
+}
+report("hostile reduce keys are accepted only where no item schema exists",
+       not cg.validate(_red_ir, CONTRACTS), "accepted (itemless array)")
+emits_inert("hostile reduce keys cannot become code", _red_ir, "__CANARY__")
+
+rejected(
+    "a hostile reduce.over never reaches emission",
+    {**_red_ir, "nodes": [_red_ir["nodes"][0],
+                          {"id": "cut", "phase": "R",
+                           "reduce": {"from": "src",
+                                      "over": "x\"];require('fs')//",
+                                      "dedupeBy": ["k"]}}]},
+    "is not a field",
+)
 
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

@@ -31,7 +31,10 @@ Audit checklist, in priority order:
   integer belongs.
 - Context packets: prompts that paste transcripts or whole files where
   spans and prior contracts suffice; `{{prev}}` dumping a large object into
-  a node that needs one field; a verifier prompt that leaks the desired
+  a node that needs one field when `{{prev.<field>}}` would project it, or
+  into a synthesis node when a `reduce` node (dedupe/rank/cut in code)
+  should stand between them — the structural fixes exist now, so the blob
+  is a choice; a verifier prompt that leaks the desired
   answer or invites confirmation instead of refutation; a node told to
   trust an upstream summary rather than re-read the source.
 - Hidden coupling: a node whose prompt assumes state no edge delivers;
