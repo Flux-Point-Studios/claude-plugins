@@ -32,6 +32,7 @@ another layer's missing input:
 | 7 | Real exit codes → claimed exit codes | ~~A gate node typed its own `{"exit": 0}` and nothing could contradict it.~~ **Closed in warn mode**: a PostToolUse hook mints the runtime's exit for declared gates and `record-run.py` cross-checks every claim (see Part 2, slice 2). | — |
 | 8 | Red-team / proof-audit verdicts → the gate | `SHIP/BLOCK` is typed (`RedTeamV1`) but `proof-auditor`'s `SOUND/WEAKENED` is prose; neither reaches `dod-gate.sh`. | "Treat WEAKENED as harness-red" is policy, not mechanism. |
 | 9 | Evidence → freshness | Rows are never replayed; a row true at write time is injected unchanged after the code it describes was rewritten. | Memory rots silently, and the bootstrap presents rot as fact. |
+| 10 | Run artifacts → rates | ~~Runs recorded everything and computed nothing: no spend, no kill rate, no trend — the no-scheduler bet was uninstrumentable.~~ **Closed**: summaries carry `spawned`/`planned`/`spent`, provenance rows carry structured data (round tallies with per-worker unique-new counts, reduce before/after), and `scripts/metrics.py` folds runs + lessons + inbox into per-campaign rates surfaced by `/fluxpoint:status`. | — |
 
 ## Part 2 — the trust chain
 
@@ -558,6 +559,43 @@ existing harness and each is independently shippable.
 | 11 | `WORK.consolidate.md` + consolidation Routine; evidence `--replay` + graded injection | |
 | 12 | Attack-taxonomy scaffolding in `/fluxpoint:init` for Aiken repos; `WORK.verified.md` | |
 | 13 | Cross-repo federation (`.fluxpoint-federation.json`, org-scope lessons) | |
+| 14 | `{{prev.<field>}}` projection (validated single-hop, bracket-emitted; the compile-clean/launch-dead trap closed) + `reduce` nodes (deterministic dedupe/rank/cut between agents, zero spawns, cuts named) | **shipped** |
+| 15 | `onRed` as a closed registry, enforced on fan-out and discovery (a dead worker can halt; a round that lost any worker never reads as dry; a ceiling-declined spawn files SKIPPED and halts as BUDGET-EXHAUSTED, never NODE-DEAD) | **shipped** |
+| 16 | Graph metrics: `spawned`/`planned`/`spent` in summaries, structured provenance data, `scripts/metrics.py`, scope-creep and serialization warnings (circuit 10) | **shipped** |
+
+## Part 6 — named absences
+
+Things the graph layer does not do, said here so their absence is a
+decision rather than an oversight. Each names its trigger for being
+built.
+
+- **Per-node wall-clock and critical-path latency.** The executor forbids
+  `Date` in workflow scripts (nondeterminism breaks resume), so the
+  emitted code cannot timestamp itself. The compiler warns about the
+  shape that costs latency — adjacent top-level nodes with no declared
+  dependency serialize — but the cost itself is unmeasured. Build when
+  the runtime's journal exposes its own timestamps: record-run.py then
+  folds them per node with no change to emitted code.
+- **Runtime uncertainty-routed escalation.** The escalation-ladder shape
+  is approximated in the skill (skeptic:1 pass → reduce → high-effort
+  re-judge of survivors); an `escalateWhen` that routes one item by its
+  own confidence mid-run is not an IR construct. Build when a campaign
+  shows the two-stage approximation re-judging enough cheap survivors to
+  matter; the `effort`/`model` plumbing it needs already exists.
+- **Multi-parent joins.** `after` is single-valued: a node consuming two
+  predecessors' contracts funnels through a reduce node or a decision
+  record (`honors`), or restructures. A join type would earn its place in
+  the IR the first time a real campaign cannot express itself without
+  one — not before, per the no-scheduler rule.
+- **`foreach` over a produced list.** Fan-out ranges over static IR
+  `lists` only; a planner node's output cannot become a work-list edge.
+  The advisor–orchestrator shape passes the plan through `{{prev}}`
+  instead. Build alongside multi-parent joins; both are one scheduler
+  decision away, and the refusal is the same refusal.
+- **Per-node retry.** Refused, not pending: recovery is cached-prefix
+  resume plus the once-only ledger, and an in-run retry loop would be a
+  second failure policy hiding inside the first. A flaky node is repaired
+  and resumed, not retried until it confesses.
 
 Every proposal above follows the house idiom — closed field registries
 with emission probes, append-only stores whose reads hard-fail on

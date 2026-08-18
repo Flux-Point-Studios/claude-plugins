@@ -150,6 +150,7 @@ case "${1:---full}" in
     step "once-only ledger (executed)" "$FPL_PY" "$PLUGIN/tests/ledger-test.py"
     step "execution attestation (executed)" bash "$PLUGIN/tests/attest-test.sh"
     step "lessons across runs (executed)" "$FPL_PY" "$PLUGIN/tests/memory-test.py"
+    step "graph metrics aggregator (executed)" "$FPL_PY" "$PLUGIN/tests/metrics-test.py"
     step "relation gate" bash "$PLUGIN/tests/pair-test.sh"
     step "credential gate (executed)" bash "$PLUGIN/tests/secret-guard-test.sh"
     step "secret-handling skill shapes (executed)" "$FPL_PY" "$PLUGIN/tests/secret-handling-test.py"

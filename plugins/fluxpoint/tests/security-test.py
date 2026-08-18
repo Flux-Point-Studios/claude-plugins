@@ -60,7 +60,7 @@ def emits_inert(name, ir, payload_marker, resolved=None):
             fh.write(
                 "const agent=async()=>({exit:1,command:'x',findings:[]}),"
                 "parallel=async()=>[],pipeline=async()=>[],log=()=>{},phase=()=>{},"
-                "args={},budget={total:null,remaining:()=>1e9},workflow=0;\n"
+                "args={},budget={total:null,remaining:()=>1e9,spent:()=>0},workflow=0;\n"
                 "(async () => {\n"
                 + js.replace("export const meta", "const meta")
                 + "\n})()\n"
@@ -170,6 +170,81 @@ with tempfile.TemporaryDirectory() as _runs:
            "resolved" if not _errs else str(_errs)[:40])
     emits_inert("a hostile decision record embeds inert", _ir, "__CANARY__",
                 resolved=_resolved)
+
+# --- reduce ops are validated before they are an interpolation surface ------
+# dedupeBy/sortBy must name declared item fields, so an arbitrary string can
+# only reach emission by BEING one — repo-committed contract schemas, not
+# WORK.md. Over schema-less items (SliceV1.testsAdded, bare strings) any key
+# is rejected outright: it could not be validated and would collapse
+# distinct items to one at run time.
+_evil_key = "\"+(()=>{require('fs').writeFileSync('__CANARY__','x')})()+\""
+_evil_tpl = "`);require('fs').writeFileSync('__CANARY__','x');(`"
+_red_ir = {
+    "version": 1, "name": "t", "campaign": "a campaign for security probes",
+    "budget": {"maxNodes": 8},
+    "nodes": [
+        {"id": "src", "phase": "P", "prompt": "go", "contract": "SliceV1"},
+        {"id": "cut", "phase": "R",
+         "reduce": {"from": "src", "over": "testsAdded",
+                    "dedupeBy": [_evil_key, _evil_tpl],
+                    "sortBy": _evil_tpl, "order": "desc", "topK": 1}},
+    ],
+}
+rejected("hostile reduce keys never reach emission (schema-less items)",
+         _red_ir, "declare no fields")
+
+_red_ir2 = {
+    "version": 1, "name": "t", "campaign": "a campaign for security probes",
+    "budget": {"maxNodes": 8},
+    "nodes": [
+        {"id": "src", "phase": "P", "prompt": "go", "contract": "FindingsV1"},
+        {"id": "cut", "phase": "R",
+         "reduce": {"from": "src", "over": "findings",
+                    "dedupeBy": [_evil_key], "sortBy": _evil_tpl}},
+    ],
+}
+rejected("hostile reduce keys never reach emission (schema'd items)",
+         _red_ir2, "is not a field")
+
+rejected(
+    "a hostile reduce.over never reaches emission",
+    {**_red_ir, "nodes": [_red_ir["nodes"][0],
+                          {"id": "cut", "phase": "R",
+                           "reduce": {"from": "src",
+                                      "over": "x\"];require('fs')//",
+                                      "dedupeBy": ["k"]}}]},
+    "is not a field",
+)
+
+
+# A haltWhen literal is regex-checked and json.dumps'd, which closes quote
+# termination -- but emit_halt_any drops it inside a BACKTICK template, where
+# ${ interpolates, so the literal reached executable position through the very
+# log line that reported the halt. This probe printed EXECUTED before js_tmpl.
+def halt_literal_cannot_interpolate():
+    name = "haltWhen literal cannot interpolate into the halt log"
+    nl = chr(10)
+    n = {"id": "probe", "haltReason": "x",
+         "haltWhen": "exit != '${(globalThis.__PWN=1)}'"}
+    js = cg.emit_halt_any(n, "v")
+    wrapper = nl.join([
+        "const log=()=>{},note=()=>{},summary=()=>0,RESULTS={};",
+        "const v=[{exit:1}];", "function run(){", js, "}",
+        "try{run()}catch(e){}",
+        "console.log(globalThis.__PWN?'EXECUTED':'INERT')", ""])
+    with tempfile.TemporaryDirectory() as d:
+        f = os.path.join(d, "p.mjs")
+        with open(f, "w", encoding="utf-8") as fh:
+            fh.write(wrapper)
+        if subprocess.run(["node", "--check", f], capture_output=True).returncode:
+            report(name, False, "emitted JS does not parse")
+            return
+        out = subprocess.run(["node", f], capture_output=True, text=True).stdout
+    report(name, "INERT" in out, "payload inert" if "INERT" in out
+           else "PAYLOAD EXECUTED -- template-literal injection")
+
+
+halt_literal_cannot_interpolate()
 
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

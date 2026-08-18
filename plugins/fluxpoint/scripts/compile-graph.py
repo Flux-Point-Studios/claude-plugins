@@ -49,12 +49,20 @@ NODE_FIELDS = {
     "foreach", "after", "mutates", "independent", "verifies", "verify",
     "verifyOver", "expectItems", "haltWhen", "haltReason", "onRed", "isolation",
     "repeat", "irreversible", "actor", "release", "wake", "decides", "honors",
-    "memory",
+    "memory", "reduce",
 }
+# The two failure policies. Anything else used to fall back to a default
+# silently — a misspelled 'Halt' weakened the declared policy in the
+# permissive direction, which is the exact failure closed registries kill.
+ON_RED = {"halt", "drop+log"}
 ACTORS = {"agent", "human", "third-party"}
 RELEASE_FIELDS = {"instructions", "proofContract", "whyNotAgent"}
 WAKE_FIELDS = {"check", "everyMinutes", "deadline"}
 REPEAT_FIELDS = {"untilDryRounds", "maxRounds", "dedupeBy"}
+# A reduce node is deterministic code between agents: dedupe, rank, cut.
+# Use models for ambiguity and code for plumbing — a synthesis node that
+# receives every raw fan-out item pays a reasoning model to do a Set's job.
+REDUCE_FIELDS = {"from", "over", "dedupeBy", "sortBy", "order", "topK"}
 MEMORY_FIELDS = {"seed", "emit", "key"}
 BUDGET_FIELDS = {"maxNodes", "verifyFloorTokens", "nodeFloorTokens"}
 ROLE_FIELDS = {"agentType", "effort", "model"}
@@ -223,6 +231,168 @@ def prove_gate(n):
     return m.group(4) if m else None
 
 
+def is_reduce(n):
+    return isinstance(n, dict) and n.get("reduce") is not None
+
+
+def result_shape(n):
+    """How a node's RESULTS entry is shaped at run time.
+
+    'object'  — the node's contract object (plain agent node, parked node)
+    'items'   — a flat array of judged/kept items (any panel tier, repeat,
+                or a reduce node)
+    'objects' — an array of whole contract objects (foreach with no panel)
+
+    Downstream consumers need this distinction: {{prev.field}} projection
+    and reduce.over only make sense against an object, and are rejected
+    against an array — silently reading .field off an array would
+    interpolate 'null' and the graph would run on nothing.
+    """
+    if is_reduce(n):
+        return "items"
+    if n.get("repeat") or panel_size(n):
+        return "items"
+    if n.get("foreach"):
+        return "objects"
+    return "object"
+
+
+def derived_contract(n, nodes_by_id):
+    """The contract whose items flow out of a node, chasing reduce chains."""
+    while is_reduce(n):
+        n = nodes_by_id.get(n["reduce"].get("from")) or {}
+    return n.get("contract")
+
+
+def derived_item_field(n, nodes_by_id):
+    """The contract array field a node's flat items came from, or None."""
+    while is_reduce(n):
+        over = n["reduce"].get("over")
+        if over:
+            return over
+        n = nodes_by_id.get(n["reduce"].get("from")) or {}
+    return n.get("verifyOver")
+
+
+def _item_props(schema, over):
+    return (
+        (schema or {}).get("properties", {})
+        .get(over, {})
+        .get("items", {})
+        .get("properties", {})
+    )
+
+
+def _uses_prev(prompt):
+    """True when any substitution token consumes the predecessor."""
+    return any(t == "prev" or t.startswith("prev.") or t.startswith("prev[")
+               for t in SUBST.findall(str(prompt)))
+
+
+def _validate_reduce(n, where, seen, contracts):
+    """Findings for one reduce node. `seen` holds the earlier nodes."""
+    f = []
+    red = n["reduce"]
+    if not isinstance(red, dict):
+        return [f"{where}: reduce must be an object"]
+    f += _unknown(f"{where} reduce", red, REDUCE_FIELDS)
+    stray = sorted(set(n) - {"id", "phase", "reduce"})
+    if stray:
+        f.append(
+            f"{where}: reduce cannot be combined with {', '.join(stray)} — a "
+            f"reduce node is deterministic code between agents: no prompt, no "
+            f"contract of its own, no tier, no fan-out. Its contract is the "
+            f"source node's, and its output is the reduced item array")
+    src_id = red.get("from")
+    if not src_id or src_id not in seen:
+        f.append(f"{where}: reduce.from must name a node defined earlier")
+        return f
+    src = seen[src_id]
+    shape = result_shape(src)
+    over = red.get("over")
+    src_contract = derived_contract(src, seen)
+    item_props = {}
+    checkable = False
+    if shape == "items":
+        if over:
+            f.append(
+                f"{where}: reduce.over is not allowed — '{src_id}' already "
+                f"yields a flat item array (its judged or kept items), so "
+                f"there is no contract object to project a field out of")
+        fld = derived_item_field(src, seen)
+        if src_contract in contracts and fld:
+            checkable = True
+            item_props = _item_props(contracts[src_contract], fld)
+    else:
+        fld = over
+        if not over:
+            f.append(
+                f"{where}: reduce.over required — '{src_id}' yields its "
+                f"contract {'objects' if shape == 'objects' else 'object'}, "
+                f"so the array field being reduced must be named")
+        elif src_contract in contracts:
+            props = contracts[src_contract].get("properties", {})
+            if over not in props:
+                f.append(f"{where}: reduce.over '{over}' is not a field of "
+                         f"{src_contract}")
+            else:
+                checkable = True
+                item_props = _item_props(contracts[src_contract], over)
+    if not any(red.get(k) is not None for k in ("dedupeBy", "sortBy", "topK")):
+        f.append(
+            f"{where}: reduce declares no operation (dedupeBy, sortBy, topK) "
+            f"— an empty reduce reads as configured and does nothing")
+    # Keys over items with no declared fields are rejected outright, not
+    # waved through: at run time every item would key to String(undefined),
+    # dedupe would collapse N distinct items to one, and the note would
+    # file the destruction as deduplication. A reduce that reads as
+    # configured while doing something else is the exact bug class the
+    # closed registries exist to kill.
+    no_fields = (
+        f"the items of {src_contract}.{fld} declare no fields, so the key "
+        f"cannot be validated and at run time every item would read "
+        f"String(undefined) — give the contract's items a schema")
+    dd = red.get("dedupeBy")
+    if dd is not None:
+        if (not isinstance(dd, list) or not dd
+                or not all(isinstance(k, str) and k for k in dd)):
+            f.append(f"{where}: reduce.dedupeBy must be a non-empty list of "
+                     f"item field names")
+        elif checkable and not item_props:
+            f.append(f"{where}: reduce.dedupeBy — {no_fields}; deduping by "
+                     f"it would collapse distinct items to one")
+        else:
+            for k in dd:
+                if item_props and k not in item_props:
+                    f.append(f"{where}: reduce.dedupeBy '{k}' is not a field "
+                             f"of the items being reduced")
+    sb = red.get("sortBy")
+    if sb is not None:
+        if not isinstance(sb, str) or not sb:
+            f.append(f"{where}: reduce.sortBy must be an item field name")
+        elif checkable and not item_props:
+            f.append(f"{where}: reduce.sortBy — {no_fields}; every ordering "
+                     f"it produced would be arbitrary")
+        elif item_props and sb not in item_props:
+            f.append(f"{where}: reduce.sortBy '{sb}' is not a field of the "
+                     f"items being reduced")
+    order = red.get("order")
+    if order is not None:
+        if order not in ("asc", "desc"):
+            f.append(f"{where}: reduce.order must be 'asc' or 'desc'")
+        if sb is None:
+            f.append(f"{where}: reduce.order without sortBy orders nothing")
+    tk = red.get("topK")
+    if tk is not None:
+        if not isinstance(tk, int) or tk < 1:
+            f.append(f"{where}: reduce.topK must be an integer >= 1")
+        if sb is None:
+            f.append(
+                f"{where}: reduce.topK without sortBy keeps an arbitrary K — "
+                f"name the ranking that decides what survives the cut")
+    return f
+
+
 def validate(ir, contracts, gates=None):
     """Return a list of findings. Empty list means the graph may compile."""
     f = []
@@ -278,8 +448,22 @@ def validate(ir, contracts, gates=None):
             f.append(f"{where}: id must be lowercase kebab-case")
         if nid in seen:
             f.append(f"{where}: duplicate id")
+
+        # Reduce nodes are deterministic code, not agents: they carry none of
+        # the agent-node machinery, so they validate on their own path.
+        if n.get("reduce") is not None:
+            f += _validate_reduce(n, where, seen, contracts)
+            seen[nid] = n
+            continue
+
         if not n.get("prompt"):
             f.append(f"{where}: prompt required")
+        if "onRed" in n and n["onRed"] not in ON_RED:
+            f.append(
+                f"{where}: onRed must be one of {', '.join(sorted(ON_RED))} — "
+                f"'{n['onRed']}' would silently fall back to a default, which "
+                f"weakens the declared failure policy in the permissive "
+                f"direction")
 
         # Contract layer: a node without a contract does not run.
         c = n.get("contract")
@@ -349,7 +533,7 @@ def validate(ir, contracts, gates=None):
         after = n.get("after")
         if after and after not in seen:
             f.append(f"{where}: after '{after}' is not a node defined earlier")
-        if after and "{{prev}}" not in str(n.get("prompt", "")):
+        if after and not _uses_prev(n.get("prompt", "")):
             # Nodes already run in declaration order, so an `after` whose
             # output is never consumed is a phantom edge: it reads as a
             # dependency in the spec and constrains nothing in the run.
@@ -388,7 +572,7 @@ def validate(ir, contracts, gates=None):
 
         # {{prev}} is only meaningful with a declared predecessor; otherwise
         # the node is reading state no edge delivers to it.
-        if "{{prev}}" in str(n.get("prompt", "")) and not n.get("after"):
+        if _uses_prev(n.get("prompt", "")) and not n.get("after"):
             f.append(f"{where}: prompt uses {{{{prev}}}} but declares no 'after' — hidden coupling")
 
         # Substitution tokens must resolve to something actually in scope for
@@ -413,6 +597,41 @@ def validate(ir, contracts, gates=None):
                         f"in this node's honors — name it there, so what binds "
                         f"this node is declared rather than implied"
                     )
+                continue
+            # {{prev.<field>}} projects one field of the predecessor's
+            # contract instead of pasting the whole object — the cheapest
+            # form of compress-before-reason. It used to pass this check on
+            # its root and emit `${prev.<field>}` with no JS binding: a
+            # graph that compiled clean and died at launch, which is the
+            # precise failure this scope check exists to prevent. So the
+            # token is validated all the way down, and emission binds it.
+            if root == "prev" and "prev" in bound and tok != "prev":
+                if "[" in tok or tok.count(".") != 1:
+                    f.append(
+                        f"{where}: prompt uses {{{{{tok}}}}} — only "
+                        f"{{{{prev}}}} or a single-hop {{{{prev.<field>}}}} "
+                        f"is supported")
+                else:
+                    pred = seen.get(after) or {}
+                    field = tok.split(".", 1)[1]
+                    shape = result_shape(pred)
+                    if shape != "object":
+                        yields = ("a flat array of judged items"
+                                  if shape == "items"
+                                  else "an array of contract objects")
+                        f.append(
+                            f"{where}: prompt uses {{{{{tok}}}}} but "
+                            f"'{after}' yields {yields}, not its contract "
+                            f"object — consume {{{{prev}}}} whole, or put a "
+                            f"reduce node between them")
+                    else:
+                        pc = pred.get("contract")
+                        if pc in contracts and field not in contracts[pc].get(
+                                "properties", {}):
+                            f.append(
+                                f"{where}: prompt uses {{{{{tok}}}}} but "
+                                f"'{field}' is not a field of {pc} — it "
+                                f"would interpolate null at launch")
                 continue
             if root not in bound:
                 f.append(
@@ -633,12 +852,14 @@ def validate(ir, contracts, gates=None):
                         f"operator pastes, so downstream would be promised a shape "
                         f"the release can never produce"
                     )
-            for bad in ("mutates", "irreversible", "foreach", "repeat", "verify"):
+            for bad in ("mutates", "irreversible", "foreach", "repeat", "verify",
+                        "onRed"):
                 if n.get(bad) and not (bad == "verify" and n.get(bad) == "schema-only"):
                     f.append(
                         f"{where}: actor '{actor}' cannot be combined with "
                         f"'{bad}' — no agent runs this node, so there is nothing "
-                        f"for it to isolate, fan out, or verify"
+                        f"for it to isolate, fan out, verify, or fail; a parked "
+                        f"node blocks, and blocking already has its own policy"
                     )
         wake = n.get("wake")
         if wake is not None:
@@ -758,6 +979,37 @@ def warnings(ir):
                 f"node '{nid}': discovery with no verification tier — a sweep's "
                 f"output is usually consumed as fact; consider skeptic:1 or panel:3"
             )
+    nodes = ir.get("nodes") or []
+    # The skill's ten-node rule, said where the author is looking. A warning
+    # rather than a rejection: a big campaign is legal, but it is usually a
+    # campaign that should have been split, with frozen decisions crossing
+    # the boundary via imports.
+    if len(nodes) > 10:
+        w.append(
+            f"{len(nodes)} nodes — a work graph beyond ten nodes is scope "
+            f"creep per the graph-engineering skill; split the campaign and "
+            f"carry frozen decisions across with imports")
+    # Top-level nodes execute serially in declaration order. Two adjacent
+    # nodes with no declared dependency therefore serialize work the
+    # executor could overlap — either the order matters and the edge is
+    # undeclared, or it does not and the shape is quietly slower than it
+    # reads. Both deserve a sentence at compile time, because nothing at
+    # run time will ever say it: latency has no witness in the artifact.
+    serial = []
+    for i in range(1, len(nodes)):
+        cur = nodes[i]
+        if is_reduce(cur) or cur.get("actor", "agent") != "agent":
+            continue
+        if not (cur.get("after") or cur.get("honors") or cur.get("verifies")):
+            serial.append((nodes[i - 1].get("id", "?"), cur.get("id", "?")))
+    if serial:
+        pairs = ", ".join(f"'{a}' -> '{b}'" for a, b in serial[:3])
+        more = f" (+{len(serial) - 3} more)" if len(serial) > 3 else ""
+        w.append(
+            f"{len(serial)} adjacent top-level pair(s) declare no dependency "
+            f"({pairs}{more}) yet run serially in declaration order — if they "
+            f"are truly independent, fold them into one foreach fan-out so "
+            f"they overlap; if the order matters, it is an undeclared edge")
     return w
 
 
@@ -766,6 +1018,9 @@ def plan_node_count(ir):
     lists = ir.get("lists") or {}
     total = 0
     for n in ir.get("nodes") or []:
+        # A reduce node is pure emitted code: no spawn, no advisor, no cost.
+        if is_reduce(n):
+            continue
         # A parked node spawns no worker, but it does spawn one advisor to
         # produce the recommendation that goes with the block. Pricing it at
         # zero would make the ceiling lie by exactly the number of parks.
@@ -826,6 +1081,19 @@ def lesson_sink(n, need):
 
 def js_str(s):
     return json.dumps(str(s))
+
+
+def js_tmpl(s):
+    """Escape for a JS TEMPLATE literal: backslash, backtick, and ${.
+
+    json.dumps closes the quote-termination hole but not this one -- its
+    output is a DOUBLE-quoted string, and ${ inside a backtick context
+    interpolates, so a haltWhen literal reached executable position through
+    the very log line that reported the halt.
+    """
+    return (str(s).replace(chr(92), chr(92) * 2)
+            .replace(chr(96), chr(92) + chr(96))
+            .replace("${", chr(92) + "${"))
 
 
 def js_template(s, mapping=None):
@@ -890,7 +1158,7 @@ def emit_halt_any(n, var):
         f"const tripped_{var} = {var}.filter(r => r && r.{field} {op} {lit})\n"
         f"if (tripped_{var}.length) {{\n"
         f"  log(`HALT at {n['id']}: ${{tripped_{var}.length}}/${{{var}.length}} item(s) "
-        f"tripped {field} {op} {lit} — ` + {js_str(n.get('haltReason', 'halt condition met'))})\n"
+        f"tripped {js_tmpl(field)} {js_tmpl(op)} {js_tmpl(lit)} — ` + {js_str(n.get('haltReason', 'halt condition met'))})\n"
         f"  note({js_str(n['id'])}, 'HALTED', `${{tripped_{var}.length}} item(s) tripped "
         f"{field}`)\n"
         f"  RESULTS[{js_str(n['id'])}] = {var}\n"
@@ -902,7 +1170,8 @@ def emit_halt_any(n, var):
 def emit(ir, contracts, imports_resolved=None):
     nodes = ir["nodes"]
     lists = ir.get("lists") or {}
-    used = sorted({n["contract"] for n in nodes}
+    nodes_by_id = {x.get("id"): x for x in nodes}
+    used = sorted({n["contract"] for n in nodes if not is_reduce(n)}
                   # The advisor emits DecisionV1 whether or not a node
                   # declares it, so its schema has to be in scope.
                   | ({"DecisionV1"} if any(
@@ -1088,16 +1357,21 @@ def emit(ir, contracts, imports_resolved=None):
         a("")
     a("const RESULTS = {}")
     a("const PROVENANCE = []")
-    a("function note(id, status, detail) { PROVENANCE.push({ node: id, status, detail: detail || '' }) }")
+    a("// The optional data arg is structured, not prose: round counts, worker")
+    a("// tallies, reduce before/after. metrics.py aggregates these across runs,")
+    a("// and numbers buried in detail strings would make it parse sentences.")
+    a("function note(id, status, detail, data) { PROVENANCE.push(data ? { node: id, status, detail: detail || '', data } : { node: id, status, detail: detail || '' }) }")
     # Which node returned which contract is known here and nowhere else.
     # Without it a reader of the summary has to guess a result's type from
     # its shape, and a recorder that guesses will eventually file a harness
     # exit code as a red-team verdict.
     a("// nodeId -> contract, so a consumer of the summary reads types rather")
-    a("// than sniffing them out of the result's shape.")
+    a("// than sniffing them out of the result's shape. A reduce node carries")
+    a("// its source's contract: its output is that contract's items, fewer.")
     a("const CONTRACTS = {")
     for n in ir["nodes"]:
-        a(f"  {js_str(n['id'])}: {js_str(n['contract'])},")
+        c = n["contract"] if not is_reduce(n) else derived_contract(n, nodes_by_id)
+        a(f"  {js_str(n['id'])}: {js_str(c)},")
     a("}")
     a("// Set whenever the campaign covered less ground than it set out to —")
     a("// budget declined work, or a sweep ended on its ceiling with more to")
@@ -1117,6 +1391,22 @@ def emit(ir, contracts, imports_resolved=None):
         extra += ", memory: MEMORY, memorySeeded: MEMORY_SEEDED"
     if prove_nodes:
         extra += ", prove: PROVE"
+    reducers = [n["id"] for n in nodes if is_reduce(n)]
+    if reducers:
+        # Named so a consumer counting produced items can tell a reducer's
+        # output (the same items, fewer) from work a node actually produced.
+        extra += ", reducers: " + json.dumps(reducers)
+    # What the run actually cost, next to what the spec priced. planned is
+    # the compile-time worst case; spawned is the calls that really went out;
+    # spent is the runtime's own token meter. Without these in the artifact,
+    # fan-out efficiency and budget accuracy are vibes, not numbers.
+    if (ir.get("budget") or {}).get("maxNodes") is not None:
+        extra += ", spawned: SPAWNED, declined: DECLINED"
+    # spent is guarded: it is a newer runtime API than the rest of the
+    # budget surface, and a summary that throws on an older runtime loses
+    # the entire run record over a nice-to-have number.
+    extra += (f", planned: {plan_node_count(ir)}, "
+              "spent: (budget && typeof budget.spent === 'function') ? budget.spent() : null")
     if imports:
         # Which run each imported record came from rides out in the summary,
         # so provenance can tell an imported decision from one this campaign
@@ -1139,13 +1429,21 @@ def emit(ir, contracts, imports_resolved=None):
         a("// counted at run time too.")
         a(f"const MAX_NODES = {int(max_nodes)}")
         a("let SPAWNED = 0")
+        a("// A declined spawn and a dead agent both come back null, and they are")
+        a("// different sentences: one is the campaign hitting its own declared")
+        a("// ceiling, the other is a worker failing. Call sites read these to")
+        a("// file SKIPPED where record-run doctrine says budget-declined work")
+        a("// is neither success nor failure — never DEAD, never a halt reason.")
+        a("let DECLINED = 0")
+        a("const DECLINED_LABELS = new Set()")
         a("// Every agent in this graph is spawned through here, so the ceiling")
-        a("// counts what actually ran. Declining returns null, which every call")
-        a("// site already treats as a dead node.")
+        a("// counts what actually ran.")
         a("async function spawn(prompt, opts) {")
         a("  if (SPAWNED >= MAX_NODES) {")
         a("    log(`budget ceiling: ${opts.label} NOT RUN — ${SPAWNED}/${MAX_NODES} agent call(s) already spawned`)")
         a("    INCOMPLETE = true")
+        a("    DECLINED++")
+        a("    DECLINED_LABELS.add(String(opts.label))")
         a("    return null")
         a("  }")
         a("  SPAWNED++")
@@ -1295,6 +1593,59 @@ def emit_parked(n):
     return "\n".join(L)
 
 
+def emit_reduce(n, ir):
+    """Deterministic reduction between agents: dedupe, rank, cut — in code.
+
+    No spawn, no tokens, no model. The ops run in a fixed order (dedupe,
+    then sort, then topK) so the same IR always cuts the same items, and a
+    topK cut names how many it dropped — a reducer that silently truncates
+    reads as coverage it did not deliver. Field access is bracket-notation
+    through js_str: a field name can never become code.
+    """
+    nid = n["id"]
+    var = "n_" + nid.replace("-", "_")
+    red = n["reduce"]
+    src_id = red["from"]
+    nodes_by_id = {x.get("id"): x for x in ir["nodes"]}
+    shape = result_shape(nodes_by_id[src_id])
+    over = red.get("over")
+    L = []
+    a = L.append
+    a(f"const src_{var} = RESULTS[{js_str(src_id)}]")
+    if shape == "object":
+        a(f"let {var} = ((src_{var} && src_{var}[{js_str(over)}]) || []).slice()")
+    elif shape == "objects":
+        a(f"let {var} = (src_{var} || []).filter(Boolean)"
+          f".flatMap(r => r[{js_str(over)}] || [])")
+    else:
+        a(f"let {var} = (src_{var} || []).slice()")
+    a(f"const before_{var} = {var}.length")
+    if red.get("dedupeBy"):
+        keyexpr = " + '|' + ".join(
+            f"String(it[{js_str(k)}])" for k in red["dedupeBy"])
+        a("{")
+        a("  const seen = new Set()")
+        a(f"  {var} = {var}.filter(it => {{ const k = {keyexpr}; "
+          f"if (seen.has(k)) return false; seen.add(k); return true }})")
+        a("}")
+    if red.get("sortBy"):
+        sb = js_str(red["sortBy"])
+        sign = "-1" if red.get("order") == "desc" else "1"
+        a(f"{var}.sort((x, y) => {{ const xv = x[{sb}], yv = y[{sb}]; "
+          f"return (xv < yv ? -1 : xv > yv ? 1 : 0) * {sign} }})")
+    if red.get("topK") is not None:
+        k = int(red["topK"])
+        a(f"const cut_{var} = Math.max(0, {var}.length - {k})")
+        a(f"if (cut_{var}) log(`{nid}: topK dropped ${{cut_{var}}} item(s) "
+          f"beyond the top {k} — no silent caps`)")
+        a(f"{var} = {var}.slice(0, {k})")
+    a(f"note({js_str(nid)}, 'OK', `reduced ${{before_{var}}} -> "
+      f"${{{var}.length}} item(s)`, {{ before: before_{var}, after: {var}.length }})")
+    a(f"log(`{nid}: reduced ${{before_{var}}} -> ${{{var}.length}} item(s) in "
+      f"code — deterministic, zero spawns`)")
+    return "\n".join(L)
+
+
 def emit_node(n, ir):
     nid = n["id"]
     var = "n_" + nid.replace("-", "_")
@@ -1306,9 +1657,19 @@ def emit_node(n, ir):
     over = n.get("verifyOver")
     # {{prev}} carries the predecessor's contract into this prompt — the
     # justified barrier (judging candidates side by side, reducing a set).
+    # {{prev.<field>}} projects one validated field instead: bracket access
+    # through js_str so the field name can never become code, `?? null` so
+    # an absent optional field reads as null rather than the string
+    # "undefined". validate() already proved the field is in the contract.
     mapping = {}
     if n.get("after"):
         mapping["prev"] = f"JSON.stringify(RESULTS[{js_str(n['after'])}])"
+        for tok in SUBST.findall(str(n.get("prompt", ""))):
+            if tok.startswith("prev.") and tok.count(".") == 1 and "[" not in tok:
+                fld = tok.split(".", 1)[1]
+                mapping[tok] = (
+                    f"JSON.stringify((RESULTS[{js_str(n['after'])}] || {{}})"
+                    f"[{js_str(fld)}] ?? null)")
     if n.get("repeat"):
         # Later rounds are told what earlier rounds already surfaced, so the
         # finder spends its round on new ground instead of re-reporting.
@@ -1319,22 +1680,26 @@ def emit_node(n, ir):
     # single-valued, so a chain could not carry more than one hop anyway.
     for h in (n.get("honors") or []):
         mapping[f"decisions.{h}"] = f"JSON.stringify(DECISIONS[{js_str(h)}])"
-    prompt = js_template(n["prompt"], mapping)
+    prompt = js_template(n["prompt"], mapping) if not is_reduce(n) else None
     L = []
     a = L.append
-    a(f"// ===== node {nid} ({tier}{', mutates' if n.get('mutates') else ''}"
+    kind = "reduce" if is_reduce(n) else tier
+    a(f"// ===== node {nid} ({kind}{', mutates' if n.get('mutates') else ''}"
       f"{', independent' if n.get('independent') else ''}) =====")
     a(f"phase({js_str(phase)})")
 
-    # Blocked is inherited down the `after` chain. Handing a dependent the
-    # literal null of a node nobody ran would report a failure where there
-    # is only a wait, and the campaign would argue with itself about why.
+    # Blocked is inherited down the `after` chain — and down a reduce's
+    # `from`, which is the same edge wearing different clothes. Handing a
+    # dependent the literal null of a node nobody ran would report a
+    # failure where there is only a wait, and the campaign would argue
+    # with itself about why.
     has_parked = any(o.get("actor", "agent") != "agent" for o in ir["nodes"])
-    guard = has_parked and n.get("after") and n.get("actor", "agent") == "agent"
+    dep = n.get("after") or (n.get("reduce") or {}).get("from")
+    guard = has_parked and dep and n.get("actor", "agent") == "agent"
     if guard:
-        a(f"if (BLOCKED.has({js_str(n['after'])})) {{")
-        a(f"  note({js_str(nid)}, 'BLOCKED', 'blocked on {n['after']}')")
-        a(f"  log(`BLOCKED at {nid}: inherited from {n['after']}`)")
+        a(f"if (BLOCKED.has({js_str(dep)})) {{")
+        a(f"  note({js_str(nid)}, 'BLOCKED', 'blocked on {dep}')")
+        a(f"  log(`BLOCKED at {nid}: inherited from {dep}`)")
         a(f"  BLOCKED.add({js_str(nid)})")
         a("  INCOMPLETE = true")
         a(f"  RESULTS[{js_str(nid)}] = null")
@@ -1342,24 +1707,55 @@ def emit_node(n, ir):
 
     if n.get("actor", "agent") != "agent":
         a(emit_parked(n))
+    elif is_reduce(n):
+        a(emit_reduce(n, ir))
     elif n.get("repeat"):
         a(emit_repeat(n, ir, prompt, phase, panel, over))
     elif n.get("foreach"):
         lst = list_var(n["foreach"])
         label = f"`{nid}:${{item.key || i}}`"
+        # Fan-out defaults to drop+log — partial coverage, said out loud —
+        # because that was always its behavior. Declaring halt makes a dead
+        # worker end the campaign; before v1.4 the field was accepted on a
+        # fan-out and silently did nothing, which read as a policy and
+        # enforced none. A spawn the node ceiling declined is NOT a death:
+        # it files SKIPPED, and under halt it ends the run BUDGET-EXHAUSTED
+        # rather than pinning exhaustion on workers that never ran.
+        on_red = n.get("onRed", "drop+log")
+        has_ceiling = (ir.get("budget") or {}).get("maxNodes") is not None
         a(f"let {var} = []")
+        a(f"let dead_{var} = 0")
+        if has_ceiling:
+            a(f"let skipped_{var} = 0")
         a(f"if (!affordable({js_str('node ' + nid)})) {{")
         a(f"  note({js_str(nid)}, 'SKIPPED', 'budget floor reached before fan-out')")
         a("} else {")
         if panel and over:
+            if has_ceiling:
+                dead_branch = (
+                    f"      if (!prev) {{\n"
+                    f"        if (DECLINED_LABELS.has(`{nid}:${{item.key || i}}`)) {{\n"
+                    f"          skipped_{var}++; note({js_str(nid)}, 'SKIPPED', "
+                    f"`${{item.key || i}} declined by the node ceiling`)\n"
+                    f"        }} else {{\n"
+                    f"          dead_{var}++; note({js_str(nid)}, 'DEAD', `${{item.key || i}} produced nothing`)\n"
+                    f"          log(`node {nid} died for ${{item.key || i}} — dropped`)\n"
+                    f"        }}\n"
+                    f"        return []\n"
+                    f"      }}")
+            else:
+                dead_branch = (
+                    f"      if (!prev) {{ dead_{var}++; note({js_str(nid)}, 'DEAD', "
+                    f"`${{item.key || i}} produced nothing`); "
+                    f"log(`node {nid} died for ${{item.key || i}} — dropped`); return [] }}")
             a(f"  {var} = (await pipeline(")
             a(f"    {lst},")
             a(f"    (item, _o, i) => spawn({prompt}, {opts(n, ir, phase, label)}),")
             a("    async (prev, item, i) => {")
-            a(f"      if (!prev) {{ note({js_str(nid)}, 'DEAD', `${{item.key || i}} produced nothing`); "
-              f"log(`node {nid} died for ${{item.key || i}} — dropped`); return [] }}")
+            a(dead_branch)
             a(f"      const produced = prev[{js_str(over)}] || []")
-            a(f"      note({js_str(nid)}, 'OK', `${{item.key || i}}: ${{produced.length}} item(s)`)")
+            a(f"      note({js_str(nid)}, 'OK', `${{item.key || i}}: ${{produced.length}} item(s)`, "
+              f"{{ produced: produced.length }})")
             need = math.ceil(panel / 2)
             a(f"      const judged = await verifyItems(prev, {js_str(over)}, "
               f"`{nid}:${{item.key || i}}`, {js_str(phase)}, {panel}, {need})")
@@ -1368,12 +1764,39 @@ def emit_node(n, ir):
             a("  )).filter(Boolean).flat()")
             a(f"  log(`{nid}: ${{{var}.length}} item(s) survived {tier}`)")
         else:
+            if has_ceiling:
+                a(f"  const d0_{var} = DECLINED")
             a(f"  {var} = (await parallel({lst}.map((item, i) => () =>")
             a(f"    spawn({prompt}, {opts(n, ir, phase, label)})")
             a("  ))).filter(Boolean)")
-            a(f"  note({js_str(nid)}, {var}.length ? 'OK' : 'DEAD', `${{{var}.length}}/${{{lst}.length}} returned`)")
-            a(f"  if ({var}.length < {lst}.length) log(`{nid}: "
-              f"${{{lst}.length - {var}.length}} node(s) died — see provenance`)")
+            if has_ceiling:
+                a(f"  skipped_{var} = DECLINED - d0_{var}")
+            a(f"  dead_{var} = {lst}.length - {var}.length"
+              + (f" - skipped_{var}" if has_ceiling else ""))
+            a(f"  note({js_str(nid)}, {var}.length ? 'OK' : (dead_{var} ? 'DEAD' : 'SKIPPED'), "
+              f"`${{{var}.length}}/${{{lst}.length}} returned`, "
+              f"{{ returned: {var}.length, of: {lst}.length, died: dead_{var}"
+              + (f", declined: skipped_{var}" if has_ceiling else "") + " })")
+            if on_red != "halt":
+                a(f"  if (dead_{var}) log(`{nid}: "
+                  f"${{dead_{var}}} node(s) died — see provenance`)")
+        if has_ceiling:
+            a(f"  if (skipped_{var}) note({js_str(nid)}, 'SKIPPED', "
+              f"`${{skipped_{var}}} spawn(s) declined by the node ceiling — "
+              f"coverage incomplete, not worker death`)")
+        if on_red == "halt":
+            a(f"  if (dead_{var}) {{")
+            a(f"    log(`node {nid}: ${{dead_{var}}} worker(s) died — halting per onRed=halt`)")
+            a(f"    RESULTS[{js_str(nid)}] = {var}")
+            a("    return summary('NODE-DEAD')")
+            a("  }")
+            if has_ceiling:
+                a(f"  if (skipped_{var}) {{")
+                a(f"    log(`node {nid}: ${{skipped_{var}}} spawn(s) declined by the node "
+                  f"ceiling — halting as exhausted, not as dead`)")
+                a(f"    RESULTS[{js_str(nid)}] = {var}")
+                a("    return summary('BUDGET-EXHAUSTED')")
+                a("  }")
         a("}")
         if n.get("haltWhen"):
             # One item tripping the condition halts the campaign: a fan-out
@@ -1384,6 +1807,14 @@ def emit_node(n, ir):
         verified = bool(panel and over)
         raw = f"{var}_raw" if verified else var
         on_red = n.get("onRed", "halt")
+        has_ceiling = (ir.get("budget") or {}).get("maxNodes") is not None
+        if has_ceiling:
+            a(f"const d0_{var} = DECLINED")
+        # The floor verdict is taken once: calling affordable() twice logged
+        # the decline twice, and a floor-declined node must not fall through
+        # into the death branch below — declined and dead are different
+        # sentences.
+        a(f"let ok_{var} = true")
         if n.get("irreversible"):
             key = f"k_{var}"
             a(f"const {key} = ledgerKey({js_str(nid)}, {prompt})")
@@ -1405,28 +1836,45 @@ def emit_node(n, ir):
               f"this specific effect.`)")
             a("    return summary('CONFIRM-REQUIRED')")
             a("  }")
-            a(f"  if (!affordable({js_str('node ' + nid)})) {{")
+            a(f"  ok_{var} = affordable({js_str('node ' + nid)})")
+            a(f"  if (!ok_{var}) {{")
             a(f"    note({js_str(nid)}, 'SKIPPED', 'budget floor reached')")
             if on_red == "halt":
                 a("    return summary('BUDGET-EXHAUSTED')")
             a("  }")
-            a(f"  {raw} = affordable({js_str('node ' + nid)}) ? await spawn({prompt}, {opts(n, ir, phase, label)}) : null")
+            a(f"  {raw} = ok_{var} ? await spawn({prompt}, {opts(n, ir, phase, label)}) : null")
             # Recorded the moment it returns, so the row exists even if a later
             # node halts the campaign.
             a(f"  if ({raw}) LEDGER_WRITES.push({{ key: {key}, node: {js_str(nid)}, "
               f"campaign, result: {raw} }})")
             a("}")
         else:
-            a(f"if (!affordable({js_str('node ' + nid)})) {{")
+            a(f"ok_{var} = affordable({js_str('node ' + nid)})")
+            a(f"if (!ok_{var}) {{")
             a(f"  note({js_str(nid)}, 'SKIPPED', 'budget floor reached')")
             if on_red == "halt":
                 a("  return summary('BUDGET-EXHAUSTED')")
             a("}")
-            a(f"const {raw} = affordable({js_str('node ' + nid)}) ? await spawn({prompt}, {opts(n, ir, phase, label)}) : null")
+            a(f"const {raw} = ok_{var} ? await spawn({prompt}, {opts(n, ir, phase, label)}) : null")
         # A node restored from the ledger already carries its provenance.
         if n.get("irreversible"):
             a(f"if (!replayed_{var}) {{")
-        a(f"if (!{raw}) {{")
+        # A null from a ceiling-declined spawn is exhaustion, not death:
+        # it files SKIPPED (record-run doctrine: budget-declined work is
+        # neither success nor failure) and a halt policy ends the run
+        # BUDGET-EXHAUSTED, never NODE-DEAD. A floor-declined node was
+        # already filed SKIPPED above and must not be re-filed dead.
+        a(f"if (!{raw} && !ok_{var}) {{")
+        a("  // declined by the token floor above — nothing died")
+        if has_ceiling:
+            a(f"}} else if (!{raw} && DECLINED > d0_{var}) {{")
+            a(f"  note({js_str(nid)}, 'SKIPPED', 'spawn declined by the node ceiling')")
+            if on_red == "halt":
+                a(f"  log(`node {nid} not run — node ceiling reached; halting as exhausted, not as dead`)")
+                a("  return summary('BUDGET-EXHAUSTED')")
+            a(f"}} else if (!{raw}) {{")
+        else:
+            a(f"}} else if (!{raw}) {{")
         a(f"  note({js_str(nid)}, 'DEAD', 'node returned nothing')")
         if on_red == "halt":
             a(f"  log(`node {nid} died — halting; an unverified gate never passes by default`)")
@@ -1511,23 +1959,99 @@ def emit_repeat(n, ir, prompt, phase, panel, over):
     a("  }")
     # Round 1 of the fan-out, unverified — dedup happens before verification
     # so the panel never re-judges an item a previous round already saw.
+    # The unfiltered array is kept so per-worker attribution survives a
+    # death: filtering first shifted survivors into dead workers' slots.
+    on_red = n.get("onRed", "drop+log")
+    has_ceiling = (ir.get("budget") or {}).get("maxNodes") is not None
+    if has_ceiling:
+        a(f"  const d0r_{var} = DECLINED")
     if lst:
-        a(f"  const raw_{var} = (await parallel({lst}.map((item, i) => () =>")
+        a(f"  const rawAll_{var} = await parallel({lst}.map((item, i) => () =>")
         a(f"    spawn({prompt}, {opts(n, ir, phase, label)})")
-        a("  ))).filter(Boolean)")
+        a("  ))")
+        expected = f"{lst}.length"
     else:
         a(f"  const one_{var} = await spawn({prompt}, {opts(n, ir, phase, label)})")
-        a(f"  const raw_{var} = one_{var} ? [one_{var}] : []")
-    a(f"  const found_{var} = raw_{var}.flatMap(r => r[{js_str(over)}] || [])")
-    a(f"  const fresh_{var} = found_{var}.filter(it => !seen_{var}.has(key_{var}(it)))")
-    a(f"  fresh_{var}.forEach(it => {{ seen_{var}.add(key_{var}(it)); "
-      f"seenList_{var}.push(key_{var}(it)) }})")
-    a(f"  log(`{nid} round ${{round_{var}}}: ${{found_{var}.length}} found, "
+        a(f"  const rawAll_{var} = [one_{var}]")
+        expected = "1"
+    a(f"  const raw_{var} = rawAll_{var}.filter(Boolean)")
+    # A spawn the node ceiling declined is exhaustion, not death: every
+    # later round would be declined too, so the sweep ends here — SKIPPED
+    # under drop+log, BUDGET-EXHAUSTED under halt, never NODE-DEAD.
+    if has_ceiling:
+        a(f"  const declined_{var} = DECLINED - d0r_{var}")
+        a(f"  if (declined_{var}) {{")
+        a(f"    note({js_str(nid)}, 'SKIPPED', `round ${{round_{var}}}: "
+          f"${{declined_{var}}} spawn(s) declined by the node ceiling — "
+          f"discovery INCOMPLETE`, {{ round: round_{var}, declined: declined_{var} }})")
+        if on_red == "halt":
+            a(f"    log(`node {nid}: node ceiling reached in round ${{round_{var}}} — "
+              f"halting as exhausted, not as dead`)")
+            a(f"    RESULTS[{js_str(nid)}] = {var}")
+            a("    return summary('BUDGET-EXHAUSTED')")
+        else:
+            a("    break")
+        a("  }")
+    # A round that lost a worker proves nothing about that worker's ground,
+    # so it must never count toward the dry rule — count it and a finder
+    # that keeps crashing ends the sweep looking converged, which is silent
+    # incompleteness with a good alibi. onRed decides whether a death ends
+    # the campaign or the round carries on with the workers that returned.
+    a(f"  const deadRound_{var} = raw_{var}.length < {expected}")
+    a(f"  if (deadRound_{var}) {{")
+    a(f"    note({js_str(nid)}, 'DEAD', `round ${{round_{var}}}: only "
+      f"${{raw_{var}.length}}/${{{expected}}} worker(s) returned`, "
+      f"{{ round: round_{var}, returned: raw_{var}.length, of: {expected} }})")
+    if on_red == "halt":
+        a(f"    log(`node {nid}: worker died in round ${{round_{var}}} — "
+          f"halting per onRed=halt`)")
+        a(f"    RESULTS[{js_str(nid)}] = {var}")
+        a("    return summary('NODE-DEAD')")
+    else:
+        a(f"    log(`{nid} round ${{round_{var}}}: "
+          f"${{{expected} - raw_{var}.length}} worker(s) died — continuing "
+          f"per onRed=drop+log; a dead round is never a dry round`)")
+        a(f"    if (!raw_{var}.length) continue")
+    a("  }")
+    # Per-worker unique-new counts, attributed first-seen in worker order
+    # and KEYED by the worker's list identity — a positional array over the
+    # survivors would shift counts into dead workers' slots. A dead worker
+    # reads null, distinct from a live worker that found nothing (0):
+    # fan-out efficiency (which parallel worker still surfaces new ground)
+    # is unmeasurable once the round's results are merged.
+    wk = (f"String(({lst}[wi] || {{}}).key || wi)" if lst else "String(wi)")
+    a(f"  let found_{var} = 0")
+    a(f"  const fresh_{var} = []")
+    a(f"  const perWorker_{var} = {{}}")
+    a(f"  rawAll_{var}.forEach((r, wi) => {{")
+    a(f"    const wk = {wk}")
+    a(f"    if (!r) {{ perWorker_{var}[wk] = null; return }}")
+    a("    let c = 0")
+    a(f"    for (const it of (r[{js_str(over)}] || [])) {{")
+    a(f"      found_{var}++")
+    a(f"      if (!seen_{var}.has(key_{var}(it))) {{")
+    a(f"        seen_{var}.add(key_{var}(it))")
+    a(f"        seenList_{var}.push(key_{var}(it))")
+    a(f"        fresh_{var}.push(it)")
+    a("        c++")
+    a("      }")
+    a("    }")
+    a(f"    perWorker_{var}[wk] = c")
+    a("  })")
+    a(f"  log(`{nid} round ${{round_{var}}}: ${{found_{var}}} found, "
       f"${{fresh_{var}.length}} new`)")
     a(f"  if (!fresh_{var}.length) {{")
-    a(f"    dry_{var}++")
-    a(f"    note({js_str(nid)}, 'OK', `round ${{round_{var}}} dry "
-      f"(${{dry_{var}}}/{dry_target})`)")
+    a(f"    if (deadRound_{var}) {{")
+    a(f"      note({js_str(nid)}, 'OK', `round ${{round_{var}}}: nothing new "
+      f"from survivors — NOT counted dry; a round with dead workers proves "
+      f"nothing about their ground`, {{ round: round_{var}, "
+      f"found: found_{var}, fresh: 0, kept: 0, perWorker: perWorker_{var} }})")
+    a("    } else {")
+    a(f"      dry_{var}++")
+    a(f"      note({js_str(nid)}, 'OK', `round ${{round_{var}}} dry "
+      f"(${{dry_{var}}}/{dry_target})`, {{ round: round_{var}, "
+      f"found: found_{var}, fresh: 0, kept: 0, perWorker: perWorker_{var} }})")
+    a("    }")
     a("    continue")
     a("  }")
     a(f"  dry_{var} = 0")
@@ -1544,13 +2068,16 @@ def emit_repeat(n, ir, prompt, phase, panel, over):
         a(f"  const kept_{var} = fresh_{var}")
     a(f"  {var}.push(...kept_{var})")
     a(f"  note({js_str(nid)}, 'OK', `round ${{round_{var}}}: ${{kept_{var}.length}} kept "
-      f"of ${{fresh_{var}.length}} new`)")
+      f"of ${{fresh_{var}.length}} new`, {{ round: round_{var}, found: found_{var}, "
+      f"fresh: fresh_{var}.length, kept: kept_{var}.length, "
+      f"perWorker: perWorker_{var} }})")
     a("}")
     a(f"if (round_{var} >= {max_rounds} && dry_{var} < {dry_target}) {{")
-    a(f"  log(`{nid}: hit maxRounds {max_rounds} while still finding new items — "
+    a(f"  log(`{nid}: hit maxRounds {max_rounds} before the dry rule fired — "
+      f"new items still arriving, or rounds kept losing workers; "
       f"discovery INCOMPLETE, not exhausted`)")
     a(f"  note({js_str(nid)}, 'INCOMPLETE', `ended on the {max_rounds}-round ceiling "
-      f"with new items still arriving; the sweep is not exhaustive`)")
+      f"before the dry rule fired; the sweep is not exhaustive`)")
     a("  INCOMPLETE = true")
     a("}")
     a(f"log(`{nid}: ${{{var}.length}} item(s) kept across ${{round_{var}}} round(s)`)")
