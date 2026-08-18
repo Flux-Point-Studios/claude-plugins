@@ -562,6 +562,7 @@ existing harness and each is independently shippable.
 | 14 | `{{prev.<field>}}` projection (validated single-hop, bracket-emitted; the compile-clean/launch-dead trap closed) + `reduce` nodes (deterministic dedupe/rank/cut between agents, zero spawns, cuts named) | **shipped** |
 | 15 | `onRed` as a closed registry, enforced on fan-out and discovery (a dead worker can halt; a round that lost any worker never reads as dry; a ceiling-declined spawn files SKIPPED and halts as BUDGET-EXHAUSTED, never NODE-DEAD) | **shipped** |
 | 16 | Graph metrics: `spawned`/`planned`/`spent` in summaries, structured provenance data, `scripts/metrics.py`, scope-creep and serialization warnings (circuit 10) | **shipped** |
+| 17 | Hygiene scan no longer flags the proof ratchet's OWN baseline — `.fluxpoint-proof-baseline.json` records a count for every marker the scan hunts, so `"lean.sorry": 0` (the evidence a repo is clean) read as a proof hole and turned the gate red | **shipped** |
 
 ## Part 6 — named absences
 
