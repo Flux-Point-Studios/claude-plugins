@@ -216,5 +216,35 @@ rejected(
     "is not a field",
 )
 
+
+# A haltWhen literal is regex-checked and json.dumps'd, which closes quote
+# termination -- but emit_halt_any drops it inside a BACKTICK template, where
+# ${ interpolates, so the literal reached executable position through the very
+# log line that reported the halt. This probe printed EXECUTED before js_tmpl.
+def halt_literal_cannot_interpolate():
+    name = "haltWhen literal cannot interpolate into the halt log"
+    nl = chr(10)
+    n = {"id": "probe", "haltReason": "x",
+         "haltWhen": "exit != '${(globalThis.__PWN=1)}'"}
+    js = cg.emit_halt_any(n, "v")
+    wrapper = nl.join([
+        "const log=()=>{},note=()=>{},summary=()=>0,RESULTS={};",
+        "const v=[{exit:1}];", "function run(){", js, "}",
+        "try{run()}catch(e){}",
+        "console.log(globalThis.__PWN?'EXECUTED':'INERT')", ""])
+    with tempfile.TemporaryDirectory() as d:
+        f = os.path.join(d, "p.mjs")
+        with open(f, "w", encoding="utf-8") as fh:
+            fh.write(wrapper)
+        if subprocess.run(["node", "--check", f], capture_output=True).returncode:
+            report(name, False, "emitted JS does not parse")
+            return
+        out = subprocess.run(["node", f], capture_output=True, text=True).stdout
+    report(name, "INERT" in out, "payload inert" if "INERT" in out
+           else "PAYLOAD EXECUTED -- template-literal injection")
+
+
+halt_literal_cannot_interpolate()
+
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

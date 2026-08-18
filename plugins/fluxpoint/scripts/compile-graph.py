@@ -1083,6 +1083,19 @@ def js_str(s):
     return json.dumps(str(s))
 
 
+def js_tmpl(s):
+    """Escape for a JS TEMPLATE literal: backslash, backtick, and ${.
+
+    json.dumps closes the quote-termination hole but not this one -- its
+    output is a DOUBLE-quoted string, and ${ inside a backtick context
+    interpolates, so a haltWhen literal reached executable position through
+    the very log line that reported the halt.
+    """
+    return (str(s).replace(chr(92), chr(92) * 2)
+            .replace(chr(96), chr(92) + chr(96))
+            .replace("${", chr(92) + "${"))
+
+
 def js_template(s, mapping=None):
     """Render an IR prompt as a JS template literal, honoring {{expr}}.
 
@@ -1145,7 +1158,7 @@ def emit_halt_any(n, var):
         f"const tripped_{var} = {var}.filter(r => r && r.{field} {op} {lit})\n"
         f"if (tripped_{var}.length) {{\n"
         f"  log(`HALT at {n['id']}: ${{tripped_{var}.length}}/${{{var}.length}} item(s) "
-        f"tripped {field} {op} {lit} — ` + {js_str(n.get('haltReason', 'halt condition met'))})\n"
+        f"tripped {js_tmpl(field)} {js_tmpl(op)} {js_tmpl(lit)} — ` + {js_str(n.get('haltReason', 'halt condition met'))})\n"
         f"  note({js_str(n['id'])}, 'HALTED', `${{tripped_{var}.length}} item(s) tripped "
         f"{field}`)\n"
         f"  RESULTS[{js_str(n['id'])}] = {var}\n"
