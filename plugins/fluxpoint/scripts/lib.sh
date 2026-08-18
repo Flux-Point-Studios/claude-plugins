@@ -123,6 +123,10 @@ _fpl_skip_path() {
   case "$1" in
     *.md|*.svg|*.min.js|*.lock|package-lock.json|pnpm-lock.yaml|yarn.lock) return 0 ;;
     .claude/*|*/.claude/*|node_modules/*|*/node_modules/*) return 0 ;;
+    # The proof ratchet's own baseline NAMES every marker the scan hunts —
+    # "lean.sorry": 0 is a count of zero holes, and reading it as a hole makes
+    # the guard flag the evidence that it is clean.
+    .fluxpoint-proof-baseline.json|*/.fluxpoint-proof-baseline.json) return 0 ;;
     target/*|*/target/*|dist/*|*/dist/*|build/*|*/build/*|.git/*) return 0 ;;
   esac
   return 1
