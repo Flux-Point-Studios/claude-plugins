@@ -1,0 +1,981 @@
+#!/usr/bin/env python3
+"""Hybrid recall: the memory the harness already keeps, made findable.
+
+memory.jsonl remembers what campaigns established, but the only way back in
+is an exact tag|dedupeKey match — a lesson about beacon-prefix derivation is
+invisible to a session working on two-way asset beacons unless someone
+guesses the tag. The relations that would connect them already exist, typed
+and machine-produced: lesson→run provenance, supersession chains, path
+components inside dedupe keys, node and campaign membership, pinned
+counterexamples. Nothing walks them.
+
+This tool closes that gap without adding a store or a writer. It compiles a
+DERIVED index — a typed graph plus a lexical index plus optional dense
+vectors — from the append-only stores that already exist, the way
+compile-graph.py compiles the IR: deterministically, with no model in the
+loop, byte-identical for identical sources. The index lives under
+gitignored .claude/fluxpoint/index/ and is a rebuildable cache; the stores
+stay the only truth, and a malformed line in a SOURCE store is still a hard
+error, while a damaged INDEX file is deleted and rebuilt out loud.
+
+Retrieval fuses up to four kinds of evidence with weighted reciprocal-rank
+fusion (k=60): BM25 over an identifier-aware tokenization of the query,
+BM25 over path/symbol tokens from files touched, cosine against API
+embeddings when a key is present (see embedder.py — the one sanctioned
+non-deterministic input, and it can only reorder), and personalized
+PageRank over the graph from tag/file/campaign seeds. Killed lessons are
+retrieved and labelled — they are the half a fresh context cannot
+reconstruct — and never used to suppress anything: recall output reaches
+prompts and SessionStart context only, exactly like memory.py seeds, so a
+re-found item is still judged on its merits.
+
+  recall.py --build [--embed]          compile the index (embed = backfill vectors)
+  recall.py --verify                   exit 1 when the index lags its sources
+  recall.py --stats                    what is indexed, what is pending, what dropped
+  recall.py --query "..." [--files a,b] [--tag t]... [--center id]
+            [--k 12] [--as-of TS] [--include-superseded] [--offline]
+            [--format lines|json|seedmap]
+  recall.py --for-session              the SessionStart section: offline, capped, factual
+
+--format seedmap emits exactly the {tag: {keys, killed}} shape
+memory.py --load prints, with keys ordered by relevance instead of file
+order, so /fluxpoint:graph-run can feed args._seen from here and the
+compiled graph's advisory-seed contract is untouched.
+"""
+import argparse
+import datetime
+import json
+import math
+import os
+import re
+import subprocess
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import memory as memory_mod  # noqa: E402 - sibling module, house idiom
+import embedder  # noqa: E402
+
+INDEX_DIR = os.path.join(".claude", "fluxpoint", "index")
+RUNS_DIR = os.path.join(".claude", "fluxpoint", "runs")
+CEX = ".fluxpoint-cex.jsonl"
+GRAPH_F, LEX_F, META_F = "graph.json", "lex.json", "index.meta.json"
+
+DOC_KINDS = {"lesson", "cex"}
+NODE_KINDS = DOC_KINDS | {"tag", "file", "run", "campaign", "gnode"}
+EDGE_KINDS = {"TAGGED", "PRODUCED_IN", "KILLED_BY", "AT_NODE", "TOUCHES",
+              "PART_OF", "PINS", "SUPERSEDES"}
+# How much rank mass each edge kind carries in the graph walk. SUPERSEDES
+# is deliberately zero: the walk must never ride into a replaced row.
+# KILLED_BY stays walkable and never expires — the kill is a currently-valid
+# fact even though the claim it killed is not, which is how "kills are
+# priors, never suppressors" holds in the type system instead of code
+# convention.
+EDGE_WEIGHT = {"TOUCHES": 1.0, "PINS": 0.7, "PRODUCED_IN": 0.7,
+               "KILLED_BY": 0.7, "TAGGED": 0.5, "AT_NODE": 0.5,
+               "PART_OF": 0.5, "SUPERSEDES": 0.0}
+K1, B = 1.2, 0.4          # BM25, short-document setting
+RRF_K = 60                # Cormack's fusion constant
+LEG_WEIGHT = {"lex": 1.0, "ident": 1.0, "dense": 1.0, "graph": 0.7}
+MIN_DENSE = 0.6           # cosine floor for the dense leg
+DAMPING = 0.5             # PPR restart mass stays near the seeds
+PATH_RE = re.compile(r"^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)+$")
+
+
+def _dumps(obj):
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"))
+
+
+def _sha_file(path):
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _parse_ts(ts):
+    try:
+        return datetime.datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _now():
+    return datetime.datetime.now(datetime.timezone.utc)
+
+
+def tokenize(text):
+    """fpl-ident-v1: identifier-aware, deterministic, no stemming.
+
+    Every compound token (path, snake_case name, hex run) is kept whole AND
+    split, so an exact-identifier query lands and a prose paraphrase still
+    overlaps. Stemming is refused: it varies by implementation and this
+    corpus's jargon is exactly what stemmers mangle.
+    """
+    toks = []
+    for raw in re.findall(r"[A-Za-z0-9_./-]+", text or ""):
+        whole = raw.strip("./-_").lower()
+        if len(whole) >= 2:
+            toks.append(whole)
+        spaced = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", raw)
+        for piece in re.split(r"[^A-Za-z0-9]+", spaced):
+            piece = piece.lower()
+            if len(piece) >= 2 and piece != whole:
+                toks.append(piece)
+    return toks
+
+
+# ---------------------------------------------------------------- sources
+
+def _read_runs(root):
+    """{runId: artifact}. A malformed artifact is fatal, the same rule
+    resolve_imports applies: what the index contains must not depend on
+    which artifacts happened to parse."""
+    d = os.path.join(root, RUNS_DIR)
+    out = {}
+    if not os.path.isdir(d):
+        return out
+    for fn in sorted(os.listdir(d)):
+        if not fn.endswith(".json"):
+            continue
+        p = os.path.join(d, fn)
+        try:
+            with open(p, encoding="utf-8") as fh:
+                art = json.load(fh)
+        except (OSError, json.JSONDecodeError) as e:
+            raise SystemExit(f"recall: {p} is not readable JSON: {e}")
+        rid = art.get("runId") or fn[:-5]
+        out[rid] = art
+    return out
+
+
+def _read_cex(root):
+    p = os.path.join(root, CEX)
+    if not os.path.exists(p):
+        return []
+    rows = []
+    with open(p, encoding="utf-8") as fh:
+        for i, line in enumerate(fh, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError as e:
+                raise SystemExit(f"recall: {p}:{i} is not valid JSON: {e}")
+    return rows
+
+
+def _source_fingerprints(root):
+    fp = {}
+    mem = memory_mod.path_for(root)
+    fp["memory.jsonl"] = _sha_file(mem) if os.path.exists(mem) else "absent"
+    cex = os.path.join(root, CEX)
+    fp["cex.jsonl"] = _sha_file(cex) if os.path.exists(cex) else "absent"
+    d = os.path.join(root, RUNS_DIR)
+    parts = []
+    if os.path.isdir(d):
+        for fn in sorted(os.listdir(d)):
+            if fn.endswith(".json"):
+                parts.append(f"{fn}:{_sha_file(os.path.join(d, fn))}")
+    import hashlib
+    fp["runs"] = hashlib.sha256("|".join(parts).encode()).hexdigest()
+    return fp
+
+
+# ------------------------------------------------------------------ build
+
+def build(root, embed_backfill=False, transport=None):
+    """Compile the index. Returns a stats dict; degradations are in it.
+
+    graph.json and lex.json are byte-identical across rebuilds from
+    identical sources (sorted keys, sorted edges, no timestamps in the
+    body). The vector file depends on the active provider and is cached by
+    content hash, so a rebuild re-embeds only new or changed cards.
+    """
+    rows = memory_mod.read(root)          # hard-fails on a malformed line
+    runs = _read_runs(root)
+    cexes = _read_cex(root)
+
+    histories = {}
+    for r in rows:
+        histories.setdefault(f"{r.get('tag')}|{r.get('dedupeKey')}", []).append(r)
+
+    nodes, edges = {}, set()
+    dropped_paths = 0
+
+    def entity(nid, kind, **attrs):
+        if nid not in nodes:
+            nodes[nid] = {"kind": kind, **attrs}
+        return nid
+
+    for ident, hist in sorted(histories.items()):
+        latest = hist[-1]
+        tag, key = latest.get("tag"), latest.get("dedupeKey")
+        nid = f"lesson:{ident}"
+        # The retrieval card: claim and objection carry the meaning, the
+        # identifiers (dedupe key, tag, node) carry the exact-match tokens
+        # a diff-derived query lands on. Rendering uses the bare claim.
+        text = str(latest.get("claim") or "")
+        if latest.get("objection"):
+            text += " || objection: " + str(latest["objection"])
+        text += f" || {key} {tag} {latest.get('node') or ''}"
+        run_ids = sorted({h.get("provenance", {}).get("runId")
+                          for h in hist if h.get("provenance", {}).get("runId")})
+        nodes[nid] = {
+            "kind": "lesson", "tag": tag, "dedupeKey": key, "text": text,
+            "claim": str(latest.get("claim") or ""),
+            "status": latest.get("status"),
+            "objection": latest.get("objection") or "",
+            "kills": latest.get("kills", 0), "node": latest.get("node"),
+            "runs": run_ids,
+            "created": hist[0].get("establishedWhen"),
+            "when": latest.get("establishedWhen"),
+            "versions": [{"when": h.get("establishedWhen"),
+                          "status": h.get("status"),
+                          "claim": h.get("claim"),
+                          "objection": h.get("objection") or "",
+                          "runId": h.get("provenance", {}).get("runId")}
+                         for h in hist],
+        }
+        edges.add((nid, "TAGGED", entity(f"tag:{tag}", "tag")))
+        for rid in run_ids:
+            edges.add((nid, "PRODUCED_IN", entity(f"run:{rid}", "run")))
+        if latest.get("status") == "killed":
+            kill_rid = latest.get("provenance", {}).get("runId")
+            if kill_rid:
+                edges.add((nid, "KILLED_BY",
+                           entity(f"run:{kill_rid}", "run")))
+        if latest.get("node"):
+            edges.add((nid, "AT_NODE",
+                       entity(f"gnode:{latest['node']}", "gnode")))
+        for part in str(key or "").split("|"):
+            part = part.strip()
+            if PATH_RE.match(part):
+                if os.path.exists(os.path.join(root, part)):
+                    edges.add((nid, "TOUCHES", entity(f"file:{part}", "file")))
+                else:
+                    dropped_paths += 1
+
+    for rid, art in sorted(runs.items()):
+        rnid = entity(f"run:{rid}", "run")
+        nodes[rnid]["when"] = art.get("when")
+        camp = (art.get("summary") or {}).get("campaign") or ""
+        if camp:
+            nodes[rnid]["campaign"] = camp
+            edges.add((rnid, "PART_OF", entity(f"campaign:{camp}", "campaign")))
+
+    for row in cexes:
+        cid = row.get("cexId")
+        if not cid:
+            continue
+        nid = f"cex:{cid}"
+        text = " ".join(str(row.get(k) or "")
+                        for k in ("title", "module", "tool")).strip()
+        nodes[nid] = {"kind": "cex", "text": text,
+                      "status": row.get("status") or "",
+                      "when": (row.get("pin") or {}).get("pinnedWhen")
+                      or row.get("when") or ""}
+        pin = row.get("pin") or {}
+        if pin.get("file") and os.path.exists(os.path.join(root, pin["file"])):
+            edges.add((nid, "PINS", entity(f"file:{pin['file']}", "file")))
+
+    # gnode -> campaign membership, via the runs that filed lessons there.
+    for nid, n in list(nodes.items()):
+        if n["kind"] != "lesson" or not n.get("node"):
+            continue
+        for rid in n["runs"]:
+            camp = nodes.get(f"run:{rid}", {}).get("campaign")
+            if camp:
+                edges.add((f"gnode:{n['node']}", "PART_OF", f"campaign:{camp}"))
+
+    # Stale kills, decided at build time so no hook ever spawns git. A
+    # killed lesson whose touched file changed after the kill is MARKED —
+    # never dropped or down-ranked — because a finding that comes back
+    # after the code moved is exactly the regression a sweep exists to
+    # catch, and hiding the kill would hide it.
+    stale_kills = _mark_stale_kills(root, nodes, edges)
+
+    graph = {"version": 1, "nodes": nodes,
+             "edges": sorted(list(e) for e in edges)}
+
+    docs = {nid: n for nid, n in nodes.items() if n["kind"] in DOC_KINDS}
+    lex_docs, df = {}, {}
+    for nid in sorted(docs):
+        toks = tokenize(docs[nid].get("text") or "")
+        tf = {}
+        for t in toks:
+            tf[t] = tf.get(t, 0) + 1
+        lex_docs[nid] = {"len": len(toks), "tf": tf}
+        for t in tf:
+            df[t] = df.get(t, 0) + 1
+    n_docs = len(lex_docs)
+    lex = {"version": 1, "tokenizer": "fpl-ident-v1", "k1": K1, "b": B,
+           "N": n_docs,
+           "avgdl": (sum(d["len"] for d in lex_docs.values()) / n_docs)
+           if n_docs else 0.0,
+           "df": df, "docs": lex_docs}
+
+    idx = os.path.join(root, INDEX_DIR)
+    os.makedirs(idx, exist_ok=True)
+    for fn, obj in ((GRAPH_F, graph), (LEX_F, lex)):
+        with open(os.path.join(idx, fn), "w", encoding="utf-8",
+                  newline="\n") as fh:
+            fh.write(_dumps(obj))
+
+    stats = {"docs": n_docs, "nodes": len(nodes), "edges": len(edges),
+             "droppedPaths": dropped_paths, "staleKills": stale_kills,
+             "pending": 0, "provider": "none"}
+    stats.update(_sync_vectors(root, docs, embed_backfill, transport))
+
+    meta = {"version": 1, "sources": _source_fingerprints(root),
+            "docs": n_docs, "pending": stats["pending"],
+            "provider": stats["provider"],
+            "droppedPaths": dropped_paths, "staleKills": stale_kills}
+    with open(os.path.join(idx, META_F), "w", encoding="utf-8",
+              newline="\n") as fh:
+        fh.write(_dumps(meta))
+    return stats
+
+
+def _mark_stale_kills(root, nodes, edges):
+    """Sets node['stale'] = <path> on killed lessons whose touched file
+    changed after the kill. Returns how many were marked."""
+    touches = {}
+    for src, kind, dst in edges:
+        if kind == "TOUCHES":
+            touches.setdefault(src, []).append(dst[len("file:"):])
+    checked, marked = {}, 0
+    for nid in sorted(nodes):
+        n = nodes[nid]
+        if n["kind"] != "lesson" or n.get("status") != "killed":
+            continue
+        killed_at = _parse_ts(n.get("when"))
+        if killed_at is None:
+            continue
+        for path in sorted(touches.get(nid, [])):
+            if path not in checked:
+                try:
+                    out = subprocess.run(
+                        ["git", "log", "-1", "--format=%cI", "--", path],
+                        capture_output=True, text=True, timeout=10, cwd=root)
+                    checked[path] = _parse_ts(out.stdout.strip())
+                except (OSError, subprocess.TimeoutExpired):
+                    checked[path] = None
+            if checked[path] is not None and checked[path] > killed_at:
+                n["stale"] = path
+                marked += 1
+                break
+    return marked
+
+
+def _vec_path(root, spec):
+    safe_model = re.sub(r"[^A-Za-z0-9._-]+", "_", spec["model"])
+    return os.path.join(root, INDEX_DIR,
+                        f"vec-{spec['provider']}-{safe_model}-{spec['dims']}.jsonl")
+
+
+def _load_vectors(root, spec):
+    """{docId: {sha, vec}} from the active provider's file. A damaged
+    vector file is a cache, not a store: it is discarded out loud and the
+    rows become pending, because a hook must never die on it."""
+    p = _vec_path(root, spec)
+    if not os.path.exists(p):
+        return {}
+    out = {}
+    try:
+        with open(p, encoding="utf-8") as fh:
+            header = json.loads(fh.readline())
+            if (header.get("model") != spec["model"]
+                    or header.get("dims") != spec["dims"]):
+                print(f"recall: {p} header names a different model/dims; "
+                      f"rebuilding that dense file", file=sys.stderr)
+                return {}
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                row = json.loads(line)
+                out[row["id"]] = {"sha": row["sha"],
+                                  "vec": embedder.unpack(row["v"], spec["dims"])}
+    except (OSError, json.JSONDecodeError, KeyError, ValueError) as e:
+        print(f"recall: discarding damaged vector cache {p}: {e}",
+              file=sys.stderr)
+        return {}
+    return out
+
+
+def _sync_vectors(root, docs, backfill, transport):
+    spec = embedder.resolve()
+    if spec["provider"] == "none":
+        return {"pending": len(docs), "provider": "none"}
+    have = _load_vectors(root, spec)
+    want = {nid: (docs[nid].get("text") or "") for nid in sorted(docs)}
+    keep, missing = {}, []
+    for nid, text in want.items():
+        sha = embedder.text_sha(text)
+        if nid in have and have[nid]["sha"] == sha:
+            keep[nid] = {"sha": sha, "vec": have[nid]["vec"]}
+        else:
+            missing.append((nid, text, sha))
+    embedded = 0
+    if backfill and missing:
+        try:
+            vecs = embedder.embed([t for _, t, _ in missing], "document",
+                                  spec, transport=transport)
+            for (nid, _, sha), vec in zip(missing, vecs):
+                keep[nid] = {"sha": sha, "vec": vec}
+                embedded += 1
+            missing = []
+        except embedder.EmbedError as e:
+            print(f"recall: dense backfill failed ({e}); "
+                  f"{len(missing)} card(s) stay pending", file=sys.stderr)
+    p = _vec_path(root, spec)
+    with open(p, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(_dumps({"version": 1, "provider": spec["provider"],
+                         "model": spec["model"], "dims": spec["dims"],
+                         "dtype": "f32", "normalized": True}) + "\n")
+        for nid in sorted(keep):
+            fh.write(_dumps({"id": nid, "sha": keep[nid]["sha"],
+                             "v": embedder.pack(keep[nid]["vec"])}) + "\n")
+    return {"pending": len(missing), "provider": spec["provider"],
+            "embedded": embedded}
+
+
+# ------------------------------------------------------------------- load
+
+def _load_json(root, fn):
+    p = os.path.join(root, INDEX_DIR, fn)
+    if not os.path.exists(p):
+        return None
+    try:
+        with open(p, encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, json.JSONDecodeError) as e:
+        print(f"recall: discarding damaged index file {p}: {e}",
+              file=sys.stderr)
+        return None
+
+
+def is_stale(root):
+    meta = _load_json(root, META_F)
+    if not meta:
+        return True
+    return meta.get("sources") != _source_fingerprints(root)
+
+
+def ensure_index(root, offline=True, allow_rebuild=True):
+    """Fresh graph+lex where allowed, stale-but-named where not.
+
+    Returns (graph, lex, note-or-None). With allow_rebuild=False — the hook
+    contract — a stale index is USED and the staleness named, because a
+    SessionStart that spends its 15s window rebuilding injects nothing at
+    all; a missing index returns (None, None, note) and the caller falls
+    back. CLI paths rebuild on any mismatch.
+    """
+    note = None
+    if is_stale(root):
+        if allow_rebuild:
+            build(root, embed_backfill=not offline)
+        else:
+            note = ("memory index lags the stores; ranking reflects the "
+                    "last build — refresh with: py.sh recall.py --build")
+    graph, lex = _load_json(root, GRAPH_F), _load_json(root, LEX_F)
+    if (graph is None or lex is None) and allow_rebuild:
+        build(root, embed_backfill=False)
+        graph, lex = _load_json(root, GRAPH_F), _load_json(root, LEX_F)
+    if graph is None or lex is None:
+        if not allow_rebuild:
+            return None, None, "memory index not built yet"
+        raise SystemExit("recall: index rebuild produced no readable index")
+    for nid, n in graph["nodes"].items():
+        if n.get("kind") not in NODE_KINDS:
+            raise SystemExit(
+                f"recall: {nid} has unknown kind {n.get('kind')!r} — the "
+                f"index registry is closed; rebuild with --build")
+    return graph, lex, note
+
+
+# -------------------------------------------------------------------- legs
+
+def bm25(lex, query_tokens, limit=50):
+    if not query_tokens or not lex["N"]:
+        return []
+    scores = {}
+    seen_q = []
+    for t in query_tokens:
+        if t not in seen_q:
+            seen_q.append(t)
+    for t in seen_q:
+        n_t = lex["df"].get(t)
+        if not n_t:
+            continue
+        idf = math.log(1 + (lex["N"] - n_t + 0.5) / (n_t + 0.5))
+        for nid, d in lex["docs"].items():
+            tf = d["tf"].get(t)
+            if not tf:
+                continue
+            denom = tf + K1 * (1 - B + B * d["len"] / (lex["avgdl"] or 1))
+            scores[nid] = scores.get(nid, 0.0) + idf * tf * (K1 + 1) / denom
+    return sorted(scores.items(), key=lambda kv: (-kv[1], kv[0]))[:limit]
+
+
+def dense_leg(root, query, offline, diagnostics, limit=50):
+    spec = embedder.resolve()
+    if spec["provider"] == "none":
+        diagnostics.append("dense leg absent (no embedder key; "
+                           "lexical + graph only)")
+        return []
+    if offline:
+        diagnostics.append(f"dense leg skipped (offline mode; provider "
+                           f"{spec['provider']} configured)")
+        return []
+    vecs = _load_vectors(root, spec)
+    if not vecs:
+        diagnostics.append(f"dense leg empty (no vectors cached for "
+                           f"{spec['provider']} {spec['model']}; run --build --embed)")
+        return []
+    try:
+        qv = embedder.embed([query], "query", spec)[0]
+    except embedder.EmbedError as e:
+        diagnostics.append(f"dense leg skipped ({e})")
+        return []
+    scored = []
+    for nid in sorted(vecs):
+        s = sum(a * b for a, b in zip(qv, vecs[nid]["vec"]))
+        if s >= MIN_DENSE:
+            scored.append((nid, s))
+    return sorted(scored, key=lambda kv: (-kv[1], kv[0]))[:limit]
+
+
+def _adjacency(graph):
+    adj = {}
+    for src, kind, dst in graph["edges"]:
+        w = EDGE_WEIGHT.get(kind, 0.0)
+        if w <= 0:
+            continue
+        adj.setdefault(src, []).append((dst, w))
+        adj.setdefault(dst, []).append((src, w))
+    return {k: sorted(v) for k, v in sorted(adj.items())}
+
+
+def ppr(graph, seeds, limit=50, iters=30, tol=1e-9):
+    """Personalized PageRank, sparse dict power iteration, deterministic.
+
+    Seeds are weighted by specificity — 1/degree for entity nodes — the
+    graph-native IDF that keeps hub files from dominating every walk.
+    """
+    adj = _adjacency(graph)
+    seed_w = {}
+    for nid, w in sorted(seeds.items()):
+        if nid not in graph["nodes"]:
+            continue
+        deg = len(adj.get(nid, [])) or 1
+        kind = graph["nodes"][nid]["kind"]
+        spec = 1.0 / deg if kind not in DOC_KINDS else 1.0
+        seed_w[nid] = w * spec
+    total = sum(seed_w.values())
+    if total <= 0:
+        return []
+    seed_w = {k: v / total for k, v in seed_w.items()}
+    p = dict(seed_w)
+    for _ in range(iters):
+        nxt = {k: DAMPING * v for k, v in seed_w.items()}
+        for nid in sorted(p):
+            mass, out = p[nid], adj.get(nid, [])
+            if not out:
+                continue
+            wsum = sum(w for _, w in out)
+            share = (1 - DAMPING) * mass / wsum
+            for dst, w in out:
+                nxt[dst] = nxt.get(dst, 0.0) + share * w
+        delta = sum(abs(nxt.get(k, 0.0) - p.get(k, 0.0))
+                    for k in set(p) | set(nxt))
+        p = nxt
+        if delta < tol:
+            break
+    docs = [(nid, s) for nid, s in p.items()
+            if graph["nodes"].get(nid, {}).get("kind") in DOC_KINDS]
+    return sorted(docs, key=lambda kv: (-kv[1], kv[0]))[:limit]
+
+
+def _hops_from(graph, center, cap=6):
+    adj = _adjacency(graph)
+    dist, frontier = {center: 0}, [center]
+    d = 0
+    while frontier and d < cap:
+        d += 1
+        nxt = []
+        for nid in frontier:
+            for dst, _ in adj.get(nid, []):
+                if dst not in dist:
+                    dist[dst] = d
+                    nxt.append(dst)
+        frontier = sorted(nxt)
+    return dist
+
+
+# ------------------------------------------------------------------ search
+
+def _jaccard(a, b):
+    sa, sb = set(a), set(b)
+    if not sa or not sb:
+        return 0.0
+    return len(sa & sb) / len(sa | sb)
+
+
+def search(root, query="", files=None, tags=None, center=None, as_of=None,
+           include_superseded=False, offline=False, k=12,
+           allow_rebuild=True):
+    """The pipeline. Returns (records, diagnostics)."""
+    files, tags = files or [], tags or []
+    diagnostics = []
+    graph, lex, note = ensure_index(root, offline=offline,
+                                    allow_rebuild=allow_rebuild)
+    if note:
+        diagnostics.append(note)
+    if graph is None:
+        return [], diagnostics
+    nodes = graph["nodes"]
+
+    legs = {}
+    q_tokens = tokenize(query)
+    if q_tokens:
+        legs["lex"] = bm25(lex, q_tokens)
+    ident_tokens = tokenize(" ".join(files))
+    if ident_tokens:
+        legs["ident"] = bm25(lex, ident_tokens)
+    if query:
+        d = dense_leg(root, query, offline, diagnostics)
+        if d:
+            legs["dense"] = d
+
+    seeds = {}
+    for t in tags:
+        seeds[f"tag:{t}"] = 1.0
+    for f in files:
+        seeds[f"file:{f}"] = 1.0
+    if center:
+        seeds[center] = 1.0
+    ranked_union = []
+    for leg in ("lex", "ident", "dense"):
+        ranked_union.extend(nid for nid, _ in legs.get(leg, [])[:5])
+    for nid in ranked_union[:5]:
+        seeds.setdefault(nid, 0.5)
+    if seeds:
+        g = ppr(graph, seeds)
+        if g:
+            legs["graph"] = g
+
+    if not legs:
+        return [], diagnostics + ["no query, files, tags, or center given"]
+
+    fused = {}
+    for leg, ranked in legs.items():
+        w = LEG_WEIGHT[leg]
+        for rank, (nid, _) in enumerate(ranked):
+            fused[nid] = fused.get(nid, 0.0) + w / (RRF_K + rank + 1)
+
+    as_of_dt = _parse_ts(as_of) if as_of else None
+    if as_of and as_of_dt is None:
+        raise SystemExit(f"recall: --as-of {as_of!r} is not an ISO timestamp")
+    hops = _hops_from(graph, center) if center else None
+    now = _now()
+
+    records = []
+    for nid, score in fused.items():
+        n = nodes.get(nid)
+        if not n:
+            continue
+        view = dict(n)
+        if n["kind"] == "lesson":
+            if as_of_dt is not None:
+                view = _version_as_of(n, as_of_dt)
+                if view is None:
+                    continue
+            elif n.get("status") == "superseded" and not include_superseded:
+                continue
+            est = len(n.get("runs") or []) or 1
+            score *= math.log2(1 + est) if est > 1 else 1.0
+            when = _parse_ts(view.get("when"))
+            if when is not None:
+                hours = max(0.0, (now - when).total_seconds() / 3600)
+                score *= 0.999 ** hours
+        if hops is not None:
+            score *= (1.0 / (1 + hops[nid])) if nid in hops else 0.25
+        records.append({"id": nid, "score": score, **view})
+
+    records.sort(key=lambda r: (-r["score"], r["id"]))
+
+    kept, tag_count = [], {}
+    for r in records:
+        toks = tokenize(r.get("text") or "")
+        if any(_jaccard(toks, tokenize(o.get("text") or "")) > 0.85
+               for o in kept):
+            continue
+        t = r.get("tag")
+        if t:
+            if tag_count.get(t, 0) >= 3:
+                continue
+            tag_count[t] = tag_count.get(t, 0) + 1
+        kept.append(r)
+        if len(kept) >= k:
+            break
+
+    total = len(records)
+    if total > len(kept):
+        diagnostics.append(f"{total - len(kept)} more candidate(s) beyond "
+                           f"k={k}; re-run with --k or --format json")
+    return kept, diagnostics
+
+
+def _version_as_of(node, as_of_dt):
+    versions = node.get("versions") or []
+    chosen = None
+    for i, v in enumerate(versions):
+        start = _parse_ts(v.get("when"))
+        end = _parse_ts(versions[i + 1].get("when")) \
+            if i + 1 < len(versions) else None
+        if start is not None and start <= as_of_dt \
+                and (end is None or as_of_dt < end):
+            chosen = v
+    if chosen is None:
+        return None
+    view = dict(node)
+    view.update({"text": str(chosen.get("claim") or ""),
+                 "claim": str(chosen.get("claim") or ""),
+                 "status": chosen.get("status"),
+                 "objection": chosen.get("objection") or "",
+                 "when": chosen.get("when"),
+                 "runs": [chosen.get("runId")] if chosen.get("runId") else []})
+    return view
+
+
+# ------------------------------------------------------------------ render
+
+def render_lines(records, diagnostics, budget_bytes=4000, header=None):
+    out = []
+    if header:
+        out.append(header)
+    for r in records:
+        status = r.get("status") or r["kind"]
+        label = f"{r.get('tag')}/{r.get('dedupeKey')}" \
+            if r["kind"] == "lesson" else r["id"]
+        body = r.get("claim") or r.get("text") or ""
+        if r.get("objection"):
+            body += f" || objection: {r['objection']}"
+        line = f"    ({status}) {label} — {body[:160]}"
+        runs = r.get("runs") or []
+        bits = []
+        if runs:
+            bits.append(f"run {runs[-1]}")
+        if r.get("when"):
+            bits.append(str(r["when"])[:10])
+        if r.get("stale"):
+            bits.append(f"stale: {r['stale']} changed since")
+        if bits:
+            line += f" [{'; '.join(bits)}]"
+        out.append(line)
+    for d in diagnostics:
+        out.append(f"    [{d}]")
+    text = ""
+    for i, line in enumerate(out):
+        if len(text) + len(line) + 1 > budget_bytes:
+            text += f"    [elided: {len(out) - i} more line(s) — run " \
+                    f"py.sh recall.py directly]\n"
+            break
+        text += line + "\n"
+    return text.rstrip("\n")
+
+
+def render_seedmap(root, records, tags):
+    """memory.py --load's exact shape, relevance-ordered and capped.
+
+    Keys reach the {{seen}} prompt token only — the compiled graph keeps
+    its dedup set empty regardless of what arrives here, so nothing this
+    ranking drops or keeps can suppress a re-found item.
+    """
+    base = memory_mod.seed_map(root, tags)
+    ranked_by_tag = {}
+    for r in records:
+        if r["kind"] == "lesson" and r.get("tag") in base:
+            ranked_by_tag.setdefault(r["tag"], []).append(r)
+    out = {}
+    for tag in tags:
+        entry = base.get(tag, {"keys": [], "killed": []})
+        ranked = [r["dedupeKey"] for r in ranked_by_tag.get(tag, [])]
+        rest = [k for k in entry["keys"] if k not in ranked]
+        keys = (ranked + rest)[:40]
+        killed_ranked = [{"claim": r.get("claim") or "",
+                          "objection": r.get("objection") or ""}
+                         for r in ranked_by_tag.get(tag, [])
+                         if r.get("status") == "killed"]
+        seen_claims = {k["claim"] for k in killed_ranked}
+        killed_rest = [k for k in entry["killed"]
+                       if k.get("claim") not in seen_claims]
+        out[tag] = {"keys": keys,
+                    "killed": (killed_ranked + killed_rest)[:10]}
+    return out
+
+
+# ------------------------------------------------------------- for-session
+
+def for_session(root):
+    """The SessionStart section: offline, capped, never rebuilding, silent
+    when there is nothing to say. Exit 0 unconditionally — a hook that can
+    wedge a session is a worse failure than the memory it was protecting."""
+    if not os.path.exists(memory_mod.path_for(root)):
+        return 0
+    query = _work_query(root) or "lessons decisions counterexamples"
+    files = _session_files(root)
+    try:
+        records, diagnostics = search(root, query=query, files=files,
+                                      offline=True, k=5,
+                                      allow_rebuild=False)
+    except SystemExit as e:
+        print(f"- Memory recall unavailable: {e}")
+        return 0
+    if not records:
+        # No index yet: the newest filed lessons still orient a fresh
+        # context, and the line names how to get ranking back.
+        rows = memory_mod.current(root)
+        if not rows:
+            return 0
+        rows.sort(key=lambda r: str(r.get("establishedWhen") or ""),
+                  reverse=True)
+        note = "; ".join(diagnostics) or "no recall candidates"
+        print(f"- Newest filed lessons ({note}):")
+        for r in rows[:3]:
+            print(f"    ({r.get('status')}) {r.get('tag')}/"
+                  f"{r.get('dedupeKey')} — {str(r.get('claim'))[:120]}")
+        return 0
+    header = ("- Lessons recalled from prior campaigns, most relevant "
+              "first (offline ranking; advisory — a re-found item is "
+              "still judged on its merits):")
+    print(render_lines(records[:5], diagnostics, budget_bytes=1200,
+                       header=header))
+    return 0
+
+
+def _work_query(root):
+    for fn in ("WORK.md", "LOOP.md"):
+        p = os.path.join(root, fn)
+        if not os.path.exists(p):
+            continue
+        try:
+            lines = open(p, encoding="utf-8", errors="replace").read().splitlines()
+        except OSError:
+            return ""
+        picked = []
+        for ln in lines[:12]:
+            if re.match(r"^(#|STATUS:|MODE:)", ln.strip()):
+                picked.append(ln.strip().lstrip("# "))
+        open_items = [ln.strip()[6:] for ln in lines
+                      if re.match(r"^\s*-\s*\[( |~)\]", ln)][:3]
+        return " ".join(picked + open_items)[:512]
+    return ""
+
+
+def _session_files(root):
+    try:
+        out = subprocess.run(["git", "diff", "HEAD", "--name-only"],
+                             capture_output=True, text=True, timeout=10,
+                             cwd=root)
+        return [f for f in out.stdout.splitlines() if f][:20]
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+
+
+# -------------------------------------------------------------------- main
+
+def refresh(root, embed=True):
+    """record-run.py's pass: rebuild after filing. Returns a stats dict."""
+    return build(root, embed_backfill=embed)
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--root", default=".")
+    g = ap.add_mutually_exclusive_group(required=True)
+    g.add_argument("--build", action="store_true")
+    g.add_argument("--verify", action="store_true")
+    g.add_argument("--stats", action="store_true")
+    g.add_argument("--query", default=None)
+    g.add_argument("--for-session", action="store_true")
+    ap.add_argument("--embed", action="store_true",
+                    help="with --build: backfill dense vectors (needs a key)")
+    ap.add_argument("--files", default="",
+                    help="comma-separated paths for the identifier leg and seeds")
+    ap.add_argument("--tag", action="append", default=[])
+    ap.add_argument("--center", default=None,
+                    help="graph node id (e.g. campaign:slug) for distance rerank")
+    ap.add_argument("--as-of", default=None)
+    ap.add_argument("--include-superseded", action="store_true")
+    ap.add_argument("--offline", action="store_true")
+    ap.add_argument("--no-rebuild", action="store_true",
+                    help="use a stale index and say so, instead of rebuilding")
+    ap.add_argument("--k", type=int, default=12)
+    ap.add_argument("--budget-bytes", type=int, default=4000)
+    ap.add_argument("--format", default="lines",
+                    choices=("lines", "json", "seedmap"))
+    a = ap.parse_args()
+
+    if a.for_session:
+        return for_session(a.root)
+
+    if a.build:
+        stats = build(a.root, embed_backfill=a.embed)
+        print(f"recall: indexed {stats['docs']} doc(s), {stats['nodes']} "
+              f"node(s), {stats['edges']} edge(s); dense: "
+              f"{stats['provider']}" +
+              (f", {stats['pending']} pending" if stats["pending"] else "") +
+              (f"; {stats['staleKills']} stale kill(s) marked"
+               if stats["staleKills"] else "") +
+              (f"; {stats['droppedPaths']} unresolved path component(s) "
+               f"dropped" if stats["droppedPaths"] else ""))
+        return 0
+
+    if a.verify:
+        if is_stale(a.root):
+            print("recall: index is stale or absent — run --build")
+            return 1
+        print("recall: index matches its sources")
+        return 0
+
+    if a.stats:
+        meta = _load_json(a.root, META_F)
+        if not meta:
+            print("recall: no index built yet — run --build")
+            return 0
+        state = "stale" if is_stale(a.root) else "current"
+        print(f"recall: {meta['docs']} doc(s) indexed ({state}); dense "
+              f"provider {meta['provider']}" +
+              (f", {meta['pending']} pending embedding"
+               if meta.get("pending") else ""))
+        return 0
+
+    if a.format == "seedmap" and not a.tag:
+        ap.error("--format seedmap requires at least one --tag")
+    files = [f.strip() for f in a.files.split(",") if f.strip()]
+    records, diagnostics = search(
+        a.root, query=a.query or "", files=files, tags=a.tag,
+        center=a.center, as_of=a.as_of,
+        include_superseded=a.include_superseded, offline=a.offline, k=a.k,
+        allow_rebuild=not a.no_rebuild)
+    if a.format == "seedmap":
+        # Always valid JSON, even empty: a cold start is different from a
+        # loader that failed.
+        print(json.dumps(render_seedmap(a.root, records, a.tag)))
+    elif a.format == "json":
+        print(json.dumps({"results": records, "diagnostics": diagnostics}))
+    else:
+        print(render_lines(records, diagnostics,
+                           budget_bytes=a.budget_bytes) or "(nothing recalled)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

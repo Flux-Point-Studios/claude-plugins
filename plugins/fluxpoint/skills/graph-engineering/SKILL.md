@@ -411,6 +411,17 @@ Two rules the compiler enforces because getting them wrong is subtle:
   A sweep that stopped early and a sweep that finished are different
   claims and never get blurred into one.
 
+Seeds are loaded ranked, not raw: `scripts/recall.py --format seedmap`
+serves the same `{tag: {keys, killed}}` shape as `memory.py --load`, but
+ordered by a hybrid of BM25, the memory graph (provenance, kill events,
+touched files, campaign membership walked with personalized PageRank),
+and — when an embedder key is present — semantic similarity to the
+campaign line. Relevance decides what reaches the prompt *first* under a
+budget; it never decides what gets judged. Lessons whose tag never
+matches the sweep's still surface at SessionStart, ranked against the
+work file, so knowledge filed under one campaign reaches the next one
+without anyone guessing the tag.
+
 ## Running, repairing, evidence
 
 `/fluxpoint:graph-run` compiles, runs, and records. Watch with
