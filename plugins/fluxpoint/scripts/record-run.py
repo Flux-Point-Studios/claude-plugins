@@ -254,6 +254,13 @@ def main():
                 n = sum(1 for c in checks if c["status"] == st)
                 if n:
                     tally[st.lower()] = n
+            # Recorded separately because the two absences mean different
+            # things: a claimed red with no row is expected (failures are not
+            # attested), a claimed green with no row is not.
+            sg = sum(1 for c in checks
+                     if c["status"] == "UNATTESTED" and c.get("claimedExit") == 0)
+            if sg:
+                tally["unattested_claiming_pass"] = sg
             attestation = {"tally": tally, "checks": checks}
             for c in checks:
                 stream = sys.stderr if c["status"] == "MISMATCH" else sys.stdout
@@ -284,10 +291,27 @@ def main():
                 # The verification the graph declared did not happen. That is
                 # not tampering — an executor that never routes through the
                 # Bash tool leaves no rows — but it is not a clean run either.
+                #
+                # Absence is not equally suspicious in both directions, and
+                # saying so is the only thing the cross-check can do about the
+                # measured asymmetry: PostToolUse does not fire when a Bash
+                # call fails, so a red gate is never attested. A node claiming
+                # a NON-ZERO exit with no row is therefore consistent with a
+                # gate that really failed — the log could not have recorded it.
+                # A node claiming exit 0 with no row is the shape MISMATCH
+                # exists to catch and structurally cannot: the runtime does
+                # mint rows for passes, so a claimed pass should have left one.
+                silent_green = [c for c in unproven if c.get("claimedExit") == 0]
                 outcome = "INCOMPLETE"
                 print(f"record-run: {len(unproven)} declared prove: node(s) cited "
                       f"no attestation — the declared verification did not run",
                       file=sys.stderr)
+                if silent_green:
+                    print(f"record-run: {len(silent_green)} of them claim exit 0 "
+                          f"with no row. A pass leaves a row; a failure may not. "
+                          f"Treat these as the unverified ones: "
+                          + ", ".join(sorted(c["node"] for c in silent_green)),
+                          file=sys.stderr)
     except Exception as e:  # noqa: BLE001 - a witness must never eat the record
         print(f"record-run: attestation cross-check failed: {e}", file=sys.stderr)
 

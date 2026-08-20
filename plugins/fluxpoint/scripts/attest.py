@@ -20,7 +20,7 @@ agent never touches the number.
 Dormant by design: a repo with no `.fluxpoint-gates.json` attests nothing
 and says nothing, exactly like the DoD gate in a repo with no harness.
 
-Two limits, stated rather than papered over. The hook only sees executions
+Three limits, stated rather than papered over. The hook only sees executions
 that go through the Bash tool, so a gate run some other way produces no row
 — which is why an unattested claim is reported UNATTESTED and never as a
 failure; treating absence as guilt would make this a false-red generator on
@@ -28,6 +28,16 @@ the first executor that does not route through the hook. And the log records
 what a command exited with, not whether the command was worth running: a
 declared gate that is itself weakened is `fpl_harness_modified`'s problem
 and the proof-guard ratchet's, not this file's.
+
+The third bounds everything above it: PostToolUse has been measured NOT to
+fire when a Bash call fails, so in practice this log may contain only passes.
+The reader below handles every failure shape the runtime can send, and that
+branch is currently exercised by fixtures rather than by observed payloads.
+Read the consequence carefully — UNATTESTED on a `prove:` node carries no
+information about whether the gate passed, so the binding between a claimed
+exit and the runtime's own holds for zeros and is silent about reds. A node
+claiming green with no row is therefore the shape worth suspecting, and
+record-run.py reports it separately for that reason.
 """
 import argparse
 import datetime
