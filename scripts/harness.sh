@@ -163,6 +163,7 @@ case "${1:---full}" in
     step "secret-handling skill shapes (executed)" "$FPL_PY" "$PLUGIN/tests/secret-handling-test.py"
     step "park layer (executed)" "$FPL_PY" "$PLUGIN/tests/park-test.py"
     step "unified state + compatibility" bash "$PLUGIN/tests/unify-test.sh"
+    step "outer runner + co-change base" bash "$PLUGIN/tests/loop-runner-test.sh"
     step "substrate: node --check" node --check "$SUB/scripts/substrate-graph.mjs"
     step "substrate: registry graph + staleness suites" substrate_tests
     ;;
