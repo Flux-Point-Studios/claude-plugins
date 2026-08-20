@@ -81,6 +81,11 @@ PATTERNS = [
     # --- Rust verification (Verus, Prusti, Kani) ------------------------
     ("rust.external_body",  (".rs",),   r"#\[verifier::external(_body)?\]"),
     ("rust.trusted",        (".rs",),   r"#\[trusted\]"),
+    # Excusing a mutant is excusing a change no test has to notice, which is
+    # the same move as excusing a proof obligation — so it ratchets here
+    # rather than being free to sprinkle wherever mutation-guard goes red.
+    ("rust.mutants_skip",   (".rs",),   r"mutants::skip\b"),
+    ("rust.mutants_exclude", (".rs",),  r"mutants::exclude_re\b"),
     ("rust.assume",         (".rs",),   r"\b(kani::assume|prusti_assume|assume)\s*\("),
     # --- Isabelle -------------------------------------------------------
     ("isabelle.sorry",      (".thy",),  r"\b(sorry|oops)\b"),
@@ -127,16 +132,38 @@ def strip_comment(line, suffix):
 # counted by a small parser instead of a regex.
 STRUCTURAL = ["aiken.vacuous_test", "aiken.constant_predicate"]
 
-TEST_HEAD = re.compile(r"^\s*test\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s*(fail\b[^{]*)?\{")
+TEST_START = re.compile(r"^\s*test\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 # A body that proves nothing: a bare boolean, or a value compared to itself.
 VACUOUS_BODY = re.compile(r"^(True|False|(?P<x>[A-Za-z0-9_.]+)\s*==\s*(?P=x))$")
 
 # A predicate whose body is a bare boolean decides nothing, whatever its
 # arguments say. Declared return type is required: without `-> Bool` this
 # would flag constructors and helpers that merely happen to end in a literal.
-CONST_FN_HEAD = re.compile(
-    r"^\s*(?:pub\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\([^)]*\)\s*->\s*Bool\s*\{")
+CONST_FN_START = re.compile(r"^\s*(?:pub\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+CONST_FN_TAIL = re.compile(r"^\s*->\s*Bool\s*\{")
 CONST_BODY = re.compile(r"^(True|False)$")
+
+
+def after_params(line, m):
+    """Text following the parameter list opened at the end of match `m`.
+
+    Parameters are matched by counting parens rather than with a `[^)]*`
+    class, because they routinely contain their own: a property test's
+    fuzzer (`n: Int via bounded_int(1, 99)`) and a tuple type
+    (`p: (Int, Int)`) both stop such a class at the wrong paren. The class
+    made every parameterised property test invisible to the vacuity scan —
+    which is where a gutted body is most likely to hide, since a property
+    test is the one a reader is least likely to re-read.
+    """
+    depth = 0
+    for j in range(m.end() - 1, len(line)):
+        if line[j] == "(":
+            depth += 1
+        elif line[j] == ")":
+            depth -= 1
+            if depth == 0:
+                return line[j + 1:]
+    return None
 
 
 def body_of(lines, i):
@@ -177,8 +204,12 @@ def scan_vacuous_tests(path, text):
     found = []
     lines = text.splitlines()
     for i, line in enumerate(lines):
-        m = TEST_HEAD.match(strip_comment(line, ".ak"))
+        src = strip_comment(line, ".ak")
+        m = TEST_START.match(src)
         if not m:
+            continue
+        rest = after_params(src, m)
+        if rest is None or "{" not in rest:
             continue
         stripped = body_of(lines, i)
         if stripped is None:
@@ -202,8 +233,12 @@ def scan_constant_predicates(path, text):
     found = []
     lines = text.splitlines()
     for i, line in enumerate(lines):
-        m = CONST_FN_HEAD.match(strip_comment(line, ".ak"))
+        src = strip_comment(line, ".ak")
+        m = CONST_FN_START.match(src)
         if not m:
+            continue
+        rest = after_params(src, m)
+        if rest is None or not CONST_FN_TAIL.match(rest):
             continue
         stripped = body_of(lines, i)
         if stripped and CONST_BODY.match(stripped):
@@ -291,22 +326,27 @@ def main():
         return 0
 
     if args.baseline:
+        # spec-guard.py owns the `spec` section of this same file. Rewriting
+        # the document wholesale would silently disarm the statement ratchet
+        # every time someone re-recorded the hatch counts, so preserve
+        # whatever else is in there.
+        doc = {}
+        if os.path.exists(bpath):
+            try:
+                with open(bpath, encoding="utf-8") as fh:
+                    doc = json.load(fh)
+            except (OSError, json.JSONDecodeError):
+                doc = {}
+        doc["version"] = 1
+        doc["note"] = (
+            "Escape-hatch counts. proof-guard.py --check fails if any "
+            "category rises. Lowering one (proving what was assumed) is "
+            "always allowed; re-record with --baseline and explain the "
+            "rise in review if a count must go up."
+        )
+        doc["counts"] = counts
         with open(bpath, "w", encoding="utf-8", newline="\n") as fh:
-            json.dump(
-                {
-                    "version": 1,
-                    "note": (
-                        "Escape-hatch counts. proof-guard.py --check fails if any "
-                        "category rises. Lowering one (proving what was assumed) is "
-                        "always allowed; re-record with --baseline and explain the "
-                        "rise in review if a count must go up."
-                    ),
-                    "counts": counts,
-                },
-                fh,
-                indent=2,
-                sort_keys=True,
-            )
+            json.dump(doc, fh, indent=2, sort_keys=True)
             fh.write("\n")
         print(f"proof-guard: wrote {BASELINE} ({sum(counts.values())} hatch(es) recorded)")
         return 0

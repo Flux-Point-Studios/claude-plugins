@@ -20,18 +20,40 @@ evidence. Escalate to a graph when two or more hold: independent subtasks
 that fail independently; a work-list to fan out over; claims that need
 adversarial verification from independent context; cross-zone ownership
 (validators vs off-chain vs infra); a budget worth isolating per node. A
-work graph of more than ten nodes is scope creep — split the campaign.
-Never build a graph as ceremony around a single slice.
+work graph of more than ten nodes is scope creep — split the campaign;
+the compiler warns past ten. Never build a graph as ceremony around a
+single slice.
 
-## The five primitives and their bindings
+Two stay-in-loop cases that look graph-shaped and are not. Work whose
+*decomposition* is still unknown is loop work: a discovery `repeat`
+covers unknown size (known angles, unknown count), never unknown
+structure — you cannot fan out over subtasks you cannot yet name, so
+explore in loop mode first and graph what the exploration finds. And
+work a human steers step-by-step is loop work: the graph's human
+machinery (`actor: human`, `confirm`) models permission boundaries
+inside an autonomous run, not a person redirecting each move — a graph
+whose every edge waits on a person is a loop wearing ceremony.
+
+## The six primitives and their bindings
 
 | Primitive | Meaning | Binding |
 |---|---|---|
 | Node | one responsibility, its own context | an IR `nodes[]` entry → one `agent()` call; stable roles via `roles` → `agentType` |
 | Edge | explicit routing | IR `after` / `foreach`; the compiler derives `pipeline()`/`parallel()` — never a model-improvised hand-off |
 | Contract | what a node must produce | `contract: "NameV1"` → `contracts/NameV1.schema.json`, validated structured output |
-| Context packet | what a node may believe | the IR `prompt`, with `{{A.x}}` inputs, `{{item.*}}` fan-out, `{{prev}}` predecessor contract — never the transcript |
+| Context packet | what a node may believe | the IR `prompt`, with `{{A.x}}` inputs, `{{item.*}}` fan-out, `{{prev}}` predecessor contract or `{{prev.<field>}}` one projected field — never the transcript |
+| Reducer | deterministic code between agents | a `reduce` node: `{from, over, dedupeBy, sortBy, order, topK}` → emitted JS, zero spawns. Models for ambiguity, code for plumbing |
 | Verification | who decides an edge is green | the `verify` tier, plus `independent: true` nodes that re-derive gates |
+
+**Compress before you reason.** A synthesis node handed every raw fan-out
+item pays a reasoning model to do a Set's job. Put a `reduce` node between
+fan-out and judgment (dedupe → rank → cut, in that order, each cut named
+in the log — no silent caps), or project just the field a consumer needs
+with `{{prev.<field>}}` instead of pasting the whole contract. Both are
+validated at compile time: a projected field must exist in the
+predecessor's contract, and projecting off a node that yields an item
+array (a verified sweep, a fan-out, another reduce) is rejected — consume
+`{{prev}}` whole or reduce it first.
 
 Durable coordination rides on the executor: every run has a `runId`,
 `journal.jsonl` records each node's actual return, resume replays the
@@ -60,6 +82,25 @@ compiler rejects, at compile time:
 - `after`/`foreach`/`role` pointing at things that do not exist
 - `{{prev}}` with no `after` edge, or `{{seen}}` with no `repeat` block
   (hidden coupling)
+- `{{prev.<field>}}` naming a field the predecessor's contract lacks,
+  reaching deeper than one hop, or projecting off a node that yields an
+  item array — it used to compile clean and die at launch on a
+  ReferenceError, which is the exact failure the scope check exists for
+- `onRed` outside `halt | drop+log` — a misspelling used to fall back to
+  a default silently, weakening the declared failure policy in the
+  permissive direction — and `onRed` on a parked node, where nothing can
+  die. On fan-out and discovery nodes the field is now real, too: `halt`
+  ends the campaign on a dead worker, and a round that lost ANY worker
+  never counts toward the dry rule — a finder that keeps crashing must
+  not end a sweep looking converged. A spawn the node ceiling declined
+  is a different sentence from a death: it files SKIPPED, and under
+  `halt` the run ends `BUDGET-EXHAUSTED`, never `NODE-DEAD`
+- a `reduce` node with no operation, an `over` that is not a field of its
+  source's contract, `over` on a source that already yields items, a
+  dedupe/sort key outside the item schema — or over items that declare no
+  fields at all, where every key would read `String(undefined)` and
+  dedupe would collapse distinct items to one — `order` without `sortBy`,
+  `topK` without a ranking, or combined with any agent-node field
 - a `repeat` block missing its dry rule, round ceiling, or dedup key, or
   whose dry rule can never fire; a dedup key that is not a field of the
   contract's items
@@ -214,6 +255,40 @@ itself. This is a compiler-enforced invariant because it shipped as a bug
 once: the graph trusts exit codes it re-derived, not adjectives it was
 told.
 
+Independence of *context* is what the compiler can enforce; fidelity of
+*execution* it cannot, because the verifier still types the exit code into
+its contract by hand. So declare the commands that decide things in
+`.fluxpoint-gates.json`, and a PostToolUse hook records the runtime's own
+exit for every one of those runs. `record-run.py` then cross-checks each
+claimed gate exit against that log and reports `ATTESTED`, `UNATTESTED`, or
+`MISMATCH`. Two things to know: only the exact declared invocation is
+attested (a pipe or a trailing `|| true` reports a different exit and is
+credited to nothing), and an absent attestation is `UNATTESTED`, never a
+failure — an executor that does not route through the Bash tool must not
+read as guilt.
+
+**`verify: "prove:<gate>"` turns that observation into enforcement.** The
+node returns `ExecutionV1` — `{gate, exit, attestId}` — and cites the
+attestation its run produced. The gate name is resolved against the
+manifest *at compile time*, so a tier naming nothing refuses to compile;
+that is the `verify: harness` lesson, which once priced a tier into the
+budget and emitted no check at all. At record time a cited attestation that
+does not exist, attests a different gate, or recorded a different exit
+files the whole run `TAMPERED-EXECUTION` — a campaign does not get to
+report clean when its own verification says its exit codes are not what
+happened. A `prove:` node citing nothing is `INCOMPLETE` instead: the
+declared verification did not run, which is not the same accusation.
+
+Nodes that merely happen to match a declared gate stay observed rather than
+enforced. Opting in is what earns the stricter reading, and a check that
+starts by failing runs is a check people switch off.
+
+And where a repo declares gates, an `irreversible` node's mandatory earlier
+guard **must** use `prove:`. The ordering invariant — gate before effect —
+was always sound in structure and hollow in fidelity while the guard typed
+its own exit code. An effect nobody can undo may not rest on a number the
+node that ran it wrote by hand.
+
 ## Canonical shapes
 
 - **Fan-out/verify** (`templates/WORK.md`): dimensions → finders →
@@ -234,6 +309,14 @@ told.
 - **Pipeline of loops**: each mutating node works one loop slice
   — TDD, `--changed` green per edit, `--full` before returning. The graph
   sequences slices; it never replaces the gate.
+- **Escalation ladder** (approximated): most items are cheap to judge and
+  a few deserve expensive reasoning. Build it as two stages sharing an
+  edge — a `skeptic:1` first pass, then a downstream node (or a second
+  campaign seeded by `memory`) that re-judges only the survivors at
+  `panel:3`/high `effort` — with a `reduce` node between them cutting to
+  the items worth escalating. Runtime uncertainty-routing (an item's own
+  confidence deciding its tier mid-run) is deliberately not an IR
+  construct yet; see ROADMAP before building it ad hoc.
 
 ## Inputs, failure, budget
 
@@ -282,6 +365,41 @@ nothing. Raising `maxRounds` from 4 to 6 raises the declared ceiling by
 50% and typical spend by roughly zero. Let the token floors, not the round
 count, be what actually caps cost.
 
+## Sweeps that compound
+
+A `repeat` block makes one sweep exhaustive; it does nothing for the next
+one. Without memory, run two re-finds everything run one found, and pays a
+fresh panel to reach verdicts that already exist — which is where the
+"verification fan-out dominates cost" lesson actually bites.
+
+`memory` closes that loop:
+
+```json
+"memory": { "seed": "defect-sweep", "emit": "defect-sweep" }
+```
+
+`emit` files every judged item as a `LessonV1` row in
+`.claude/fluxpoint/memory.jsonl` — survivors *and* the panel's kills with
+the objection that killed them, which is the half `verifyItems` used to
+discard. `seed` hands the next run that frontier. Rows are written by
+`record-run.py` from the run's own summary, never by an agent, and a row
+whose `provenance.runId` names no recorded run is refused — the opening a
+fabricated summary would use to plant durable knowledge.
+
+The compiler rejects: a `memory` block declaring neither side; `seed`
+without `repeat` (the seed feeds a sweep's seen-list); `emit` without a
+verification tier (filing unjudged output would promote a well-formed guess
+to institutional knowledge) or without `verifyOver`, or on a contract whose
+items carry no `claim`; and `memory.key` alongside `repeat.dedupeBy`, since
+two spellings of one identity is how they drift apart.
+
+**A seed is advisory and never suppressive.** It reaches the finder's
+prompt; it never enters the dedup set. Seeding the dedup set would silently
+drop a re-found item — and a finding that comes back is evidence the lesson
+went stale, exactly the regression a sweep is run to catch. So a re-found
+item is judged again on its merits, and the cost saving comes from a finder
+that knows where the frontier was, not from a loop that refuses to look.
+
 Two rules the compiler enforces because getting them wrong is subtle:
 
 - **Dedup against everything seen, not everything confirmed.** Items enter
@@ -293,6 +411,31 @@ Two rules the compiler enforces because getting them wrong is subtle:
   A sweep that stopped early and a sweep that finished are different
   claims and never get blurred into one.
 
+Seeds are loaded ranked, not raw: `scripts/recall.py --format seedmap`
+serves the same `{tag: {keys, killed}}` shape as `memory.py --load`, but
+ordered by a hybrid of BM25, the memory graph (provenance, kill events,
+touched files, campaign membership walked with personalized PageRank),
+and — when an embedder key is present — semantic similarity to the
+campaign line. Relevance decides what reaches the prompt *first* under a
+budget; it never decides what gets judged. Lessons whose tag never
+matches the sweep's still surface at SessionStart, ranked against the
+work file, so knowledge filed under one campaign reaches the next one
+without anyone guessing the tag.
+
+The killed half has its own channel. Declaring
+
+```json
+"memory": { "seed": "defect-sweep", "emit": "defect-sweep", "priors": true }
+```
+
+hands every refuter the node spawns the seed tag's killed claims with the
+objections that killed them — capped at 5 items of 400 chars, framed
+explicitly as priors the panel may overturn. The finder's prompt never
+carries them: priors are addressed to judges, whose job is to not
+re-derive an argument the store already holds, not to the search, whose
+job is to look everywhere. The compiler rejects `priors` without a `seed`
+(nothing to load) or without a verification tier (nobody to tell).
+
 ## Running, repairing, evidence
 
 `/fluxpoint:graph-run` compiles, runs, and records. Watch with
@@ -300,7 +443,32 @@ Two rules the compiler enforces because getting them wrong is subtle:
 node in the IR, recompile, then re-invoke with `resumeFromRunId` — the
 unchanged prefix returns from cache and only the repaired node onward
 re-runs. Never restart a mostly-green graph from zero. Before diagnosing
-an empty result, read `journal.jsonl`.
+an empty result, read `journal.jsonl`. There is deliberately no per-node
+retry knob: recovery is cached-prefix resume plus the once-only ledger,
+because an in-run retry loop is a second failure policy hiding inside the
+first.
+
+## Observe the graph, not the chat
+
+Tune campaigns against numbers, not transcripts. Every run already
+records them: the summary carries `spawned` (agent calls that really went
+out) and `declined` (calls the node ceiling refused) against `planned`
+(the compile-time worst case) and `spent` (the runtime's own token
+meter); discovery rounds carry structured found/fresh/kept tallies with
+per-worker unique-new counts keyed by worker identity (fan-out
+efficiency: a worker at zero is width without coverage, and a dead
+worker reads null, never a shifted neighbor's count); reduces carry
+before/after (compression). `scripts/metrics.py` folds `runs/*.json`,
+`memory.jsonl`, and `inbox.jsonl` into per-campaign rates — node death
+and skip rates, sweep endings split four ways (dry rule, ceiling,
+budget-truncated, halted — only the dry rule is convergence), panel kill
+rate, inbox pressure — and `/fluxpoint:status` reports the trend block. A
+kill rate near 0% means the panels may be decoration; near 100% means
+the finders are badly scoped. One number is knowingly absent: per-node
+wall-clock (the executor forbids `Date` in workflow scripts to keep
+resume deterministic), so the serialization cost of an undeclared edge is
+caught at compile time by a warning, not measured at run time — the
+compiler flags adjacent top-level nodes that declare no dependency.
 
 Graph green is not done. The campaign still exits through the
 loop-engineering ship pipeline — `harness.sh --full`, red-team

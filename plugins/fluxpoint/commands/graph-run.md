@@ -31,13 +31,35 @@ Workflow tool requires.
    branches that do not depend on it. That is the expected outcome, not a
    failure — clear it with `/fluxpoint:release <node>`, never by inventing
    a release.
-   If the IR has an `imports` block, resolve each frozen decision from
-   `.claude/fluxpoint/runs/*.json` — `'latest'` means the newest run whose
-   summary carries that decision id, otherwise the named runId — and pass
-   the map as `args._decisions`. The graph throws at launch on a missing
-   one rather than re-deciding it by accident. If a required decision
-   genuinely does not exist yet, the campaign that makes it has to run
-   first; do not invent the record to get past the throw.
+   If the IR has an `imports` block, there is nothing for you to load: the
+   compiler resolves each frozen decision from `.claude/fluxpoint/runs`
+   at compile time — `'latest'` is the newest recorded run carrying that
+   decision id, otherwise the named runId — and embeds the record and its
+   source runId in the generated script. No hand-assembled `args._decisions`
+   map exists to get wrong, and a missing or malformed record fails step 2's
+   `--check` rather than the launch. If it does fail there, the campaign
+   that makes the decision has to run first; never hand-write or edit a run
+   artifact to get past the compiler.
+   If any node declares `memory.seed`, load the lessons earlier runs filed
+   under that tag, ranked against this campaign so the most relevant prior
+   keys reach the prompt first:
+   ```
+   bash "$ROOT/scripts/py.sh" recall.py --format seedmap \
+     --tag "<each seed tag>" --query "<the IR's campaign line>" \
+     --files "<comma-separated paths the campaign targets, if any>"
+   ```
+   into `args._seen`. The output shape is exactly what `memory.py --load`
+   prints — relevance-ordered instead of file-ordered — and the seeds stay
+   advisory either way: they reach the `{{seen}}` prompt, never the dedup
+   set. If recall.py is unavailable or errors, fall back to the unranked
+   loader:
+   ```
+   bash "$ROOT/scripts/py.sh" memory.py --load --tag "<each seed tag>"
+   ```
+   Skipping both is not an error — the graph logs that it seeded nothing
+   and the Evidence row says the sweep started cold — but it throws away
+   the whole point of a repeat sweep, which is that the second run starts
+   where the first stopped.
    If the IR contains any `irreversible` node, load the once-only ledger —
    the compiled graph refuses to start without it:
    ```

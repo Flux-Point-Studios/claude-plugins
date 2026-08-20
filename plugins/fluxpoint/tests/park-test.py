@@ -119,8 +119,8 @@ report("a parked node is priced for its advisor",
 
 
 # ==================== execution ===========================================
-def run(ir, args):
-    js = cg.emit(ir, CONTRACTS)
+def run(ir, args, resolved=None):
+    js = cg.emit(ir, CONTRACTS, resolved)
     with tempfile.TemporaryDirectory() as d:
         out, spawned = os.path.join(d, "o.json"), os.path.join(d, "s.json")
         w = os.path.join(d, "w.mjs")
@@ -344,6 +344,9 @@ dcase("two nodes deciding the same thing",
 dcase("an import that is not a run reference",
       lambda ir: ir.update(imports={"vault-window": ""}),
       "must be a runId")
+dcase("re-deciding an imported decision",
+      lambda ir: ir.update(imports={"vault-window": "latest"}),
+      "imported decision is frozen")
 
 dec_js = cg.emit(copy.deepcopy(DEC_IR), CONTRACTS)
 report("the decision is bound into the honoring prompt",
@@ -353,12 +356,103 @@ report("overturning the prior is logged, not buried",
 report("no decisions machinery without a decision",
        "DECISIONS" not in cg.emit(copy.deepcopy(IR), CONTRACTS), "clean")
 
+# ==================== imports: resolved and embedded, never couriered =====
+# The old shape emitted a launch-time throw against an args._decisions map
+# the orchestrating agent assembled by hand — the most-protected artifact
+# class with the least-protected loading path, since the throw checked only
+# that *some* record arrived. Records now resolve from recorded runs at
+# compile time and are embedded in the generated script.
 IMP = copy.deepcopy(DEC_IR)
 IMP["nodes"] = [IMP["nodes"][1]]
 IMP["imports"] = {"vault-window": "latest"}
-imp_js = cg.emit(IMP, CONTRACTS)
-report("a missing import throws at launch",
-       "missing imported decision: vault-window" in imp_js, "throws")
+
+FROZEN = {
+    "question": "how long should the vault unlock window stay open?",
+    "options": [
+        {"option": "24h", "argued_by": "ops",
+         "strongest_objection": "a day may be too slow for incident response"},
+        {"option": "72h", "argued_by": "gov",
+         "strongest_objection": "three days widens the attack window"},
+    ],
+    "chosen": "72h",
+    "rationale": "the governance timelock already binds operations to 72h, "
+                 "so a shorter unlock window buys nothing and adds a race",
+    "overturned_prior": False, "frozen_by": "genesis", "reversible": False,
+    "evidence": ["scripts/harness.sh --full exit 0"],
+}
+NEWER = dict(FROZEN, chosen="24h",
+             rationale="response drills showed 24h suffices and narrows "
+                       "exposure by two thirds against the same ops load")
+
+
+def _art(run_id, when, decisions):
+    return {"runId": run_id, "when": when, "summary": {"decisions": decisions}}
+
+
+with tempfile.TemporaryDirectory() as runs:
+    def put(run_id, payload):
+        with open(os.path.join(runs, run_id + ".json"), "w") as fh:
+            json.dump(payload, fh)
+
+    resolved, errs = cg.resolve_imports(copy.deepcopy(IMP), CONTRACTS, runs)
+    report("an import with no recorded run fails the compile",
+           not resolved and any("no recorded run" in e for e in errs),
+           (errs or ["none"])[0][:50])
+
+    put("wf-old", _art("wf-old", "2026-08-01 10:00", {"vault-window": FROZEN}))
+    put("wf-new", _art("wf-new", "2026-08-07 09:00", {"vault-window": NEWER}))
+    resolved, errs = cg.resolve_imports(copy.deepcopy(IMP), CONTRACTS, runs)
+    report("latest is the newest run carrying the decision",
+           not errs and resolved.get("vault-window", {}).get("runId") == "wf-new",
+           str(resolved.get("vault-window", {}).get("runId")))
+
+    imp_js = cg.emit(copy.deepcopy(IMP), CONTRACTS, resolved)
+    report("the resolved record is embedded, not couriered",
+           '"chosen": "24h"' in imp_js and "_decisions" not in imp_js, "embedded")
+    report("the source run is named next to the record",
+           '"vault-window": "wf-new"' in imp_js, "named")
+
+    pinned = copy.deepcopy(IMP)
+    pinned["imports"] = {"vault-window": "wf-old"}
+    resolved2, errs2 = cg.resolve_imports(pinned, CONTRACTS, runs)
+    report("a pinned runId beats a newer run",
+           not errs2 and resolved2.get("vault-window", {}).get("runId") == "wf-old"
+           and resolved2["vault-window"]["record"]["chosen"] == "72h",
+           str(resolved2.get("vault-window", {}).get("runId")))
+
+    absent = copy.deepcopy(IMP)
+    absent["imports"] = {"vault-window": "wf-nope"}
+    _, errs3 = cg.resolve_imports(absent, CONTRACTS, runs)
+    report("a pinned run that does not exist is a finding",
+           any("not found" in e for e in errs3), (errs3 or ["none"])[0][:50])
+
+    # A gutted record in the newest run must fail loudly, never silently
+    # fall back to an older intact one — the artifact was tampered with.
+    put("wf-cut", _art("wf-cut", "2026-08-08 09:00", {"vault-window": {"chosen": "12h"}}))
+    _, errs4 = cg.resolve_imports(copy.deepcopy(IMP), CONTRACTS, runs)
+    report("a hand-gutted record does not count as a decision",
+           any("missing required DecisionV1" in e for e in errs4),
+           (errs4 or ["none"])[0][:60])
+    os.remove(os.path.join(runs, "wf-cut.json"))
+
+    with open(os.path.join(runs, "wf-bad.json"), "w") as fh:
+        fh.write("{not json")
+    _, errs5 = cg.resolve_imports(copy.deepcopy(IMP), CONTRACTS, runs)
+    report("a malformed run artifact is a hard finding, never skipped",
+           any("not readable JSON" in e for e in errs5),
+           (errs5 or ["none"])[0][:60])
+    os.remove(os.path.join(runs, "wf-bad.json"))
+
+    # Executed: the frozen choice reaches the honoring prompt, and the
+    # source run rides out in the summary for the recorder.
+    summary_i, calls_i, err_i = run(copy.deepcopy(IMP), {}, resolved)
+    honoring = [c for c in calls_i if "implement under" in c]
+    report("the frozen choice reaches the honoring prompt",
+           bool(honoring) and '"chosen":"24h"' in honoring[0],
+           honoring[0][:60] if honoring else f"no spawn; stderr={err_i[:40]}")
+    report("imported provenance rides out in the summary",
+           (summary_i or {}).get("decisionsImported", {}).get("vault-window") == "wf-new",
+           str((summary_i or {}).get("decisionsImported")))
 
 # The refuters' arguments were collected and discarded; a survivor with its
 # strongest objection recorded is worth more later than a vote count.

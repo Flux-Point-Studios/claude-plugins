@@ -26,6 +26,7 @@ export PYTHONIOENCODING=utf-8
 
 cd "$(dirname "$0")/.."
 PLUGIN="plugins/fluxpoint"
+SUB="plugins/substrate"
 fail=0
 
 step() { # name, then command
@@ -85,6 +86,18 @@ portable_invocations() {
   }
 }
 
+substrate_tests() {
+  local n
+  n=$(ls "$SUB"/tests/*.test.mjs 2>/dev/null | wc -l)
+  # A green that ran nothing is not a green: if the suites are ever renamed
+  # or moved, this check must fail rather than silently pass.
+  if [ "$n" -lt 1 ]; then
+    echo "expected at least 1 substrate test suite, found $n" >&2
+    return 1
+  fi
+  node --test "$SUB"/tests/*.test.mjs
+}
+
 case "${1:---full}" in
   --changed)
     f="${2:?usage: harness.sh --changed <file>}"
@@ -92,6 +105,7 @@ case "${1:---full}" in
       *.json) step "json: $f" check_json "$f" ;;
       *.sh)   step "bash -n: $f" check_sh "$f" ;;
       *.py)   step "py_compile: $f" check_py "$f" ;;
+      *.mjs)  step "node --check: $f" node --check "$f" ;;
       *)      : ;;
     esac
     # Any change under the plugin can break compilation; keep it cheap but
@@ -99,13 +113,21 @@ case "${1:---full}" in
     case "$f" in
       "$PLUGIN"/scripts/*.py | "$PLUGIN"/contracts/*.json | "$PLUGIN"/templates/WORK*.md)
         step "templates compile" compile_templates ;;
+      "$SUB"/*)
+        step "substrate suites" substrate_tests ;;
+    esac
+    case "$f" in
+      "$PLUGIN"/scripts/recall.py | "$PLUGIN"/scripts/embedder.py)
+        step "hybrid recall pipeline" "$FPL_PY" "$PLUGIN/tests/recall-test.py"
+        step "embedder quarantine" "$FPL_PY" "$PLUGIN/tests/embedder-test.py" ;;
     esac
     ;;
   --full)
     echo "fluxpoint harness --full"
     for f in .claude-plugin/marketplace.json "$PLUGIN"/.claude-plugin/plugin.json \
              "$PLUGIN"/contracts/*.json "$PLUGIN"/hooks/hooks.json \
-             "$PLUGIN"/templates/settings.snippet.json; do
+             "$PLUGIN"/templates/settings.snippet.json \
+             "$SUB"/.claude-plugin/plugin.json "$SUB"/hooks/hooks.json; do
       [ -f "$f" ] && step "json: ${f#"$PLUGIN"/}" check_json "$f"
     done
     for f in "$PLUGIN"/scripts/*.sh "$PLUGIN"/templates/*.sh scripts/*.sh; do
@@ -121,14 +143,29 @@ case "${1:---full}" in
     step "emission coverage" "$FPL_PY" "$PLUGIN/tests/emission-test.py"
     step "codegen injection + red-team regressions" "$FPL_PY" "$PLUGIN/tests/security-test.py"
     step "stop-gate regression" bash "$PLUGIN/tests/gate-test.sh"
+    step "gate-authored evidence" bash "$PLUGIN/tests/evidence-test.sh"
     step "hook wiring + PostToolUse" bash "$PLUGIN/tests/hooks-test.sh"
+    step "decisions + compaction memory" bash "$PLUGIN/tests/decision-test.sh"
     step "migration against pre-1.0 fixtures" bash "$PLUGIN/tests/migrate-test.sh"
     step "proof-strength ratchet" bash "$PLUGIN/tests/proof-guard-test.sh"
+    step "statement ratchet" bash "$PLUGIN/tests/spec-guard-test.sh"
+    step "counterexample ledger (executed)" bash "$PLUGIN/tests/cex-test.sh"
+    step "mutation ratchet (executed)" bash "$PLUGIN/tests/mutation-test.sh"
     step "on-chain budget gate" bash "$PLUGIN/tests/budget-test.sh"
     step "once-only ledger (executed)" "$FPL_PY" "$PLUGIN/tests/ledger-test.py"
+    step "execution attestation (executed)" bash "$PLUGIN/tests/attest-test.sh"
+    step "lessons across runs (executed)" "$FPL_PY" "$PLUGIN/tests/memory-test.py"
+    step "hybrid recall pipeline (executed)" "$FPL_PY" "$PLUGIN/tests/recall-test.py"
+    step "embedder quarantine (executed)" "$FPL_PY" "$PLUGIN/tests/embedder-test.py"
+    step "graph metrics aggregator (executed)" "$FPL_PY" "$PLUGIN/tests/metrics-test.py"
     step "relation gate" bash "$PLUGIN/tests/pair-test.sh"
+    step "credential gate (executed)" bash "$PLUGIN/tests/secret-guard-test.sh"
+    step "secret-handling skill shapes (executed)" "$FPL_PY" "$PLUGIN/tests/secret-handling-test.py"
     step "park layer (executed)" "$FPL_PY" "$PLUGIN/tests/park-test.py"
     step "unified state + compatibility" bash "$PLUGIN/tests/unify-test.sh"
+    step "outer runner + co-change base" bash "$PLUGIN/tests/loop-runner-test.sh"
+    step "substrate: node --check" node --check "$SUB/scripts/substrate-graph.mjs"
+    step "substrate: registry graph + staleness suites" substrate_tests
     ;;
   *)
     echo "usage: harness.sh --changed <file> | --full" >&2

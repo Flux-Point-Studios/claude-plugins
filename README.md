@@ -1,7 +1,10 @@
 # Flux Point Claude Plugins
 
-Private Claude Code plugin marketplace for Flux Point Studios. One plugin,
-**fluxpoint**, with two drivers over one contract:
+Private Claude Code plugin marketplace for Flux Point Studios. Two plugins:
+**fluxpoint**, the engineering harness (below), and **substrate**, a
+multi-repo primitive registry (see [The substrate
+plugin](#the-substrate-plugin)). fluxpoint has two drivers over one
+contract:
 
 - **Loop mode** makes one agent's cycle programmable — every session,
   interactive or autonomous, runs against a deterministic
@@ -19,7 +22,14 @@ Evidence table, and one authority on done: `scripts/harness.sh`.
 |---|---|---|
 | Bootstrap | `SessionStart` hook | Injects branch state, last harness verdict, gate status, and the head of `WORK.md` at every session start, resume, clear, and post-compaction. |
 | Inner loop | `PostToolUse` hook on `Write\|Edit\|MultiEdit` | Runs `scripts/harness.sh --changed <file>`; failures feed straight back to Claude for immediate correction. |
-| DoD gate | `Stop` hook | When files were edited this session, runs `scripts/harness.sh --full` plus a hygiene scan of uncommitted/new code (TODO, FIXME, XXX, "for now", `.unwrap()`, skipped or focused tests, empty `catch {}`). Red blocks the stop with the failures as the work list, up to `FPL_MAX_BLOCKS` (default 3) consecutive times, then yields with a checkpoint notice: three failed paths is a user checkpoint, not a retreat. |
+| Gate-authored evidence | `Stop` hook → `scripts/evidence.py` | The gate records its own verdict as a `Source: gate` Evidence row — exit code, commit, a hash of the working tree, dirty-path count, and a hash of the log. Nobody writes that class by hand, so a `gate` row with no gate run behind it is a reviewable anomaly, and SessionStart shows witnessed rows separately from asserted ones instead of letting agent prose evict them. |
+| DoD gate | `Stop` hook | When files changed this session — measured against the commit the session started from, so committing work mid-session does not hide it — runs `scripts/harness.sh --full` plus a hygiene scan of uncommitted/new code (TODO, FIXME, XXX, "for now", `.unwrap()`, skipped or focused tests, empty `catch {}`). Red blocks the stop with the failures as the work list, up to `FPL_MAX_BLOCKS` (default 3) consecutive times, then yields with a checkpoint notice: three failed paths is a user checkpoint, not a retreat. |
+| Proof ratchets | `proof-guard.py` (bodies), `spec-guard.py` (statements) | A checker exits 0 on an assumed lemma exactly as on a proved one, so escape-hatch counts may fall but never rise — and because the easier move is to weaken the theorem instead, the obligations themselves are hashed too: a dropped `ensures` conjunct, a deleted or renamed property test, a flipped `fail` test, or a narrowed fuzzer is red unless a Decisions row names it. Both share one committed baseline. |
+| Mutation score | `scripts/mutation-guard.py` | Every other gate asks whether the tests pass; this asks whether they can fail — break the implementation on purpose and count what the suite notices. `--measure` carries the ratchet (red when the score falls *or* the survivor count rises, since a ratio can hold flat while coverage shrinks) and runs off-session; `--check` is cheap enough for `--full` and only asks whether a measurement exists and still describes this tree. Staleness is named and raised in the inbox, fatal only if the repo asks. |
+| Counterexamples | `scripts/cex.py`, `.fluxpoint-cex.jsonl` | A prover's shrunk failing input is the most reusable thing it produces and it lives in a log the next command overwrites. `aiken check`'s JSON is captured, each failure recorded, and a fix pinned to a regression test — accepted only when the recorded value is physically in that test's body, outside comments and strings, in a test that is neither `fail`-annotated nor hollow. Losing a pinned test is red; releasing one costs a reason and a Decisions row. |
+| Decisions | `scripts/decision.py`, `PreCompact` hook | A choice with more than one defensible answer is recorded against `DecisionV1` — the options, the best case against each including the winner, the rationale — so it survives the context that made it; `--none` makes silence a statement. At compaction the hook records whether anything reached the disk, and SessionStart tells the next context when the reasoning behind the current diff is gone. `FPL_DISTILL=1` makes the Stop gate ask for one; off by default. |
+| Attestation | `PostToolUse` hook on `Bash` | For every command declared in `.fluxpoint-gates.json`, records the runtime's own exit code to `.claude/fluxpoint/attest.jsonl`. The number a gate produced stops depending on an agent typing it back. Dormant in a repo that declares no gates. |
+| Proved gates | `verify: "prove:<gate>"`, `ExecutionV1` | A node can declare that its verdict must match the hook's record. The gate name resolves at compile time, so a tier naming nothing refuses to compile; at record time a citation that does not exist or disagrees files the run `TAMPERED-EXECUTION`, and citing nothing files it `INCOMPLETE`. Where a repo declares gates, an `irreversible` node's guard must be prove-gated — an effect nobody can undo may not rest on a self-reported exit code. |
 | Review | `red-team-reviewer` agent, `/fluxpoint:red-team` | Adversarial pass over the diff: eUTxO, oracle, authority, numeric, off-chain, and infra attack surface. Ends `VERDICT: SHIP` or `VERDICT: BLOCK`. |
 | Drivers | `loop-engineering` skill + templates | `/goal` for interactive convergence, native `/loop` (self-paced) for in-session grinding, `/schedule` Routines for cloud standing guardrails, `scripts/loop.sh` for multi-hour outer Ralph runs with fresh context per iteration. |
 
@@ -42,7 +52,11 @@ restarts.
 | Spec | ```json graph-ir block in `WORK.md` | The single source of truth: nodes with named contracts, `foreach`/`after` edges, a verification tier per node, budget ceiling, failure policy. Prose explains intent; the IR decides what runs. |
 | Compiler | `scripts/compile-graph.py` (python3, stdlib) | Compiles the IR to a Workflow script **deterministically — no model transcribes it**, so spec and executor cannot drift. Rejects unsound graphs at compile time: missing/unknown contracts, even panels, `verifyOver` that is not a contract field, dangling `after`/`foreach`/`role`, `{{prev}}` without an edge, a discovery loop with no dry rule/ceiling/dedup key, planned fan-out over `budget.maxNodes` (rounds priced in), and any mutator with no independent node verifying it. Unknown fields are errors too, at every level, so a misspelled `verifyOver` fails loudly instead of silently disabling verification. It also warns (without blocking) on shapes that compile but disappoint — a discovery ceiling too tight for its dry rule to ever fire, or a sweep with no verification tier. |
 | Executor | Claude Code Workflow tool | `/fluxpoint:graph-run` compiles, runs, and records. Generated code carries the guarantees: input normalization, worktree isolation for mutators, refuter panels that attack rather than confirm, a budget floor that logs whatever it leaves unverified. On partial failure, `resumeFromRunId` re-runs only the repaired node onward. |
-| Evidence | `scripts/record-run.py`, `/fluxpoint:status` | Provenance is a build artifact: `runs/<runId>.json` plus an auto-appended Evidence row (outcome, nodes OK/dead, findings, harness exit, red-team verdict). Nothing is remembered by hand. |
+| Reducers | `reduce` IR nodes, `{{prev.<field>}}` projection | Deterministic code between agents — dedupe, rank, cut, or project one contract field — compiled to plain JS with zero spawns, every cut named in the log. Models for ambiguity, code for plumbing: the synthesis node judges a shortlist, not a landfill. |
+| Metrics | structured provenance, `scripts/metrics.py`, `/fluxpoint:status` | Every summary records agent calls spawned vs planned and the runtime's token meter; discovery rounds carry found/new/kept tallies with per-worker unique-new counts; reduces carry before/after. `metrics.py` folds runs, lessons, and inbox into per-campaign rates — death and skip rates, sweep endings split dry/ceiling/truncated/halted, panel kill rate — so campaigns are tuned against numbers, not vibes. |
+| Memory | `memory` IR field, `scripts/memory.py`, `LessonV1` | A sweep's judged items — survivors *and* the panel's kills with the objection that killed them — are filed as lessons keyed by the IR's own dedupe fields, and the next run seeds from the same tag. Run two opens where run one stopped instead of re-arguing it. Seeds are advisory: they reach a prompt, never the dedup set, so a re-found item is still judged rather than silently dropped. |
+| Recall | `scripts/recall.py`, `scripts/embedder.py`, `/fluxpoint:recall` | The hybrid retrieval layer over that memory (see [Hybrid memory recall](#hybrid-memory-recall-graph--embeddings)): a deterministic knowledge graph plus BM25 plus optional API embeddings, fused with weighted reciprocal-rank fusion, so lessons surface by meaning and graph proximity instead of exact tag match. Seed maps come back relevance-ordered in the same shape `memory.py --load` prints; SessionStart injects the top lessons for the work at hand. |
+| Evidence | `scripts/record-run.py`, `/fluxpoint:status` | Provenance is a build artifact: `runs/<runId>.json` plus an auto-appended Evidence row (outcome, nodes OK/dead, findings, harness exit, red-team verdict). Nothing is remembered by hand. Every claimed gate exit is cross-checked against the attestation log and filed `ATTESTED`, `UNATTESTED`, or `MISMATCH` — a node claiming green over an attested red raises an inbox item and says so in the row. |
 | Review | `graph-auditor` agent, `/fluxpoint:graph-audit` | Semantic adversarial pass — stakes-vs-tier mismatches, vacuous contracts, context packets that paste transcripts, hidden coupling, ceilings that are not ceilings. Structure is the compiler's job. Ends `VERDICT: SOUND` or `VERDICT: REWIRE`. |
 | Method | `graph-engineering` skill + templates | Loop-vs-graph rule, five primitives → bindings, tier selection by stakes, canonical shapes: fan-out/verify (`WORK.md`), council → build → independently gated (`WORK.feature.md`), loop-until-dry discovery (`WORK.discovery.md`), advisor–orchestrator, zone defense. |
 | Composition | shares the loop contract | Mutating nodes work loop slices; `scripts/harness.sh` and the Stop-hook DoD gate keep final authority. Graph green ≠ done — campaigns still exit through the ship pipeline. |
@@ -52,6 +66,94 @@ certify its own work.** Mark it `mutates: true` and some later node with
 `independent: true` must re-derive the verdict by running the harness
 itself. The compiler refuses to build a graph that breaks this — it
 shipped as a real bug in v0.1, so it is now unexpressible.
+
+## Hybrid memory recall (graph + embeddings)
+
+`memory.jsonl` remembers what campaigns established; until v1.25 the only
+way back in was an exact `tag|dedupeKey` match, so a lesson about
+beacon-prefix derivation was invisible to a session working on two-way
+asset beacons. `scripts/recall.py` closes that gap with the architecture
+the research points at — Graphiti's read path without its write path —
+while adding **no store, no writer, no dependency, and no daemon**:
+
+- **The graph is a projection, not a store.** `recall.py --build` compiles
+  a typed knowledge graph deterministically from the stores that already
+  exist — lessons, run artifacts, decisions (keyed by the import id the
+  compiler already resolves), pinned counterexamples, and the repo's own
+  `substrate.json` primitives (sanitized as hostile input; consumes-edges
+  kept walkable across the repo boundary) — into gitignored
+  `.claude/fluxpoint/index/`. Every relation is schema-native (provenance,
+  supersession, kill events, path components inside dedupe keys, campaign
+  membership), so there is no LLM extraction step to pay for or to
+  hallucinate: the evidence (LazyGraphRAG, HippoRAG 2's ablations,
+  verbatim-beats-extracted) says extraction subtracts value when the data
+  is already typed. Identical sources build byte-identical indexes, and a
+  malformed line in a *source* store is still a hard error while a damaged
+  *index* file is deleted and rebuilt out loud.
+- **Bi-temporal by derivation.** Each lesson identity carries its full
+  append chain, so recall serves the current version by default,
+  `--as-of <ts>` serves the version that held then, and a kill stays a
+  permanently valid `KILLED_BY` edge even though the claim it killed is
+  not — kills are priors, never suppressors. A killed lesson whose touched
+  file changed after the kill is marked `stale: <file> changed since`
+  at build time — annotated, never dropped, because a finding that comes
+  back after the code moved is exactly the regression a sweep exists to
+  catch.
+- **Hybrid retrieval, evidence-shaped.** Up to four legs — BM25 over an
+  identifier-aware tokenization of the query, BM25 over path tokens from
+  files touched, cosine against API embeddings, and personalized PageRank
+  from tag/file/campaign seeds with hub-resistant specificity weights —
+  fused with weighted reciprocal-rank fusion (k=60), then boosted by
+  re-establishment count (a lesson filed by many runs outranks a one-off)
+  and gentle recency decay on lessons only.
+- **The embedder is quarantined.** `scripts/embedder.py` is a closed
+  provider registry — `voyage` (default `voyage-code-3` at 256 dims;
+  Anthropic's documented embeddings partner, and its code-tuned models
+  lead code retrieval), `openai` (`text-embedding-3-small` at 512),
+  `gemini` (`gemini-embedding-001` at 768), or `none` — resolved by key
+  presence (`VOYAGE_API_KEY`, then `OPENAI_API_KEY`, then
+  `GEMINI_API_KEY`) or forced with `FPL_EMBEDDER`; an unknown value is a
+  hard error, never a silent fallback, and
+  `FPL_EMBED_MODEL`/`FPL_EMBED_DIMS` tune the model.
+  Vectors are cached by content hash (rebuilds re-embed only what
+  changed), stored unit-normalized one file per model, and compared by
+  brute-force dot product — at this corpus size a vector database would
+  be a dependency, not a speedup. The API is the **single sanctioned
+  non-deterministic input** in the memory layer, and it can only ever
+  reorder advisory output: nothing embedded is stored as truth, gates
+  anything, or suppresses anything. Keyless is a fully supported mode —
+  BM25 + graph serve, and every result names the absent leg.
+- **Injection is budgeted per site.** SessionStart injects the top 5
+  lessons ranked against the work file and the session's touched paths —
+  offline, never rebuilding, capped at 1200 bytes, elisions named,
+  `FPL_RECALL_INJECT=0` to demote. `/fluxpoint:graph-run` seeds sweeps
+  through `recall.py --format seedmap`, which emits exactly the shape
+  `memory.py --load` prints with keys relevance-ordered — the compiled
+  graph's advisory-seed contract is untouched. A node declaring
+  `memory: {priors: true}` additionally hands its refuters the seed tag's
+  killed claims with the objections that killed them (5 items, 400 chars
+  each), framed as priors the panel may overturn — the panel stops paying
+  to rediscover arguments the store already holds, and the finder's
+  prompt stays clean. `/fluxpoint:recall` serves humans. A per-prompt
+  UserPromptSubmit hook exists but ships **dark** behind
+  `FPL_MEM_PROMPT=1`: offline, 3 items, 1200 bytes, and a precision floor
+  — two independent retrieval legs, or a lexical match on at least two
+  informative query tokens; the graph leg never corroborates, because its
+  seeds come from the lexical top ranks — off by default because the
+  strongest external result says wrongly retrieved memories cost more
+  than none.
+- **Curation is a campaign, not a daemon.** `templates/WORK.consolidate.md`
+  reads the store, proposes merges and restatements as findings, has a
+  skeptic attack each one with the killed priors in hand, and lets
+  `record-run.py` file the survivors through the same single-writer path —
+  supersession by append, never deletion. Run it by hand or from a
+  scheduled Routine.
+
+What it refuses, on purpose: LLM extraction or reranking anywhere in the
+write or rank path; any new dependency (no numpy, faiss, sqlite-vec, or
+local models); graph databases, bundled MCP servers, daemons; new writers
+to `memory.jsonl`; and retrieval-driven suppression of any kind — ranking
+decides what reaches a prompt first, never what gets judged.
 
 Requires `python3` and a Claude Code version with the Workflow tool
 (`/workflows` resolves); where absent, runs degrade to parallel subagent
@@ -341,22 +443,49 @@ payloads and runs the output to prove they stay inert:
    `/fluxpoint:init`, make an edit containing `FIXME`, try to
    stop, and watch the gate block.
 
+## The substrate plugin
+
+The second plugin in this marketplace, **substrate**, answers a different
+question than the harness: not "is this done" but "does this already
+exist". Each repo in a multi-repo workspace declares its reusable
+primitives in a `substrate.json` manifest; a zero-dependency Node script
+compiles every manifest into one generated `SUBSTRATE.md` graph — nodes,
+consumes-edges, orphans (dormant value to activate), hubs (harden first) —
+and a matcher-less `SessionStart` hook injects the compact summary plus
+staleness alarms into every session, post-compaction included. A manifest
+that lags its repo's commits is reported as a fact, and a re-commit
+touching only the manifest is deliberately not drift. Install with
+`/plugin install substrate@fluxpoint`, onboard a workspace with
+`/substrate:init`; the manifest schema, config reference, staleness
+semantics, and honest limitations live in
+[`plugins/substrate/README.md`](plugins/substrate/README.md). Its
+`node:test` suites run as part of `scripts/harness.sh --full`.
+
 ## Layout
 
 ```
 .claude-plugin/marketplace.json
+plugins/substrate/
+├── .claude-plugin/plugin.json
+├── hooks/hooks.json
+├── scripts/substrate-graph.mjs
+├── commands/           init.md, status.md, emit.md
+├── templates/DOCTRINE.snippet.md
+└── tests/              graph.test.mjs, staleness.test.mjs
 plugins/fluxpoint/
 ├── .claude-plugin/plugin.json
 ├── hooks/hooks.json
 ├── scripts/            lib.sh, inject-state.sh, verify-changed.sh, dod-gate.sh,
-│                       compile-graph.py, record-run.py
+│                       compile-graph.py, record-run.py, recall.py, embedder.py,
+│                       prompt-recall.sh
 ├── contracts/          FindingsV1, VerdictV1, HarnessCheckV1, DesignV1, SliceV1, RedTeamV1
-├── commands/           init.md, status.md, migrate.md, red-team.md,
+├── commands/           init.md, status.md, migrate.md, red-team.md, recall.md,
 │                       graph-design.md, graph-run.md, graph-audit.md
 ├── agents/             red-team-reviewer.md, graph-auditor.md
 ├── skills/             loop-engineering/SKILL.md, graph-engineering/SKILL.md
 ├── templates/          harness.sh, WORK.md, WORK.feature.md, WORK.discovery.md,
-│                       WORK_PROMPT.md, loop.sh, settings.snippet.json
+│                       WORK.consolidate.md, WORK_PROMPT.md, loop.sh,
+│                       settings.snippet.json
 ├── tests/              gate-test.sh, compile-test.py, unify-test.sh
 └── DESIGN-NOTES.md
 ```

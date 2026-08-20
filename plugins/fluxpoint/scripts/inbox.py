@@ -35,6 +35,10 @@ KINDS = {
     "wake-expired": "a wake deadline passed with the condition unmet",
     "confirm-required": "an irreversible node refused to fire unconfirmed",
     "budget-exhausted": "an unattended run spent its iteration budget",
+    "attest-mismatch": "a node's claimed gate exit contradicts the attested log",
+    "cex-ingest-failed": "prover output could not be parsed into a counterexample",
+    "cex-pin-inert": "a pinned counterexample was re-found, so its test does not bite",
+    "mutation-stale": "the mutation score no longer describes this tree",
 }
 
 

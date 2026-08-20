@@ -18,17 +18,28 @@ does.
 ## Layout
 
 - `hooks/` — SessionStart state injection, PostToolUse scoped
-  verification, Stop-hook DoD gate.
+  verification on writes and execution attestation on Bash, Stop-hook
+  DoD gate.
 - `scripts/` — `lib.sh`, `inject-state.sh`, `verify-changed.sh`,
-  `dod-gate.sh` (loop); `compile-graph.py`, `record-run.py` (graph);
-  `proof-guard.py` (proof-strength ratchet); `plutus-budget.py` (on-chain
+  `dod-gate.sh`, `evidence.py` (loop; the gate authors its own Evidence
+  row and this writes it — it executes nothing);
+  `compile-graph.py`, `record-run.py` (graph);
+  `exec-attest.sh`, `attest.py` (hook-minted exit codes for declared
+  gates); `memory.py` (lessons a sweep leaves for the next one);
+  `proof-guard.py` (proof-strength ratchet); `spec-guard.py` (statement
+  ratchet — what is being proved, not just how); `cex.py` (counterexample
+  ledger: a prover's shrunk failing input, pinned to a regression);
+  `mutation-guard.py` (mutation score — whether the tests can fail, not
+  just whether they pass);
+  `plutus-budget.py` (on-chain
   size and execution-unit limits); `pair-guard.py` (relation gate over
   declared artifact pairs); `ledger.py` (once-only guard for
   irreversible nodes); `release.py`, `inbox.py`, `wake-check.sh`
   (the park layer); `migrate.py` (pre-1.0 migration,
   plan/apply/finalize).
 - `contracts/` — versioned named schemas (`FindingsV1`, `VerdictV1`,
-  `HarnessCheckV1`, `DesignV1`, `SliceV1`, `RedTeamV1`).
+  `HarnessCheckV1`, `DesignV1`, `SliceV1`, `RedTeamV1`, `DecisionV1`,
+  `LessonV1`, `ExecutionV1`).
 - `commands/` — `/fluxpoint:init`, `:status`, `:migrate`, `:red-team`,
   `:proof-audit`, `:graph-design`, `:graph-run`, `:graph-audit`,
   `:release`.
@@ -36,17 +47,26 @@ does.
   `graph-auditor` (semantic review of a campaign IR), `proof-auditor`
   (did the verification get weaker, not just greener).
 - `skills/` — `loop-engineering` (driver selection, conditions, the gate),
-  `graph-engineering` (escalation rule, primitives, tiers, shapes).
+  `graph-engineering` (escalation rule, primitives, tiers, shapes),
+  `secret-handling` (derive instead of read, so a credential can be worked
+  with rather than denied).
 - `templates/` — `harness.sh` contract, `WORK.md`, `WORK.feature.md`,
   `WORK.discovery.md`, `WORK_PROMPT.md`, `loop.sh`, settings snippet.
 - `tests/` — `compile-test.py` (compiler invariants), `emission-test.py`
   (field-effect probes), `gate-test.sh` (Stop-gate bypass cases),
   `hooks-test.sh` (hooks.json command strings + PostToolUse behavior),
+  `evidence-test.sh` (gate-authored rows and the classed bootstrap),
   `security-test.py` (codegen injection and red-team regressions),
   `migrate-test.sh` (migration against real pre-1.0 fixtures),
-  `proof-guard-test.sh` (the ratchet, per prover), `budget-test.sh`
+  `proof-guard-test.sh` (the ratchet, per prover), `spec-guard-test.sh`
+  (the statement ratchet and its false-positive boundary), `cex-test.sh`
+  (the counterexample ledger and every way of appearing to pin without
+  pinning, executed), `mutation-test.sh` (the score ratchet in both
+  directions, and staleness staying loud rather than fatal), `budget-test.sh`
   (on-chain limits), `ledger-test.py` (the once-only guard, executed
-  rather than grepped), `pair-test.sh` (relation gate),
+  rather than grepped), `attest-test.sh` (execution attestation and its
+  laundering cases, executed), `memory-test.py` (lessons across runs,
+  executed), `pair-test.sh` (relation gate),
   `unify-test.sh` (state model and compatibility). All of it runs from
   `scripts/harness.sh --full` in CI.
 
@@ -65,9 +85,30 @@ Evidence table both modes append to.
 - A node that writes to the tree may not certify its own work. Mark it
   `mutates: true`; a later node with `independent: true` must re-derive
   the verdict. The compiler refuses to build a graph that breaks this.
+- Independence of context is enforceable; fidelity of execution needs the
+  hook. `verify: "prove:<gate>"` makes a node cite the attestation its run
+  produced — a citation that does not exist or disagrees files the run
+  `TAMPERED-EXECUTION`, and citing nothing files it `INCOMPLETE` rather
+  than accusing an executor that never touched the Bash tool.
 - The DoD gate arms on two independent signals — the PostToolUse marker
   and dirtiness re-derived from `git` — because the marker cannot see
-  source written through the Bash tool.
+  source written through the Bash tool. Dirtiness is measured against the
+  commit the session started from, not HEAD, so committing work mid-session
+  is not a way to stop being judged; the hygiene scan uses the same
+  baseline. It falls back to HEAD when that commit is not an ancestor of
+  the current one (a rebase or branch switch), because a gate that fires
+  spuriously gets switched off.
+- The files that decide what green means — the harness, the proof and pair
+  baselines, the gates and budget manifests, `package.json`, `Makefile` —
+  are named in the green notice when this session changed any of them.
+  A verdict is only as trustworthy as the contract that produced it.
+- A gate's exit code is minted by a hook, not typed by an agent. Declare
+  the deciding commands in `.fluxpoint-gates.json`; every run of one is
+  recorded to `.claude/fluxpoint/attest.jsonl`, and `record-run.py`
+  cross-checks any node that claims a gate exit. Only the exact declared
+  invocation attests — `|| true` or a pipe reports a different exit and is
+  credited to nothing — and a missing attestation is `UNATTESTED`, never
+  a failure.
 - Compiled `.graph.js` files are build output. Never hand-edit them; edit
   the IR and recompile.
 - Budget is enforced twice and neither check is advisory: `maxNodes` is a
@@ -78,6 +119,15 @@ Evidence table both modes append to.
 - Ending a discovery sweep on its round ceiling is logged
   `discovery INCOMPLETE, not exhausted` — stopping early and finishing are
   different claims.
+- The Stop gate authors its own Evidence rows (`Source: gate`) and no agent
+  writes that class. This is a review affordance, not containment — `WORK.md`
+  is skipped by the PostToolUse hook and the hygiene scan alike, so a row can
+  still be edited; what changed is that doing so is now visible in a diff and
+  that the bootstrap labels asserted rows as asserted.
+- A lesson seeded from an earlier run is advisory: it reaches a finder's
+  prompt, never the dedup set. A re-found item is judged again rather than
+  dropped, because a finding that comes back is evidence the lesson went
+  stale.
 - Destructive migration is code, not prose. `migrate.py` separates
   plan/apply/finalize so nothing is deleted before the result is checked,
   and `--finalize` refuses when `WORK.md` carries fewer Evidence rows than

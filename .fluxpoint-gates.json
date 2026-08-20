@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "gates": {
+    "harness": "scripts/harness.sh --full"
+  }
+}

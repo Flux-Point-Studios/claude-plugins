@@ -44,10 +44,16 @@ import sys
 BUDGET_FILE = ".fluxpoint-budget.json"
 
 # Cardano mainnet, used only when --params is not supplied. These are the
-# protocol's numbers, not this tool's opinion.
+# protocol's numbers, not this tool's opinion — but they are a SNAPSHOT, and the
+# network changes them. Read from mainnet 2026-08-06. maxTxExMem stood at
+# 14,000,000 for years and this file carried that number well past the rise to
+# 16,500,000, which reports every measurement as a larger share of the budget
+# than it is. That error is in the safe direction and still cost a real
+# investigation, so: --params is the only way to be current, and the date above
+# is what makes this constant auditable rather than merely plausible.
 DEFAULT_LIMITS = {
     "maxTxSize": 16384,
-    "maxTxExMem": 14_000_000,
+    "maxTxExMem": 16_500_000,
     "maxTxExSteps": 10_000_000_000,
 }
 

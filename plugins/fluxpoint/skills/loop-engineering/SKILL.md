@@ -97,7 +97,7 @@ A prover is the best thing that can sit behind this harness: `aiken check`,
 looks — every prover ships a way to discharge an obligation without proving
 it, and an agent told to "make it pass" will find it.
 
-Three rules, in order of how often they are broken:
+Five rules, in order of how often they are broken:
 
 1. **The prover runs in `--full`, not only in `--changed`.** Per-file
    checking on edit is feedback; the gate that decides done must invoke the
@@ -109,6 +109,16 @@ Three rules, in order of how often they are broken:
    file; `--check` fails when any category rises. Proving something you
    previously assumed lowers the count and is always allowed. Raising one
    is a diff a human has to justify.
+   **And the statements ratchet too.** An agent blocked from adding an
+   `assume` has an easier move: weaken the theorem. `scripts/spec-guard.py`
+   hashes what is being proved — Dafny `requires`/`ensures`/`invariant`
+   clauses per declaration, Aiken test and property signatures with their
+   fuzzers and their `fail` polarity — into the same baseline file, and
+   `--check` fails when a recorded obligation changed or vanished. Adding
+   obligations is free; changing one needs a Decisions row naming its
+   obligation id, or a re-recorded baseline. Neither ratchet makes
+   weakening impossible; both make it a reviewed diff instead of an
+   invisible one.
    Two weakenings add no hatch at all, so both are counted structurally:
    `test t() { True }` is flagged as a test that cannot fail, and `fn
    check(..) -> Bool { True }` as a predicate that decides nothing — which
@@ -118,7 +128,38 @@ Three rules, in order of how often they are broken:
    cannot produce the interesting case, or a `fail` test that trips an
    earlier guard than the one it is named for all leave the counts
    untouched, which is why rule 3 exists.
-3. **Green is not stronger.** `/fluxpoint:proof-audit` runs the ratchet and
+3. **A counterexample is evidence — keep it.** The shrunk failing input a
+   property test produces is the most reusable thing a prover makes, and it
+   lives in a log the next command overwrites. In an Aiken repo the
+   scaffolded harness captures `aiken check`'s JSON (there is no `--json`
+   flag: it emits JSON whenever stdout is not a TTY) and `scripts/cex.py`
+   records each failure to the committed `.fluxpoint-cex.jsonl`. Pin one
+   with `cex.py --pin <cexId> --file <path> --test-name <name>` once you
+   have written a real regression test; the pin is refused unless the
+   recorded value is physically in that test's body, on token boundaries,
+   outside comments and strings, in a test that is neither `fail`-annotated
+   nor hollow. `--check` then fails if a pinned counterexample loses its
+   test. Releasing one costs a `--reason` and a Decisions row naming the
+   cexId — the same price spec-guard charges to forgive an obligation.
+   What this does not yet claim: the pinned test is recorded as *carrying*
+   the counterexample, not re-run against the un-fixed code to prove it
+   would have caught it.
+4. **Can the tests fail?** Every gate above asks whether the suite passes.
+   Mutation score asks whether it can fail: break the implementation on
+   purpose and count how many broken versions the suite notices. It is the
+   one measure that cannot be faked by executing code, and it matters most
+   in loop mode, where the same agent writes the code and the thing that
+   grades it. Declare the tool in `.fluxpoint-mutation.json`;
+   `mutation-guard.py --measure` runs it and is where the ratchet lives —
+   red when the score falls *or* the survivor count rises, because a ratio
+   can hold flat while coverage shrinks. `--check` is the cheap half wired
+   into `--full`: it re-runs nothing and only asks whether a measurement
+   exists and still describes this tree. A mutation run costs minutes to
+   hours, so `--measure` belongs off-session on a Routine; staleness is
+   named and raised in the inbox but does not fail the build unless the
+   repo asks, because a gate that reds over an un-run expensive job is one
+   people switch off.
+5. **Green is not stronger.** `/fluxpoint:proof-audit` runs the ratchet and
    then the `proof-auditor` agent, which looks for what a count cannot see:
    a theorem whose statement got weaker, a property proved about an
    unreachable state, an Aiken `test` that cannot fail, a validator with no
@@ -137,6 +178,34 @@ when you target anything but mainnet. Execution units are not derivable
 from a compiled script, so record measured values from your own
 transaction-building tests under `exUnits` in that file; until you do, the
 gate reports them unmeasured rather than met.
+
+## Writing down what you decided
+
+Compaction is the largest memory-loss event a session has, and a process
+exit is the second. Both destroy the same thing: the reasoning. The code
+survives, the tests survive, and *why this and not that* does not — so the
+next context re-decides it, often the other way.
+
+Record a real choice with `scripts/decision.py --record`, which validates
+against `DecisionV1` before writing: at least two options, each with the
+best case against it (including against the one that won — an option nobody
+argued against was not examined), and a rationale long enough that a lazy
+sentence cannot satisfy it. The row lands in the Decisions table, which
+SessionStart injects into every future context and the graph compiler can
+bind into a later campaign. If a slice genuinely decided nothing, say so:
+`decision.py --none "<why>" --session <id>` makes silence a statement
+rather than an absence.
+
+A decision has no verdict to witness — unlike an Evidence row, it is
+inherently an assertion, and no gate could certify it. What the floors buy
+is not proof but survival in a form the next context can act on.
+
+The PreCompact hook records, at the moment of compaction, whether anything
+had been written down at all; if code changed and nothing had,
+SessionStart tells the next context the reasoning is gone and to re-derive
+rather than assume. Set `FPL_DISTILL=1` to make the Stop gate ask for a
+decision (or an explicit `--none`) before a green stop — off by default,
+because a check that starts by blocking stops is one people switch off.
 
 ## Evidence discipline
 

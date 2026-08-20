@@ -41,6 +41,12 @@ command.
      items nor so fine that a reworded restatement reads as new. Put
      `{{seen}}` in the prompt so each round works new ground. See
      `templates/WORK.discovery.md`.
+   - compress before you reason: between a fan-out and the node that
+     judges its output, put a `reduce` node (`from`, `over` where the
+     source yields whole contracts, then `dedupeBy` / `sortBy` +
+     `order` / `topK`) so the judge reads a shortlist, not a landfill —
+     and where a consumer needs one field of its predecessor, project it
+     with `{{prev.<field>}}` instead of pasting the contract.
 5. Compile-check until clean:
    `bash "${CLAUDE_PLUGIN_ROOT}/scripts/py.sh" compile-graph.py WORK.md --check`
    Its findings are structural. Fix the IR — never weaken a contract,
