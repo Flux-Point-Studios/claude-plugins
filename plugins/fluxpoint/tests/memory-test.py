@@ -93,6 +93,21 @@ case("emitting from a contract whose items carry no claim",
 case("two spellings of one dedupe key",
      lambda ir: ir["nodes"][0]["memory"].update(key=["file"]),
      "already declared as repeat.dedupeBy")
+case("a priors-declaring sweep compiles",
+     lambda ir: ir["nodes"][0]["memory"].update(priors=True), None)
+case("priors that is anything but true",
+     lambda ir: ir["nodes"][0]["memory"].update(priors=5),
+     "must be literally true")
+case("priors with no seed to load them from",
+     lambda ir: ir["nodes"][0]["memory"].update(seed=None, priors=True)
+     or ir["nodes"][0]["memory"].pop("seed"),
+     "without memory.seed")
+case("priors with no panel to tell",
+     lambda ir: (ir["nodes"][0].pop("verify"),
+                 ir["nodes"][0].pop("verifyOver"),
+                 ir["nodes"][0].update(memory={"seed": "audit",
+                                               "priors": True})),
+     "nobody to tell")
 
 # A one-shot node may emit, but then its identity has to be declared.
 ONESHOT = copy.deepcopy(IR)
@@ -206,6 +221,30 @@ kept3 = [f["claim"] for f in ((summary3 or {}).get("results", {}).get("find") or
 report("a re-found item is NOT suppressed by its seed",
        REAL["claim"] in kept3,
        f"{len(kept3)} kept" if kept3 else "SUPPRESSED — a stale lesson could hide a regression")
+
+# Priors: the killed half rides into the REFUTER prompts — the finder still
+# looks everywhere, but the panel is told what earlier panels killed and why,
+# framed as priors it may overturn.
+PRI_IR = copy.deepcopy(IR)
+PRI_IR["nodes"][0]["memory"]["priors"] = True
+_, prompts4, _ = run(PRI_IR, {"_seen": seed}, [[REAL], [], []])
+ref4 = [p for p in prompts4 if "Attempt to REFUTE" in p]
+report("killed priors reach the refuter prompts",
+       ref4 and all("killed because: upstream guard" in p for p in ref4),
+       f"{len(ref4)} refuter prompt(s) carry the objection"
+       if ref4 else "no refuter prompts captured")
+report("priors are framed as overturnable, not as verdicts",
+       ref4 and all("priors, not verdicts" in p for p in ref4),
+       "framing present" if ref4 else "no refuter prompts")
+find4 = [p for p in prompts4 if "Attempt to REFUTE" not in p]
+report("the finder's prompt carries the frontier, never the priors",
+       find4 and not any("killed because:" in p for p in find4),
+       "finder prompts clean")
+_, prompts5, _ = run(PRI_IR, {}, [[REAL], [], []])
+ref5 = [p for p in prompts5 if "Attempt to REFUTE" in p]
+report("an unseeded priors run adds nothing to the prompt",
+       ref5 and not any("priors, not verdicts" in p for p in ref5),
+       "empty priors are silent")
 
 # ==================== the store ===========================================
 def mem_py(root, *a, stdin=""):

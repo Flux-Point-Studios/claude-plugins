@@ -227,6 +227,13 @@ probe("memory", "seed", MEMF_BASE,
 # — which is the effect, and why the field is not decorative.
 probe("memory", "key", MEMF_BASE,
       lambda ir: ir["nodes"][N]["memory"].update(key=["file"]))
+# priors rides the seed tag's killed lessons into the refuter prompts, so
+# it is probed on a base that already seeds — otherwise the probe would be
+# registering seed's own emission change, and priors could go inert.
+PRI_BASE = copy.deepcopy(MEMF_BASE)
+PRI_BASE["nodes"][N]["memory"]["seed"] = "audit"
+probe("memory", "priors", PRI_BASE,
+      lambda ir: ir["nodes"][N]["memory"].update(priors=True))
 
 
 # reduce is deterministic code between agents; probed by appending a reduce
@@ -359,7 +366,7 @@ probed = {
     },
     "repeat": {"untilDryRounds", "maxRounds", "dedupeBy"},
     "reduce": {"from", "over", "dedupeBy", "sortBy", "order", "topK"},
-    "memory": {"seed", "emit", "key"},
+    "memory": {"seed", "emit", "key", "priors"},
     "release": {"instructions", "proofContract", "whyNotAgent"},
     "wake": {"check", "everyMinutes", "deadline"},
     "budget": {"maxNodes", "verifyFloorTokens", "nodeFloorTokens"},

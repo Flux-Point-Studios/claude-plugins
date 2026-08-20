@@ -63,7 +63,7 @@ REPEAT_FIELDS = {"untilDryRounds", "maxRounds", "dedupeBy"}
 # Use models for ambiguity and code for plumbing — a synthesis node that
 # receives every raw fan-out item pays a reasoning model to do a Set's job.
 REDUCE_FIELDS = {"from", "over", "dedupeBy", "sortBy", "order", "topK"}
-MEMORY_FIELDS = {"seed", "emit", "key"}
+MEMORY_FIELDS = {"seed", "emit", "key", "priors"}
 BUDGET_FIELDS = {"maxNodes", "verifyFloorTokens", "nodeFloorTokens"}
 ROLE_FIELDS = {"agentType", "effort", "model"}
 DEFAULTS_FIELDS = {"effort", "model"}
@@ -745,6 +745,25 @@ def validate(ir, contracts, gates=None):
                                 f.append(
                                     f"{where}: memory.key '{k}' is not a field of "
                                     f"{c}.{n['verifyOver']} items")
+                pri = mem.get("priors")
+                if pri is not None:
+                    if pri is not True:
+                        f.append(
+                            f"{where}: memory.priors must be literally true — "
+                            f"its budget (5 killed claims, 400 chars each) is "
+                            f"fixed, so declare it or leave it out")
+                    else:
+                        if not mem.get("seed"):
+                            f.append(
+                                f"{where}: memory.priors without memory.seed — "
+                                f"the priors are the seed tag's killed lessons, "
+                                f"and a node that seeds nothing loads none")
+                        if not panel_size(n):
+                            f.append(
+                                f"{where}: memory.priors needs a verification "
+                                f"tier (skeptic:N or panel:N) — priors are "
+                                f"addressed to refuters, and a node with no "
+                                f"panel has nobody to tell")
 
         # Self-report invariant. A node that changes the tree cannot be the
         # node that certifies the change; some later independent node must
@@ -1302,6 +1321,29 @@ def emit(ir, contracts, imports_resolved=None):
             a(f"log(`memory: seeded ${{MEMORY_SEEDED[{js_str(tag)}]}} prior key(s) "
               f"for tag {tag}`)")
         a("")
+    pri_tags = sorted({n["memory"]["seed"] for n in mem_nodes
+                       if n["memory"].get("priors") and n["memory"].get("seed")})
+    if pri_tags:
+        a("// Killed priors ride into refuter prompts: the objection that")
+        a("// killed a claim once is the argument a fresh panel would pay a")
+        a("// full fan-out to rediscover. Priors, never verdicts — the code")
+        a("// may have changed, so a re-found item is still judged on its")
+        a("// merits and a prior can be overturned by anyone who reads it.")
+        a("const PRIORS = {}")
+        for tag in pri_tags:
+            a("{")
+            a(f"  const k = ((_seedSrc[{js_str(tag)}] || {{}}).killed || [])"
+              f".slice(0, 5)")
+            a(f"  PRIORS[{js_str(tag)}] = k.length")
+            a("    ? `Related claims earlier panels KILLED — priors, not "
+              "verdicts; the code may have changed since:\\n` +")
+            a("      k.map(p => `- ${String(p.claim || '').slice(0, 400)}"
+              "${p.objection ? ` [killed because: "
+              "${String(p.objection).slice(0, 400)}]` : ''}`).join('\\n') + "
+              "`\\n\\n`")
+            a("    : ''")
+            a("}")
+        a("")
     parked = [n for n in nodes if n.get("actor", "agent") != "agent"]
     if parked:
         a("// --- actors: nodes no agent can run ---")
@@ -1465,14 +1507,14 @@ def emit(ir, contracts, imports_resolved=None):
     if needs_panel:
         a("// --- verification: refuters attack the claim; majority kills it ---")
         a(f"const VERIFY_FLOOR = {int(floor)}")
-        a("async function refute(claimText, label, phase, n) {")
+        a("async function refute(claimText, label, phase, n, priors) {")
         a("  if (budget.total && budget.remaining() < VERIFY_FLOOR) {")
         a("    log(`budget floor reached — ${label} left UNVERIFIED (no silent caps)`)")
         a("    return { kills: 0, cast: 0, unverified: true }")
         a("  }")
         a("  const votes = await parallel(Array.from({ length: n }, (_, i) => () =>")
         a("    spawn(")
-        a("      `Attempt to REFUTE this claim. ${claimText}\\n\\n` +")
+        a("      `Attempt to REFUTE this claim. ${claimText}\\n\\n` + (priors || '') +")
         a("        `Re-read the underlying code or evidence YOURSELF; do not trust the claim's own summary. ` +")
         a("        `Hunt for the reason it is wrong: a guard upstream, a type that forbids the state, a test that pins it. ` +")
         a("        `Default to refuted=true when uncertain.`,")
@@ -2056,9 +2098,14 @@ def emit_repeat(n, ir, prompt, phase, panel, over):
     a("  }")
     a(f"  dry_{var} = 0")
     if panel and over:
+        # Priors reach the refuters, not the finder: the finder's job is to
+        # look everywhere, the panel's job is to not re-derive an argument a
+        # recorded objection already makes.
+        pri_arg = (f", PRIORS[{js_str(mem['seed'])}]"
+                   if mem.get("priors") and mem.get("seed") else "")
         a(f"  const judged_{var} = await parallel(fresh_{var}.map((it, i) => () =>")
         a(f"    refute(JSON.stringify(it), `{nid}:r${{round_{var}}}:${{i}}`, "
-          f"{js_str(phase)}, {panel}).then(v => ({{ ...it, ...v }}))")
+          f"{js_str(phase)}, {panel}{pri_arg}).then(v => ({{ ...it, ...v }}))")
         a("  ))")
         if mem.get("emit"):
             a(f"  judged_{var}.filter(Boolean).forEach({lesson_sink(n, need)})")

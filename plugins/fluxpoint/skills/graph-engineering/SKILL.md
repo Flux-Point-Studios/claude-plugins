@@ -422,6 +422,20 @@ matches the sweep's still surface at SessionStart, ranked against the
 work file, so knowledge filed under one campaign reaches the next one
 without anyone guessing the tag.
 
+The killed half has its own channel. Declaring
+
+```json
+"memory": { "seed": "defect-sweep", "emit": "defect-sweep", "priors": true }
+```
+
+hands every refuter the node spawns the seed tag's killed claims with the
+objections that killed them — capped at 5 items of 400 chars, framed
+explicitly as priors the panel may overturn. The finder's prompt never
+carries them: priors are addressed to judges, whose job is to not
+re-derive an argument the store already holds, not to the search, whose
+job is to look everywhere. The compiler rejects `priors` without a `seed`
+(nothing to load) or without a verification tier (nobody to tell).
+
 ## Running, repairing, evidence
 
 `/fluxpoint:graph-run` compiles, runs, and records. Watch with

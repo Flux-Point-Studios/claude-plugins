@@ -41,12 +41,16 @@ import urllib.request
 
 # Closed registry. Adding a provider means adding it here, in resolve(),
 # in _request(), and in embedder-test.py's resolution matrix.
-PROVIDERS = ("voyage", "openai", "none")
+PROVIDERS = ("voyage", "openai", "gemini", "none")
 DEFAULTS = {
     "voyage": {"model": "voyage-code-3", "dims": 256},
     "openai": {"model": "text-embedding-3-small", "dims": 512},
+    "gemini": {"model": "gemini-embedding-001", "dims": 768},
 }
+KEY_ENV = {"voyage": "VOYAGE_API_KEY", "openai": "OPENAI_API_KEY",
+           "gemini": "GEMINI_API_KEY"}
 BATCH = 128
+GEMINI_BATCH = 100  # batchEmbedContents caps at 100 requests per call
 TIMEOUT = 20
 
 
@@ -69,18 +73,15 @@ def resolve(env=None):
             f"{', '.join(PROVIDERS)}")
     if forced:
         provider = forced
-    elif env.get("VOYAGE_API_KEY"):
-        provider = "voyage"
-    elif env.get("OPENAI_API_KEY"):
-        provider = "openai"
     else:
-        provider = "none"
+        provider = next((p for p in PROVIDERS[:-1] if env.get(KEY_ENV[p])),
+                        "none")
     if provider == "none":
         return {"provider": "none", "model": "none", "dims": 0, "keyEnv": ""}
     d = DEFAULTS[provider]
     model = env.get("FPL_EMBED_MODEL", "").strip() or d["model"]
     dims = int(env.get("FPL_EMBED_DIMS", "").strip() or d["dims"])
-    key_env = "VOYAGE_API_KEY" if provider == "voyage" else "OPENAI_API_KEY"
+    key_env = KEY_ENV[provider]
     if not env.get(key_env):
         # A forced provider with no key present is the same named failure.
         raise SystemExit(
@@ -91,22 +92,29 @@ def resolve(env=None):
 
 def _request(spec, texts, kind, env):
     """One provider call. Returns the raw vector list, order-preserving."""
+    headers = {"Content-Type": "application/json"}
     if spec["provider"] == "voyage":
         url = "https://api.voyageai.com/v1/embeddings"
         payload = {"input": texts, "model": spec["model"],
                    "input_type": kind, "output_dimension": spec["dims"]}
-    else:
+        headers["Authorization"] = f"Bearer {env[spec['keyEnv']]}"
+    elif spec["provider"] == "openai":
         url = "https://api.openai.com/v1/embeddings"
         payload = {"input": texts, "model": spec["model"],
                    "dimensions": spec["dims"]}
+        headers["Authorization"] = f"Bearer {env[spec['keyEnv']]}"
+    else:
+        url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+               f"{spec['model']}:batchEmbedContents")
+        task = "RETRIEVAL_QUERY" if kind == "query" else "RETRIEVAL_DOCUMENT"
+        payload = {"requests": [
+            {"model": f"models/{spec['model']}",
+             "content": {"parts": [{"text": t}]},
+             "taskType": task,
+             "outputDimensionality": spec["dims"]} for t in texts]}
+        headers["x-goog-api-key"] = env[spec["keyEnv"]]
     req = urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {env[spec['keyEnv']]}",
-        },
-    )
+        url, data=json.dumps(payload).encode("utf-8"), headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
             body = json.load(resp)
@@ -114,12 +122,19 @@ def _request(spec, texts, kind, env):
         raise EmbedError(f"{spec['provider']} HTTP {e.code}") from e
     except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
         raise EmbedError(f"{spec['provider']} unreachable: {e}") from e
-    data = body.get("data")
-    if not isinstance(data, list) or len(data) != len(texts):
+    field = "values" if spec["provider"] == "gemini" else "embedding"
+    data = body.get("embeddings" if spec["provider"] == "gemini" else "data")
+    # A non-object row yields None here and is refused by the dimension
+    # check in _normalize — a malformed response is an EmbedError, never
+    # an anonymous crash inside a hook or a recording pass.
+    vecs = [row.get(field) if isinstance(row, dict) else None
+            for row in data] if isinstance(data, list) else None
+    if vecs is None or len(vecs) != len(texts):
         raise EmbedError(
-            f"{spec['provider']} returned {0 if not isinstance(data, list) else len(data)} "
-            f"vector(s) for {len(texts)} text(s)")
-    return [row.get("embedding") for row in data]
+            f"{spec['provider']} returned "
+            f"{0 if vecs is None else len(vecs)} vector(s) for "
+            f"{len(texts)} text(s)")
+    return vecs
 
 
 def _normalize(vec, dims):
@@ -144,9 +159,10 @@ def embed(texts, kind, spec, transport=None, env=None):
     if spec["provider"] == "none":
         raise EmbedError("no embedder configured")
     call = transport or _request
+    batch = GEMINI_BATCH if spec["provider"] == "gemini" else BATCH
     out = []
-    for i in range(0, len(texts), BATCH):
-        chunk = texts[i:i + BATCH]
+    for i in range(0, len(texts), batch):
+        chunk = texts[i:i + batch]
         out.extend(_normalize(v, spec["dims"])
                    for v in call(spec, chunk, kind, env))
     return out
@@ -176,8 +192,9 @@ def main():
     ap.parse_args()
     spec = resolve()
     if spec["provider"] == "none":
-        print("embedder: none (no VOYAGE_API_KEY or OPENAI_API_KEY in the "
-              "environment; recall runs lexical + graph only)")
+        print("embedder: none (no VOYAGE_API_KEY, OPENAI_API_KEY, or "
+              "GEMINI_API_KEY in the environment; recall runs lexical + "
+              "graph only)")
     else:
         print(f"embedder: {spec['provider']} {spec['model']} @{spec['dims']}d "
               f"(key from {spec['keyEnv']})")

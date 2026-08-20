@@ -61,10 +61,11 @@ RUNS_DIR = os.path.join(".claude", "fluxpoint", "runs")
 CEX = ".fluxpoint-cex.jsonl"
 GRAPH_F, LEX_F, META_F = "graph.json", "lex.json", "index.meta.json"
 
-DOC_KINDS = {"lesson", "cex"}
+DOC_KINDS = {"lesson", "cex", "decision", "primitive"}
 NODE_KINDS = DOC_KINDS | {"tag", "file", "run", "campaign", "gnode"}
 EDGE_KINDS = {"TAGGED", "PRODUCED_IN", "KILLED_BY", "AT_NODE", "TOUCHES",
-              "PART_OF", "PINS", "SUPERSEDES"}
+              "PART_OF", "PINS", "SUPERSEDES", "DECIDED_IN", "CONSUMES",
+              "LOCATES"}
 # How much rank mass each edge kind carries in the graph walk. SUPERSEDES
 # is deliberately zero: the walk must never ride into a replaced row.
 # KILLED_BY stays walkable and never expires — the kill is a currently-valid
@@ -72,7 +73,8 @@ EDGE_KINDS = {"TAGGED", "PRODUCED_IN", "KILLED_BY", "AT_NODE", "TOUCHES",
 # priors, never suppressors" holds in the type system instead of code
 # convention.
 EDGE_WEIGHT = {"TOUCHES": 1.0, "PINS": 0.7, "PRODUCED_IN": 0.7,
-               "KILLED_BY": 0.7, "TAGGED": 0.5, "AT_NODE": 0.5,
+               "KILLED_BY": 0.7, "DECIDED_IN": 0.7, "CONSUMES": 0.7,
+               "LOCATES": 0.7, "TAGGED": 0.5, "AT_NODE": 0.5,
                "PART_OF": 0.5, "SUPERSEDES": 0.0}
 K1, B = 1.2, 0.4          # BM25, short-document setting
 RRF_K = 60                # Cormack's fusion constant
@@ -80,6 +82,31 @@ LEG_WEIGHT = {"lex": 1.0, "ident": 1.0, "dense": 1.0, "graph": 0.7}
 MIN_DENSE = 0.6           # cosine floor for the dense leg
 DAMPING = 0.5             # PPR restart mass stays near the seeds
 PATH_RE = re.compile(r"^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)+$")
+# substrate.json is another plugin's hand-edited manifest, so its strings get
+# substrate's own hostile-input discipline before they can reach an injected
+# line: control and separator characters stripped, lengths capped.
+CTRL_RE = re.compile("[\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]")
+
+
+def _clean(v, cap=500):
+    return CTRL_RE.sub(" ", str(v))[:cap]
+
+
+def _in_repo(root, part):
+    """True when part resolves to an existing path INSIDE root.
+
+    Path strings arriving from dedupe keys, cex pins, and substrate
+    manifests are data someone else wrote; an absolute path or a
+    ..-segment must not be able to edge the graph at files outside the
+    tree, however plausible the file it names.
+    """
+    if not part or part.startswith(("/", "\\")) or ".." in part.split("/"):
+        return False
+    full = os.path.abspath(os.path.normpath(os.path.join(root, part)))
+    base = os.path.abspath(root)
+    if full != base and not full.startswith(base + os.sep):
+        return False
+    return os.path.exists(full)
 
 
 def _dumps(obj):
@@ -168,10 +195,55 @@ def _read_cex(root):
     return rows
 
 
+def _read_substrate(root):
+    """The repo's own substrate.json primitives, sanitized. This is another
+    plugin's hand-edited manifest, not one of this layer's machine-produced
+    stores, so it gets substrate's own discipline — treat as hostile input,
+    sanitize, and skip damage by name — rather than the hard-fail rule the
+    stores earn. Returns (primitives, note-or-None)."""
+    p = os.path.join(root, "substrate.json")
+    if not os.path.exists(p):
+        return [], None
+    try:
+        with open(p, encoding="utf-8") as fh:
+            m = json.load(fh)
+    except (OSError, json.JSONDecodeError) as e:
+        return [], f"substrate.json unreadable ({e}); primitives not indexed"
+    prims = m.get("primitives") if isinstance(m, dict) else None
+    if not isinstance(prims, list):
+        return [], "substrate.json carries no primitives list; nothing to index"
+    repo = _clean((m.get("repo") or ""), 200)
+    out = []
+    for pr in prims[:200]:
+        if not isinstance(pr, dict) or not pr.get("id"):
+            continue
+        # Container types are hostile input too: a string-valued `paths`
+        # would slice into characters, a dict would raise mid-build.
+        paths = pr.get("paths") if isinstance(pr.get("paths"), list) else []
+        consumes = (pr.get("consumes")
+                    if isinstance(pr.get("consumes"), list) else [])
+        out.append({
+            "id": _clean(pr["id"], 200),
+            "repo": repo,
+            "kind": _clean(pr.get("kind") or "", 80),
+            "status": _clean(pr.get("status") or "", 80),
+            "desc": _clean(pr.get("desc") or "", 500),
+            "paths": [_clean(x, 500) for x in paths[:50]
+                      if isinstance(x, str)],
+            "consumes": [_clean(x, 200) for x in consumes[:50]
+                         if isinstance(x, str)],
+        })
+    note = (f"substrate.json lists {len(prims)} primitives; indexed the "
+            f"first 200" if len(prims) > 200 else None)
+    return out, note
+
+
 def _source_fingerprints(root):
     fp = {}
     mem = memory_mod.path_for(root)
     fp["memory.jsonl"] = _sha_file(mem) if os.path.exists(mem) else "absent"
+    sub = os.path.join(root, "substrate.json")
+    fp["substrate.json"] = _sha_file(sub) if os.path.exists(sub) else "absent"
     cex = os.path.join(root, CEX)
     fp["cex.jsonl"] = _sha_file(cex) if os.path.exists(cex) else "absent"
     d = os.path.join(root, RUNS_DIR)
@@ -254,7 +326,7 @@ def build(root, embed_backfill=False, transport=None):
         for part in str(key or "").split("|"):
             part = part.strip()
             if PATH_RE.match(part):
-                if os.path.exists(os.path.join(root, part)):
+                if _in_repo(root, part):
                     edges.add((nid, "TOUCHES", entity(f"file:{part}", "file")))
                 else:
                     dropped_paths += 1
@@ -266,6 +338,37 @@ def build(root, embed_backfill=False, transport=None):
         if camp:
             nodes[rnid]["campaign"] = camp
             edges.add((rnid, "PART_OF", entity(f"campaign:{camp}", "campaign")))
+
+    # Decisions, keyed by the id the compiler already resolves imports by —
+    # the one row class in WORK.md with a stable machine identity, read from
+    # the run artifacts (pure JSON) rather than the markdown table. A later
+    # run re-deciding the same id wins, and both runs stay on the edge list.
+    for rid, art in sorted(runs.items(),
+                           key=lambda kv: (str(kv[1].get("when") or ""),
+                                           kv[0])):
+        decs = (art.get("summary") or {}).get("decisions")
+        if not isinstance(decs, dict):
+            continue
+        for did, d in sorted(decs.items()):
+            if not isinstance(d, dict):
+                continue
+            nid = f"decision:{did}"
+            text = " ".join(str(d.get(k) or "")
+                            for k in ("question", "chosen", "rationale"))
+            prior = nodes.get(nid, {})
+            run_list = [r for r in prior.get("runs", []) if r != rid] + [rid]
+            # Versions accumulate in decided order so --as-of can serve the
+            # choice that actually governed at that time — a time-travel
+            # query answering with today's chosen would be an anachronism
+            # wearing a timestamp.
+            versions = prior.get("versions", []) + [
+                {"when": art.get("when"), "text": text.strip(),
+                 "chosen": str(d.get("chosen") or ""), "runId": rid}]
+            nodes[nid] = {"kind": "decision", "text": text.strip(),
+                          "chosen": str(d.get("chosen") or ""),
+                          "when": art.get("when"), "runs": run_list,
+                          "versions": versions}
+            edges.add((nid, "DECIDED_IN", f"run:{rid}"))
 
     for row in cexes:
         cid = row.get("cexId")
@@ -279,8 +382,35 @@ def build(root, embed_backfill=False, transport=None):
                       "when": (row.get("pin") or {}).get("pinnedWhen")
                       or row.get("when") or ""}
         pin = row.get("pin") or {}
-        if pin.get("file") and os.path.exists(os.path.join(root, pin["file"])):
+        if pin.get("file") and _in_repo(root, str(pin["file"])):
             edges.add((nid, "PINS", entity(f"file:{pin['file']}", "file")))
+
+    # The repo's declared primitives join the graph, so "does this already
+    # exist" and "what did we learn about it" answer from one walk: a lesson
+    # touching a primitive's file is two hops from the primitive, and its
+    # consumers are one more.
+    prims, sub_note = _read_substrate(root)
+    if sub_note:
+        print(f"recall: {sub_note}", file=sys.stderr)
+    for pr in prims:
+        nodes[f"prim:{pr['id']}"] = {
+            "kind": "primitive",
+            "text": f"{pr['desc']} || {pr['id']} {pr['kind']}".strip(),
+            "repo": pr["repo"], "status": pr["status"]}
+    for pr in prims:
+        nid = f"prim:{pr['id']}"
+        for tgt in pr["consumes"]:
+            tid = f"prim:{tgt}"
+            if tid not in nodes:
+                # A consumed primitive declared by another repo: a stub with
+                # its id as the only text, kept so the CONSUMES chain stays
+                # walkable rather than snapping at the repo boundary.
+                nodes[tid] = {"kind": "primitive", "text": tgt,
+                              "repo": "", "status": ""}
+            edges.add((nid, "CONSUMES", tid))
+        for path_ in pr["paths"]:
+            if _in_repo(root, path_):
+                edges.add((nid, "LOCATES", entity(f"file:{path_}", "file")))
 
     # gnode -> campaign membership, via the runs that filed lessons there.
     for nid, n in list(nodes.items()):
@@ -327,7 +457,7 @@ def build(root, embed_backfill=False, transport=None):
 
     stats = {"docs": n_docs, "nodes": len(nodes), "edges": len(edges),
              "droppedPaths": dropped_paths, "staleKills": stale_kills,
-             "pending": 0, "provider": "none"}
+             "primitives": len(prims), "pending": 0, "provider": "none"}
     stats.update(_sync_vectors(root, docs, embed_backfill, transport))
 
     meta = {"version": 1, "sources": _source_fingerprints(root),
@@ -672,11 +802,12 @@ def search(root, query="", files=None, tags=None, center=None, as_of=None,
     if not legs:
         return [], diagnostics + ["no query, files, tags, or center given"]
 
-    fused = {}
+    fused, membership = {}, {}
     for leg, ranked in legs.items():
         w = LEG_WEIGHT[leg]
         for rank, (nid, _) in enumerate(ranked):
             fused[nid] = fused.get(nid, 0.0) + w / (RRF_K + rank + 1)
+            membership.setdefault(nid, {})[leg] = rank
 
     as_of_dt = _parse_ts(as_of) if as_of else None
     if as_of and as_of_dt is None:
@@ -690,6 +821,10 @@ def search(root, query="", files=None, tags=None, center=None, as_of=None,
         if not n:
             continue
         view = dict(n)
+        if n["kind"] == "decision" and as_of_dt is not None:
+            view = _decision_as_of(n, as_of_dt)
+            if view is None:
+                continue
         if n["kind"] == "lesson":
             if as_of_dt is not None:
                 view = _version_as_of(n, as_of_dt)
@@ -705,7 +840,9 @@ def search(root, query="", files=None, tags=None, center=None, as_of=None,
                 score *= 0.999 ** hours
         if hops is not None:
             score *= (1.0 / (1 + hops[nid])) if nid in hops else 0.25
-        records.append({"id": nid, "score": score, **view})
+        ranks = membership.get(nid, {})
+        records.append({"id": nid, "score": score,
+                        "legs": sorted(ranks), "ranks": ranks, **view})
 
     records.sort(key=lambda r: (-r["score"], r["id"]))
 
@@ -753,6 +890,25 @@ def _version_as_of(node, as_of_dt):
     return view
 
 
+def _decision_as_of(node, as_of_dt):
+    """The decision version that governed at the as-of instant, or None
+    when the id had not been decided yet. Versions arrive in decided
+    order, so the last one at or before T wins."""
+    chosen = None
+    for v in node.get("versions") or []:
+        w = _parse_ts(v.get("when"))
+        if w is not None and w <= as_of_dt:
+            chosen = v
+    if chosen is None:
+        return None
+    view = dict(node)
+    view.update({"text": chosen.get("text") or "",
+                 "chosen": chosen.get("chosen") or "",
+                 "when": chosen.get("when"),
+                 "runs": [chosen.get("runId")] if chosen.get("runId") else []})
+    return view
+
+
 # ------------------------------------------------------------------ render
 
 def render_lines(records, diagnostics, budget_bytes=4000, header=None):
@@ -777,7 +933,10 @@ def render_lines(records, diagnostics, budget_bytes=4000, header=None):
             bits.append(f"stale: {r['stale']} changed since")
         if bits:
             line += f" [{'; '.join(bits)}]"
-        out.append(line)
+        # Claims and objections are agent-authored text landing in
+        # model-visible context: strip control and separator characters so
+        # a crafted claim cannot forge additional lines.
+        out.append(_clean(line, 400))
     for d in diagnostics:
         out.append(f"    [{d}]")
     text = ""
@@ -859,6 +1018,78 @@ def for_session(root):
     return 0
 
 
+def _informative_overlap(root, query, nid):
+    """Distinct informative query tokens the doc actually matches.
+
+    Informative = at least 3 chars and present in under half the corpus,
+    so a stopword shared with every lesson ('the', 'is', a ubiquitous
+    path segment) cannot clear a precision floor by itself.
+    """
+    lex = _load_json(root, LEX_F)
+    if not lex or nid not in (lex.get("docs") or {}):
+        return 0
+    n = max(1, lex.get("N") or 1)
+    doc_tf = lex["docs"][nid].get("tf") or {}
+    hits = set()
+    for t in set(tokenize(query)):
+        if len(t) < 3:
+            continue
+        df = lex.get("df", {}).get(t, 0)
+        if not df or df / n > 0.5:
+            continue
+        if t in doc_tf:
+            hits.add(t)
+    return len(hits)
+
+
+def for_prompt(root):
+    """The UserPromptSubmit hook body: dark by default, precision-floored.
+
+    SWE-ContextBench's result is the design constraint here — wrongly
+    retrieved memories cost more than none — so this surface ships gated
+    behind FPL_MEM_PROMPT=1 (the shell wrapper enforces it) and injects
+    only items with real corroboration. The graph leg does NOT count as
+    corroboration: with only a prompt to go on, its seeds come from the
+    lexical leg's own top ranks, so lex + graph is one signal counted
+    twice. What passes: two genuinely independent legs (lexical + dense),
+    or a lexical match on at least two informative query tokens — never a
+    lone stopword overlap. Reads the hook's JSON payload on stdin, prints
+    at most 3 items in 1200 bytes, and exits 0 no matter what — a hook
+    that can wedge a prompt is worse than the recall it was adding.
+    """
+    try:
+        payload = json.load(sys.stdin)
+    except (json.JSONDecodeError, OSError, ValueError):
+        return 0
+    if not isinstance(payload, dict):
+        return 0
+    prompt = str(payload.get("prompt") or "")[:512]
+    if not prompt.strip():
+        return 0
+    if not os.path.exists(memory_mod.path_for(root)):
+        return 0
+    try:
+        records, _ = search(root, query=prompt, offline=True, k=8,
+                            allow_rebuild=False)
+    except SystemExit:
+        return 0
+    strong = []
+    for r in records:
+        independent = {"lex", "dense", "ident"} & set(r.get("legs") or [])
+        if (len(independent) >= 2
+                or _informative_overlap(root, prompt, r["id"]) >= 2):
+            strong.append(r)
+        if len(strong) >= 3:
+            break
+    if not strong:
+        return 0
+    print(render_lines(
+        strong, [], budget_bytes=1200,
+        header="Filed memory relevant to this prompt (advisory; a re-found "
+               "item is still judged on its merits):"))
+    return 0
+
+
 def _work_query(root):
     for fn in ("WORK.md", "LOOP.md"):
         p = os.path.join(root, fn)
@@ -905,6 +1136,8 @@ def main():
     g.add_argument("--stats", action="store_true")
     g.add_argument("--query", default=None)
     g.add_argument("--for-session", action="store_true")
+    g.add_argument("--for-prompt", action="store_true",
+                   help="UserPromptSubmit hook body: hook JSON on stdin")
     ap.add_argument("--embed", action="store_true",
                     help="with --build: backfill dense vectors (needs a key)")
     ap.add_argument("--files", default="",
@@ -925,6 +1158,9 @@ def main():
 
     if a.for_session:
         return for_session(a.root)
+
+    if a.for_prompt:
+        return for_prompt(a.root)
 
     if a.build:
         stats = build(a.root, embed_backfill=a.embed)

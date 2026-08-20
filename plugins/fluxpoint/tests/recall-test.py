@@ -83,9 +83,26 @@ def lesson(tag, key, claim, status="surviving", run="r-1",
 
 
 RUNS = {"r-1": {"runId": "r-1", "when": "2026-08-01T09:00:00Z",
-                "summary": {"campaign": "beacon audit"}},
+                "summary": {"campaign": "beacon audit",
+                            "decisions": {"beacon-normalization": {
+                                "question": "where do two-way beacon names "
+                                            "get normalized?",
+                                "chosen": "inside every consumer separately",
+                                "rationale": "each consumer knows its own "
+                                             "tolerance for raw validator "
+                                             "bytes",
+                            }}}},
         "r-2": {"runId": "r-2", "when": "2026-08-10T09:00:00Z",
-                "summary": {"campaign": "beacon audit"}}}
+                "summary": {"campaign": "beacon audit",
+                            "decisions": {"beacon-normalization": {
+                                "question": "where do two-way beacon names "
+                                            "get normalized?",
+                                "chosen": "at the decode boundary",
+                                "rationale": "every consumer downstream then "
+                                             "sees one canonical form and the "
+                                             "validator's raw bytes stay "
+                                             "quarantined in one module",
+                            }}}}}
 ROWS = [
     lesson("audit", "src/a.ts|two-way beacons unprefixed",
            "Two-way asset beacon names are unprefixed where one-way "
@@ -165,13 +182,144 @@ stats, _, _ = quiet(recall.build, root)
 report("--stats names every dropped path candidate",
        stats["droppedPaths"] == 2, f"droppedPaths={stats['droppedPaths']}")
 
+# Decisions project from run artifacts by their import id — the one row
+# class with a stable machine identity — never from the markdown table.
+dnode = graph["nodes"].get("decision:beacon-normalization")
+report("a decision is a retrievable node keyed by its import id",
+       dnode and dnode["kind"] == "decision"
+       and "decode boundary" in dnode["text"]
+       and dnode["runs"] == ["r-1", "r-2"]
+       and len(dnode["versions"]) == 2,
+       dnode["text"][:60] if dnode else "missing")
+report("the decision is edged to every run that decided it",
+       ("decision:beacon-normalization", "DECIDED_IN", "run:r-2") in kinds
+       and ("decision:beacon-normalization", "DECIDED_IN", "run:r-1")
+       in kinds,
+       "DECIDED_IN present for both runs")
+(drecs, _), _, _ = quiet(recall.search, root,
+                         query="where are beacon names normalized canonical",
+                         k=3, offline=True)
+report("decisions surface from a topical query",
+       any(r["id"] == "decision:beacon-normalization" for r in drecs),
+       [r["id"] for r in drecs][0] if drecs else "no results")
+(dold, _), _, _ = quiet(recall.search, root,
+                        query="where are beacon names normalized canonical",
+                        k=3, offline=True, as_of="2026-08-05T00:00:00Z")
+old_view = next((r for r in dold
+                 if r["id"] == "decision:beacon-normalization"), None)
+report("--as-of serves the decision that governed then, not today's",
+       old_view and old_view["chosen"] == "inside every consumer separately"
+       and old_view["runs"] == ["r-1"],
+       old_view["chosen"] if old_view else "missing")
+(dnone, _), _, _ = quiet(recall.search, root,
+                         query="where are beacon names normalized canonical",
+                         k=3, offline=True, as_of="2026-07-01T00:00:00Z")
+report("--as-of before any deciding run omits the decision",
+       not any(r["id"] == "decision:beacon-normalization" for r in dnone),
+       "an undecided id has no governing version")
+
+# ==================== substrate primitives =================================
+proot = scratch(
+    [lesson("audit", "src/codec.ts|min-utxo sizing drifts",
+            "The min-UTxO sizing in the codec drifts from the node's "
+            "calculation on multi-asset outputs")],
+    RUNS,
+    {"src/codec.ts": "export const codec = 1\n",
+     "substrate.json": json.dumps({
+         "repo": "filler",
+         "primitives": [
+             {"id": "plutus-cbor-codec", "kind": "toolkit", "status": "live",
+              "desc": "Hand-rolled CBOR reader/writer with min-UTxO sizing" + chr(1)
+                      + chr(0x2028) + "forged line",
+              "paths": ["src/codec.ts"], "consumes": []},
+             {"id": "swap-planners", "kind": "engine", "status": "live",
+              "desc": "Pure recipe builders for create, cancel and fill",
+              "paths": ["src/missing"], "consumes": ["plutus-cbor-codec",
+                                                     "foreign-primitive"]},
+         ]})})
+pstats, _, _ = quiet(recall.build, proot)
+pg = json.loads(open(os.path.join(proot, recall.INDEX_DIR,
+                                  recall.GRAPH_F)).read())
+pkinds = {tuple(e) for e in pg["edges"]}
+report("primitives project from the repo's own manifest",
+       pstats["primitives"] == 2
+       and pg["nodes"]["prim:plutus-cbor-codec"]["kind"] == "primitive",
+       f"{pstats['primitives']} primitive(s)")
+report("manifest strings are sanitized before they can reach a prompt",
+       chr(1) not in pg["nodes"]["prim:plutus-cbor-codec"]["text"]
+       and chr(0x2028) not in pg["nodes"]["prim:plutus-cbor-codec"]["text"],
+       "control chars stripped")
+report("consumes edges stay walkable across the repo boundary",
+       ("prim:swap-planners", "CONSUMES", "prim:plutus-cbor-codec") in pkinds
+       and ("prim:swap-planners", "CONSUMES", "prim:foreign-primitive")
+       in pkinds and pg["nodes"]["prim:foreign-primitive"]["text"]
+       == "foreign-primitive",
+       "declared + stub targets edged")
+report("a primitive shares file nodes with the lessons that touch it",
+       ("prim:plutus-cbor-codec", "LOCATES", "file:src/codec.ts") in pkinds
+       and ("lesson:audit|src/codec.ts|min-utxo sizing drifts", "TOUCHES",
+            "file:src/codec.ts") in pkinds,
+       "LOCATES and TOUCHES meet at file:src/codec.ts")
+(precs, _), _, _ = quiet(recall.search, proot,
+                         query="CBOR reader writer min-UTxO sizing",
+                         k=4, offline=True)
+report("primitives surface from a topical query",
+       any(r["id"] == "prim:plutus-cbor-codec" for r in precs),
+       [r["id"] for r in precs][:2] if precs else "no results")
+shutil.rmtree(proot)
+
+# A hostile or typo'd manifest must degrade, never crash or escape: wrong
+# container types are dropped, and a path pointing outside the repo (or an
+# absolute one) never becomes a file node however real the file it names.
+hroot = scratch([], RUNS, {
+    "substrate.json": json.dumps({
+        "repo": "filler",
+        "primitives": [
+            {"id": "typo", "kind": "engine", "status": "live",
+             "desc": "paths and consumes are the wrong container type here",
+             "paths": "src/codec.ts", "consumes": {"a": 1}},
+            {"id": "escape", "kind": "engine", "status": "live",
+             "desc": "paths that try to leave the repository tree",
+             "paths": ["/etc/passwd", "../..", "../escape.ts"],
+             "consumes": []},
+        ]})})
+hstats, _, _ = quiet(recall.build, hroot)
+hg = json.loads(open(os.path.join(hroot, recall.INDEX_DIR,
+                                  recall.GRAPH_F)).read())
+report("wrong container types in a manifest degrade instead of crashing",
+       hstats["primitives"] == 2
+       and not any(e[1] in ("LOCATES", "CONSUMES") for e in hg["edges"]),
+       "typo'd primitive indexed with no junk edges")
+report("a manifest path cannot edge the graph outside the repo",
+       not any(n.startswith("file:") for n in hg["nodes"]),
+       "no file nodes from absolute or ..-paths")
+shutil.rmtree(hroot)
+
+# Claims are agent-authored text landing in model-visible context: a
+# control character in one must not survive into a rendered line.
+croot = scratch([lesson("audit", "k-ctl",
+                        "A claim carrying a control" + chr(1) + chr(0x2028)
+                        + "character that must not forge lines")], RUNS, {})
+quiet(recall.build, croot)
+(crecs, _), _, _ = quiet(recall.search, croot,
+                         query="claim carrying control character forge",
+                         k=2, offline=True)
+ctext = recall.render_lines(crecs, [])
+report("rendered lines strip control characters from claims",
+       crecs and chr(1) not in ctext and chr(0x2028) not in ctext
+       and "forge lines" in ctext,
+       "control chars stripped, text intact")
+shutil.rmtree(croot)
+
 # ==================== retrieval invariants =================================
 (recs, diags), _, _ = quiet(recall.search, root,
                             query="beacon prefix decoder", k=5, offline=True)
 ids = [r["id"] for r in recs]
-report("query ranks the on-topic lesson first",
-       ids and ids[0] == "lesson:audit|src/a.ts|two-way beacons unprefixed",
-       ids[0] if ids else "no results")
+lesson_ids = [r["id"] for r in recs if r["kind"] == "lesson"]
+report("query ranks the on-topic lesson first among lessons",
+       lesson_ids and lesson_ids[0] ==
+       "lesson:audit|src/a.ts|two-way beacons unprefixed",
+       lesson_ids[0] if lesson_ids else "no lesson results")
 report("killed lessons are retrieved and labelled, never suppressed",
        any(r["id"] == nid_killed and r["status"] == "killed" for r in recs),
        "killed row present in results")
@@ -238,8 +386,10 @@ quiet(recall.build, droot)
                       k=5, offline=True)
 (d2, _), _, _ = quiet(recall.search, droot, query="claim consolidation",
                       k=5, offline=True, include_superseded=True)
+gone = not any(r["id"] == "lesson:audit|k2" for r in d1)
+back = any(r["id"] == "lesson:audit|k2" for r in d2)
 report("superseded rows are filtered by default, reachable on request",
-       not d1 and len(d2) == 1, f"default={len(d1)}, opted-in={len(d2)}")
+       gone and back, f"default hides it={gone}, opted-in shows it={back}")
 shutil.rmtree(droot)
 
 # ==================== stale kills ==========================================
@@ -256,9 +406,12 @@ snode = sg["nodes"]["lesson:audit|src/hot.ts|race in fill packing"]
 (srecs, _), _, _ = quiet(recall.search, sroot,
                          query="packer double-spends a UTxO input",
                          k=3, offline=True)
+skill = next((r for r in srecs
+              if r["id"] == "lesson:audit|src/hot.ts|race in fill packing"),
+             None)
 report("a kill whose file changed since is marked stale, not dropped",
        snode.get("stale") == "src/hot.ts" and sstats["staleKills"] == 1
-       and srecs and srecs[0].get("stale") == "src/hot.ts",
+       and skill is not None and skill.get("stale") == "src/hot.ts",
        "annotated and still retrieved")
 shutil.rmtree(sroot)
 
@@ -347,6 +500,46 @@ r = run_cli(noroot, "--for-session")
 report("for-session with no memory at all stays silent",
        r.returncode == 0 and r.stdout.strip() == "", "no store, no lines")
 shutil.rmtree(noroot)
+
+# ==================== per-prompt hook (dark launch) ========================
+quiet(recall.build, root)  # the for-session cases above removed the index
+PROMPT_SH = os.path.join(SCRIPTS, "prompt-recall.sh")
+hook_json = json.dumps({"prompt": "why do two-way beacon names misread in "
+                                  "the decoder?", "cwd": root})
+
+
+def run_hook(env_extra, stdin):
+    env = {k: v for k, v in os.environ.items() if k != "FPL_MEM_PROMPT"}
+    env.update(env_extra)
+    env["CLAUDE_PROJECT_DIR"] = root
+    return subprocess.run(["bash", PROMPT_SH], input=stdin, env=env,
+                          capture_output=True, text=True, timeout=60)
+
+r = run_hook({}, hook_json)
+report("the per-prompt hook is dark by default",
+       r.returncode == 0 and r.stdout == "", "no gate flag, no output")
+r = run_hook({"FPL_MEM_PROMPT": "1"}, hook_json)
+report("armed, it injects corroborated items under budget",
+       r.returncode == 0 and "advisory" in r.stdout
+       and len(r.stdout) <= 1400
+       and "beacons unprefixed" in r.stdout,
+       f"{len(r.stdout)} byte(s)")
+# The floor must be a floor: a prompt sharing only stopword-grade tokens
+# with the store injects nothing. Lex+graph is one signal counted twice
+# (the graph leg is seeded from the lexical top ranks), so corroboration
+# comes from independent legs or two informative matched tokens.
+r = run_hook({"FPL_MEM_PROMPT": "1"},
+             json.dumps({"prompt": "can you check what time it is in "
+                                   "tokyo right now", "cwd": root}))
+report("an off-topic prompt injects nothing",
+       r.returncode == 0 and r.stdout == "",
+       "no informative overlap, no injection")
+r = run_hook({"FPL_MEM_PROMPT": "1"}, "{not json")
+report("junk hook input exits 0 with nothing",
+       r.returncode == 0 and r.stdout == "", "hook cannot wedge a prompt")
+r = run_hook({"FPL_MEM_PROMPT": "1", "FPL_DISABLE": "1"}, hook_json)
+report("FPL_DISABLE short-circuits the prompt hook too",
+       r.returncode == 0 and r.stdout == "", "kill switch honored")
 
 # ==================== render budget ========================================
 quiet(recall.build, root)

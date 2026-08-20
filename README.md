@@ -78,7 +78,10 @@ while adding **no store, no writer, no dependency, and no daemon**:
 
 - **The graph is a projection, not a store.** `recall.py --build` compiles
   a typed knowledge graph deterministically from the stores that already
-  exist — lessons, run artifacts, pinned counterexamples — into gitignored
+  exist — lessons, run artifacts, decisions (keyed by the import id the
+  compiler already resolves), pinned counterexamples, and the repo's own
+  `substrate.json` primitives (sanitized as hostile input; consumes-edges
+  kept walkable across the repo boundary) — into gitignored
   `.claude/fluxpoint/index/`. Every relation is schema-native (provenance,
   supersession, kill events, path components inside dedupe keys, campaign
   membership), so there is no LLM extraction step to pay for or to
@@ -106,10 +109,12 @@ while adding **no store, no writer, no dependency, and no daemon**:
 - **The embedder is quarantined.** `scripts/embedder.py` is a closed
   provider registry — `voyage` (default `voyage-code-3` at 256 dims;
   Anthropic's documented embeddings partner, and its code-tuned models
-  lead code retrieval), `openai` (`text-embedding-3-small` at 512), or
-  `none` — resolved by key presence (`VOYAGE_API_KEY`, `OPENAI_API_KEY`)
-  or forced with `FPL_EMBEDDER`; an unknown value is a hard error, never a
-  silent fallback, and `FPL_EMBED_MODEL`/`FPL_EMBED_DIMS` tune the model.
+  lead code retrieval), `openai` (`text-embedding-3-small` at 512),
+  `gemini` (`gemini-embedding-001` at 768), or `none` — resolved by key
+  presence (`VOYAGE_API_KEY`, then `OPENAI_API_KEY`, then
+  `GEMINI_API_KEY`) or forced with `FPL_EMBEDDER`; an unknown value is a
+  hard error, never a silent fallback, and
+  `FPL_EMBED_MODEL`/`FPL_EMBED_DIMS` tune the model.
   Vectors are cached by content hash (rebuilds re-embed only what
   changed), stored unit-normalized one file per model, and compared by
   brute-force dot product — at this corpus size a vector database would
@@ -124,8 +129,25 @@ while adding **no store, no writer, no dependency, and no daemon**:
   `FPL_RECALL_INJECT=0` to demote. `/fluxpoint:graph-run` seeds sweeps
   through `recall.py --format seedmap`, which emits exactly the shape
   `memory.py --load` prints with keys relevance-ordered — the compiled
-  graph's advisory-seed contract is untouched. `/fluxpoint:recall` serves
-  humans.
+  graph's advisory-seed contract is untouched. A node declaring
+  `memory: {priors: true}` additionally hands its refuters the seed tag's
+  killed claims with the objections that killed them (5 items, 400 chars
+  each), framed as priors the panel may overturn — the panel stops paying
+  to rediscover arguments the store already holds, and the finder's
+  prompt stays clean. `/fluxpoint:recall` serves humans. A per-prompt
+  UserPromptSubmit hook exists but ships **dark** behind
+  `FPL_MEM_PROMPT=1`: offline, 3 items, 1200 bytes, and a precision floor
+  — two independent retrieval legs, or a lexical match on at least two
+  informative query tokens; the graph leg never corroborates, because its
+  seeds come from the lexical top ranks — off by default because the
+  strongest external result says wrongly retrieved memories cost more
+  than none.
+- **Curation is a campaign, not a daemon.** `templates/WORK.consolidate.md`
+  reads the store, proposes merges and restatements as findings, has a
+  skeptic attack each one with the killed priors in hand, and lets
+  `record-run.py` file the survivors through the same single-writer path —
+  supersession by append, never deletion. Run it by hand or from a
+  scheduled Routine.
 
 What it refuses, on purpose: LLM extraction or reranking anywhere in the
 write or rank path; any new dependency (no numpy, faiss, sqlite-vec, or
@@ -454,14 +476,16 @@ plugins/fluxpoint/
 ├── .claude-plugin/plugin.json
 ├── hooks/hooks.json
 ├── scripts/            lib.sh, inject-state.sh, verify-changed.sh, dod-gate.sh,
-│                       compile-graph.py, record-run.py, recall.py, embedder.py
+│                       compile-graph.py, record-run.py, recall.py, embedder.py,
+│                       prompt-recall.sh
 ├── contracts/          FindingsV1, VerdictV1, HarnessCheckV1, DesignV1, SliceV1, RedTeamV1
 ├── commands/           init.md, status.md, migrate.md, red-team.md, recall.md,
 │                       graph-design.md, graph-run.md, graph-audit.md
 ├── agents/             red-team-reviewer.md, graph-auditor.md
 ├── skills/             loop-engineering/SKILL.md, graph-engineering/SKILL.md
 ├── templates/          harness.sh, WORK.md, WORK.feature.md, WORK.discovery.md,
-│                       WORK_PROMPT.md, loop.sh, settings.snippet.json
+│                       WORK.consolidate.md, WORK_PROMPT.md, loop.sh,
+│                       settings.snippet.json
 ├── tests/              gate-test.sh, compile-test.py, unify-test.sh
 └── DESIGN-NOTES.md
 ```

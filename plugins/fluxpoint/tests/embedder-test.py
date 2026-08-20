@@ -48,6 +48,16 @@ spec = embedder.resolve(env={"VOYAGE_API_KEY": "k", "OPENAI_API_KEY": "k"})
 report("voyage outranks openai when both keys exist",
        spec["provider"] == "voyage", spec["provider"])
 
+spec = embedder.resolve(env={"GEMINI_API_KEY": "k"})
+report("gemini key alone serves gemini defaults",
+       spec["provider"] == "gemini"
+       and spec["model"] == "gemini-embedding-001" and spec["dims"] == 768,
+       f"{spec['model']} @{spec['dims']}d")
+
+spec = embedder.resolve(env={"OPENAI_API_KEY": "k", "GEMINI_API_KEY": "k"})
+report("openai outranks gemini when both keys exist",
+       spec["provider"] == "openai", spec["provider"])
+
 spec = embedder.resolve(env={"FPL_EMBEDDER": "openai",
                              "VOYAGE_API_KEY": "k", "OPENAI_API_KEY": "k"})
 report("FPL_EMBEDDER overrides key order",
@@ -101,6 +111,16 @@ embedder.embed([f"t{i}" for i in range(200)], "query", SPEC,
                transport=transport, env=ENV)
 report("requests are batched at 128",
        [c["n"] for c in calls] == [128, 72], str([c["n"] for c in calls]))
+
+# Gemini's batchEmbedContents caps at 100 requests per call; the shared
+# 128 batch would 400 on every backfill past a hundred cards.
+GEMINI_ENV = {"GEMINI_API_KEY": "k-test-not-real"}
+GEMINI_SPEC = embedder.resolve(env=GEMINI_ENV)
+calls.clear()
+embedder.embed([f"t{i}" for i in range(150)], "document", GEMINI_SPEC,
+               transport=transport, env=GEMINI_ENV)
+report("gemini requests are batched at its 100-request cap",
+       [c["n"] for c in calls] == [100, 50], str([c["n"] for c in calls]))
 
 try:
     embedder.embed(["x"], "query",

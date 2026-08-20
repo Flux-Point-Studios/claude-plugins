@@ -12,9 +12,10 @@ source of truth.
    `bash "${CLAUDE_PLUGIN_ROOT}/scripts/py.sh" recall.py --build --embed`
    and report what it printed: docs indexed, dense provider, pending
    embeddings, dropped path candidates, stale kills. `--embed` backfills
-   vectors only when an embedder key is present (`VOYAGE_API_KEY` or
-   `OPENAI_API_KEY`; `FPL_EMBEDDER` overrides) — keyless is a supported
-   mode, not a failure, and the output says which mode ran.
+   vectors only when an embedder key is present (`VOYAGE_API_KEY`,
+   `OPENAI_API_KEY`, or `GEMINI_API_KEY`, in that order; `FPL_EMBEDDER`
+   overrides) — keyless is a supported mode, not a failure, and the
+   output says which mode ran.
 
 2. If the argument is `stats`, run
    `bash "${CLAUDE_PLUGIN_ROOT}/scripts/py.sh" recall.py --stats` and
