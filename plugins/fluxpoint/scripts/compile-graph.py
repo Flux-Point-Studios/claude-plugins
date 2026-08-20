@@ -2197,7 +2197,22 @@ def main():
         print(f"graph-compile: wrote {args.out} — {len(ir['nodes'])} node(s), "
               f"{planned} planned agent call(s)")
     else:
-        sys.stdout.write(js)
+        # Pin the newline on this path too. `--out` above opens with
+        # newline="\n"; stdout is a TextIOWrapper with newline=None, which
+        # translates every \n to os.linesep on write -- so on Windows the same
+        # compiler emitted LF through one path and CRLF through the other.
+        # PYTHONIOENCODING, which py.sh already exports, pins the ENCODING and
+        # says nothing about line endings; they are separate translations.
+        # The Workflow tool refuses a script carrying CR ("contains control
+        # characters that would be hidden in the approval dialog"), naming
+        # neither CRLF nor the compiler, so the failure lands far from here.
+        try:
+            sys.stdout.reconfigure(newline="\n")
+            sys.stdout.write(js)
+        except (AttributeError, ValueError):
+            # Detached or replaced stdout: write the bytes we mean instead.
+            sys.stdout.flush()
+            sys.stdout.buffer.write(js.encode("utf-8"))
     return 0
 
 

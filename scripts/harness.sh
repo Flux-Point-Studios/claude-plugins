@@ -147,6 +147,7 @@ case "${1:---full}" in
     step "hook wiring + PostToolUse" bash "$PLUGIN/tests/hooks-test.sh"
     step "decisions + compaction memory" bash "$PLUGIN/tests/decision-test.sh"
     step "migration against pre-1.0 fixtures" bash "$PLUGIN/tests/migrate-test.sh"
+    step "STATUS vocabulary" "$FPL_PY" "$PLUGIN/tests/status-vocab-test.py"
     step "proof-strength ratchet" bash "$PLUGIN/tests/proof-guard-test.sh"
     step "statement ratchet" bash "$PLUGIN/tests/spec-guard-test.sh"
     step "counterexample ledger (executed)" bash "$PLUGIN/tests/cex-test.sh"
