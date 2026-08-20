@@ -187,7 +187,16 @@ full() {
   # plugin is not installed failed --full for no reason at all.
   pr="$(plugin_script pair-guard.py)"
   if [ -n "$pr" ]; then
-    "$FPL_PY" "$pr" --check ${FPL_PAIR_AGAINST:+--against "$FPL_PAIR_AGAINST"}
+    # Fall back to the session baseline the Stop gate already exports.
+    # pair-guard diffs against HEAD by default, so an agent that committed
+    # its slice — which WORK_PROMPT.md step 5 tells it to do — empties
+    # `git diff HEAD`, and the co-change tier reports "no changes to
+    # compare" over work sitting right there in the commit. A pair with no
+    # parity command is then enforced by nothing. Every other check in the
+    # gate judges against where the session started; this one opted out by
+    # omission, not by design.
+    pair_base="${FPL_PAIR_AGAINST:-${FPL_DIFF_BASE:-}}"
+    "$FPL_PY" "$pr" --check ${pair_base:+--against "$pair_base"}
   fi
 }
 
