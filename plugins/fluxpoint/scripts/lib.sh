@@ -128,6 +128,9 @@ _fpl_skip_path() {
     # the guard flag the evidence that it is clean.
     .fluxpoint-proof-baseline.json|*/.fluxpoint-proof-baseline.json) return 0 ;;
     target/*|*/target/*|dist/*|*/dist/*|build/*|*/build/*|.git/*) return 0 ;;
+    # A Python repo that has not gitignored its virtualenv otherwise has the
+    # hygiene scan walk site-packages.
+    .venv/*|*/.venv/*|venv/*|*/venv/*|__pycache__/*|*/__pycache__/*) return 0 ;;
   esac
   return 1
 }
@@ -208,6 +211,7 @@ fpl_code_dirty() {
 # trustworthy as the contract that produced it, and every one of these can
 # turn a red run green without touching a line of the code under test.
 FPL_TRUST_BASE="scripts/harness.sh
+.fluxpoint-hygiene-ignore
 .fluxpoint-proof-baseline.json
 .fluxpoint-pairs.json
 .fluxpoint-gates.json
@@ -252,6 +256,30 @@ fpl_harness_modified() {
 # files. History older than the session is CI's job; work this session
 # committed is not, or committing would launder a marker past the gate.
 # Emits one "file: line" per finding.
+# _fpl_hygiene_ignored — is this path excluded from the HYGIENE SCAN only?
+#
+# Read by fpl_scan_hygiene and deliberately NOT by _fpl_skip_path, because
+# _fpl_skip_path is shared with fpl_code_dirty, the predicate that ARMS the
+# gate. A repo-extensible skip list wired into that predicate would be a
+# gate-disarming primitive: `src/**` in a file, and the DoD gate silently
+# stops firing. That is a far worse failure than the one being fixed, so the
+# arming predicate stays untouchable and this narrows only what the scan
+# reads.
+#
+# .fluxpoint-hygiene-ignore is one glob per line, # for comments. It is in
+# FPL_TRUST_BASE, so widening the scan's blind spot is itself reported on a
+# green run rather than being a silent edit.
+_fpl_hygiene_ignored() {
+  local pat
+  [ -f .fluxpoint-hygiene-ignore ] || return 1
+  while IFS= read -r pat; do
+    case "$pat" in ""|\#*) continue ;; esac
+    # shellcheck disable=SC2254 - the pattern is a glob on purpose
+    case "$1" in $pat) return 0 ;; esac
+  done < .fluxpoint-hygiene-ignore
+  return 1
+}
+
 fpl_scan_hygiene() {
   # The last group are proof holes: a checker exits 0 on an assumed lemma
   # exactly as it does on a proved one. Only unambiguous markers live here
@@ -271,9 +299,18 @@ fpl_scan_hygiene() {
       printf '%s\n' "$added" | grep -EI "$catch" | sed "s|^+|$f: |" || true
     done < <(git diff "$base" --name-only --diff-filter=ACMR 2>/dev/null)
   fi
+  # Untracked files are read WHOLE, while the tracked branch above takes only
+  # added lines — so a design-tool export or a vendored sample that predates
+  # the session blocks every stop in the repo, on code nobody here wrote. That
+  # contradicts the contract three lines up: history older than the session is
+  # CI's job. .gitignore and .git/info/exclude already scope this, but a file
+  # you intend to commit LATER has no correct lever among them: gitignoring it
+  # is wrong and committing it early to silence the gate is worse. Hence a
+  # hygiene-only list, which cannot disarm the gate.
   while IFS= read -r f; do
     [ -n "$f" ] && [ -f "$f" ] || continue
     _fpl_skip_path "$f" && continue
+    _fpl_hygiene_ignored "$f" && continue
     grep -nEIH "$pat" "$f" || true
     grep -nEIH "$catch" "$f" || true
   done < <(git ls-files --others --exclude-standard 2>/dev/null)

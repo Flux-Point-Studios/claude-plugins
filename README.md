@@ -289,6 +289,7 @@ hooks still honor `LOOP.md`, so a half-migrated repo keeps working.
 |---|---|---|
 | `FPL_DISABLE=1` | off | Kill switch: all three hooks become no-ops. |
 | `FPL_MAX_BLOCKS` | 3 | Consecutive Stop blocks before the gate yields with a checkpoint. |
+| `.fluxpoint-hygiene-ignore` | absent | One glob per line, `#` for comments. Excludes a path from the **hygiene scan only** — for an untracked file you intend to commit later, which `.gitignore` is the wrong lever for. Deliberately not read by the predicate that arms the gate, so it can narrow what the scan reads and never switch the gate off. It is in the trust base, so widening the blind spot is reported on a green run. |
 | `MAX_ITER` / `MAX_TURNS` | 25 / 40 | Outer loop budgets. |
 | `PERMISSION_ARGS` | `--permission-mode acceptEdits` | Outer loop permission flags. |
 
