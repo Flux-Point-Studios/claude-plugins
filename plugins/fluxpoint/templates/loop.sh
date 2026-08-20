@@ -63,9 +63,23 @@ echo "loop: iteration budget exhausted, harness red or STATUS still ACTIVE. Chec
 # same exit 1 the intended path would have produced, so nothing looks
 # wrong. The deterministic trigger is a machine with no plugins dir:
 # exactly the sandboxed container this file's own header recommends.
-ib="$({ find "$HOME/.claude/plugins" -type f -name inbox.py 2>/dev/null || true; } | head -1)"
-[ -n "${FPL_PLUGIN_ROOT:-}" ] && [ -f "$FPL_PLUGIN_ROOT/scripts/inbox.py" ] \
-  && ib="$FPL_PLUGIN_ROOT/scripts/inbox.py"
+# `find` guarantees no ordering, so `head -1` took whichever cached copy the
+# filesystem yielded first — observed to be an ORPHANED version while a newer
+# one was the active install. Prefer a root the runtime already set, then the
+# marketplace copy, then the highest cached version.
+ib=""
+for _root in "${FPL_PLUGIN_ROOT:-}" "${CLAUDE_PLUGIN_ROOT:-}"; do
+  [ -n "$_root" ] && [ -f "$_root/scripts/inbox.py" ] && { ib="$_root/scripts/inbox.py"; break; }
+done
+if [ -z "$ib" ]; then
+  _ic="$({ find "$HOME/.claude/plugins" -type f -name inbox.py 2>/dev/null || true; })"
+  if [ -n "$_ic" ]; then
+    ib="$(printf '%s\n' "$_ic" | grep '/marketplaces/' | head -1 || true)"
+    [ -z "$ib" ] && ib="$(printf '%s\n' "$_ic" | sort -V | tail -1)"
+  fi
+  unset _ic
+fi
+unset _root
 [ -n "$ib" ] && "$FPL_PY" "$ib" --add --kind budget-exhausted \
   --detail "outer loop spent its iteration budget with the harness red or STATUS not DONE" >/dev/null 2>&1
 exit 1

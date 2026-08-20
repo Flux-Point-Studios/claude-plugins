@@ -159,6 +159,7 @@ case "${1:---full}" in
     step "embedder quarantine (executed)" "$FPL_PY" "$PLUGIN/tests/embedder-test.py"
     step "graph metrics aggregator (executed)" "$FPL_PY" "$PLUGIN/tests/metrics-test.py"
     step "relation gate" bash "$PLUGIN/tests/pair-test.sh"
+    step "gate presence + resolver (executed)" bash "$PLUGIN/tests/gate-presence-test.sh"
     step "credential gate (executed)" bash "$PLUGIN/tests/secret-guard-test.sh"
     step "secret-handling skill shapes (executed)" "$FPL_PY" "$PLUGIN/tests/secret-handling-test.py"
     step "park layer (executed)" "$FPL_PY" "$PLUGIN/tests/park-test.py"

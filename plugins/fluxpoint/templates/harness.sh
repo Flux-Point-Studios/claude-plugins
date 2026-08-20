@@ -48,18 +48,87 @@ run_script_if_present() {
 }
 
 # Locate a script shipped with the plugin. Prints nothing when the plugin is
-# not installed, so a repo carrying this harness stays runnable without it.
+# not installed, so a repo carrying this harness stays runnable without it —
+# but see need_gate below: "not installed" must never be read as "passed".
+#
+# Resolution is ordered rather than incidental. `find` guarantees no ordering,
+# so `| head -1` picked whichever cached copy the filesystem happened to yield
+# first — on a machine with several installed versions that was an ORPHANED
+# one, while installed_plugins.json named a newer version as active. Nothing
+# misbehaved only because the scripts were byte-identical across those
+# versions, which is a coincidence and not a maintained property.
 plugin_script() {
-  if [ -n "${FPL_PLUGIN_ROOT:-}" ] && [ -f "$FPL_PLUGIN_ROOT/scripts/$1" ]; then
-    printf '%s\n' "$FPL_PLUGIN_ROOT/scripts/$1"
+  # CLAUDE_PLUGIN_ROOT is set by the runtime whenever the harness runs under a
+  # hook, and is version-correct by construction. FPL_PLUGIN_ROOT stays ahead
+  # of it as the repo's deliberate override.
+  for _root in "${FPL_PLUGIN_ROOT:-}" "${CLAUDE_PLUGIN_ROOT:-}"; do
+    if [ -n "$_root" ] && [ -f "$_root/scripts/$1" ]; then
+      printf '%s\n' "$_root/scripts/$1"
+      unset _root
+      return 0
+    fi
+  done
+  unset _root
+  # `|| true` is load-bearing: find exits 1 when ~/.claude/plugins does not
+  # exist, `pipefail` propagates that through the pipe, and `set -e` then
+  # killed --full on its first plugin lookup — in exactly the repos this
+  # function exists to support, the ones carrying the harness without the
+  # plugin installed. It failed with no output at all.
+  _cands="$( { find "$HOME/.claude/plugins" -type f -name "$1" 2>/dev/null || true; } )"
+  [ -z "$_cands" ] && { unset _cands; return 0; }
+  # A locally-installed marketplace carries no version directory and is the
+  # only copy present for that install, so it wins outright. Otherwise take
+  # the highest version: `sort -V` is meaningful here precisely because the
+  # remaining candidates are all cache paths sharing a prefix up to the
+  # version component, which is the comparison that was nondeterministic.
+  _mk="$(printf '%s\n' "$_cands" | grep '/marketplaces/' | head -1 || true)"
+  if [ -n "$_mk" ]; then
+    printf '%s\n' "$_mk"
   else
-    # `|| true` is load-bearing: find exits 1 when ~/.claude/plugins does not
-    # exist, `pipefail` propagates that through the pipe, and `set -e` then
-    # killed --full on its first plugin lookup — in exactly the repos this
-    # function exists to support, the ones carrying the harness without the
-    # plugin installed. It failed with no output at all.
-    { find "$HOME/.claude/plugins" -type f -name "$1" 2>/dev/null || true; } | head -1
+    printf '%s\n' "$_cands" | sort -V | tail -1
   fi
+  unset _cands _mk
+}
+
+# A gate whose script is absent is not a gate that passed.
+#
+# Every gate below was `x="$(plugin_script f.py)"; [ -n "$x" ] && run`, so a
+# missing plugin skipped it and the harness still exited 0 — silently, with
+# the old "SKIPPED" notice long since refactored away. The environments where
+# that happens are the ones that matter most: CI, cloud sessions, fresh clones
+# and the detached worktrees used for independent verification. A check that
+# does not run reads exactly like a check that passed, which is the defect
+# class this harness exists to enforce against.
+#
+# The repo's intent decides which way it fails. Arming config on disk means
+# the repo asked for that gate, so its absence is RED. With no config the gate
+# is dormant by design and the run continues, saying so once. Set
+# FPL_ALLOW_MISSING_GATES=1 to downgrade the red to a warning — an opt-out
+# someone chose, never an absence inferred.
+need_gate() {
+  FPL_GATE=""
+  _script="$1"; shift
+  FPL_GATE="$(plugin_script "$_script")"
+  if [ -n "$FPL_GATE" ]; then unset _script; return 0; fi
+  _armed=""
+  for _cfg in "$@"; do
+    [ -e "$_cfg" ] && { _armed="$_cfg"; break; }
+  done
+  if [ -z "$_armed" ]; then
+    unset _script _armed _cfg
+    return 1
+  fi
+  if [ "${FPL_ALLOW_MISSING_GATES:-}" = "1" ]; then
+    echo "harness: WARNING — $_script is not installed, and $_armed declares it." >&2
+    echo "harness:   Running anyway because FPL_ALLOW_MISSING_GATES=1." >&2
+    unset _script _armed _cfg
+    return 1
+  fi
+  echo "harness: $_script is not installed, but $_armed declares it." >&2
+  echo "harness:   This gate cannot run, so this harness cannot report green." >&2
+  echo "harness:   Install the fluxpoint plugin, or set FPL_ALLOW_MISSING_GATES=1" >&2
+  echo "harness:   to accept the gap on purpose." >&2
+  exit 1
 }
 
 changed() {
@@ -126,8 +195,9 @@ full() {
     # than maxTxSize cannot go on chain at all, and the prover has nothing
     # to say about it. Protocol limits are enforced unconditionally; set a
     # headroom target in .fluxpoint-budget.json when you want one.
-    pb="$(plugin_script plutus-budget.py)"
-    [ -n "$pb" ] && "$FPL_PY" "$pb" --check ${FPL_PROTOCOL_PARAMS:+--params "$FPL_PROTOCOL_PARAMS"}
+    if need_gate plutus-budget.py .fluxpoint-budget.json contracts/aiken.toml; then
+      "$FPL_PY" "$FPL_GATE" --check ${FPL_PROTOCOL_PARAMS:+--params "$FPL_PROTOCOL_PARAMS"}
+    fi
   fi
   # Provers run in --full, not only per-file. A gate that decides "done"
   # without invoking the prover is not a gate.
@@ -158,26 +228,30 @@ full() {
   # Proof-strength ratchet. A prover exits 0 on an assumed lemma exactly as it
   # does on a proved one, so the count of escape hatches may fall but never
   # rise. Dormant in repos with no proof-language files.
-  pg="$(plugin_script proof-guard.py)"
-  [ -n "$pg" ] && "$FPL_PY" "$pg" --check
+  if need_gate proof-guard.py .fluxpoint-proof-baseline.json; then
+    "$FPL_PY" "$FPL_GATE" --check
+  fi
   # Statement ratchet. The hatch counts above police proof bodies; this
   # polices what is being proved, because dropping a conjunct from an
   # `ensures` or deleting a property test moves no count and keeps every
   # checker green. Dormant until armed with --baseline.
-  sg="$(plugin_script spec-guard.py)"
-  [ -n "$sg" ] && "$FPL_PY" "$sg" --check
+  if need_gate spec-guard.py .fluxpoint-proof-baseline.json; then
+    "$FPL_PY" "$FPL_GATE" --check
+  fi
   # Counterexample ledger. A prover's shrunk failing input is the most
   # reusable thing it produces and it lives in a log the next command
   # overwrites. This fails when a pinned counterexample has lost the
   # regression test that carries it. Dormant with nothing recorded.
-  cc="$(plugin_script cex.py)"
-  [ -n "$cc" ] && "$FPL_PY" "$cc" --check
+  if need_gate cex.py .fluxpoint-cex.jsonl; then
+    "$FPL_PY" "$FPL_GATE" --check
+  fi
   # Mutation score. Every check above asks whether the tests pass; this asks
   # whether they can fail. Cheap here on purpose — it re-runs nothing and
   # only asks whether a measurement exists and still describes this tree.
   # The expensive `--measure` belongs off-session, on a Routine.
-  mg="$(plugin_script mutation-guard.py)"
-  [ -n "$mg" ] && "$FPL_PY" "$mg" --check
+  if need_gate mutation-guard.py .fluxpoint-mutation.json .fluxpoint-proof-baseline.json; then
+    "$FPL_PY" "$FPL_GATE" --check
+  fi
   # Relation gate. Every check above measures one artifact; the defects that
   # cost the most are relationships between two, and a suite stays green
   # because each half is individually correct. Dormant without a manifest.
@@ -185,8 +259,7 @@ full() {
   # `if`, not `[ -n "$x" ] && cmd`: as the LAST statement of a function under
   # `set -e`, that form returns 1 when the variable is empty, so a repo whose
   # plugin is not installed failed --full for no reason at all.
-  pr="$(plugin_script pair-guard.py)"
-  if [ -n "$pr" ]; then
+  if need_gate pair-guard.py .fluxpoint-pairs.json; then
     # Fall back to the session baseline the Stop gate already exports.
     # pair-guard diffs against HEAD by default, so an agent that committed
     # its slice — which WORK_PROMPT.md step 5 tells it to do — empties
@@ -196,7 +269,7 @@ full() {
     # gate judges against where the session started; this one opted out by
     # omission, not by design.
     pair_base="${FPL_PAIR_AGAINST:-${FPL_DIFF_BASE:-}}"
-    "$FPL_PY" "$pr" --check ${pair_base:+--against "$pair_base"}
+    "$FPL_PY" "$FPL_GATE" --check ${pair_base:+--against "$pair_base"}
   fi
 }
 
