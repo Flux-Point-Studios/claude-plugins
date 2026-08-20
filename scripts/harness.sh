@@ -116,6 +116,11 @@ case "${1:---full}" in
       "$SUB"/*)
         step "substrate suites" substrate_tests ;;
     esac
+    case "$f" in
+      "$PLUGIN"/scripts/recall.py | "$PLUGIN"/scripts/embedder.py)
+        step "hybrid recall pipeline" "$FPL_PY" "$PLUGIN/tests/recall-test.py"
+        step "embedder quarantine" "$FPL_PY" "$PLUGIN/tests/embedder-test.py" ;;
+    esac
     ;;
   --full)
     echo "fluxpoint harness --full"
@@ -150,6 +155,8 @@ case "${1:---full}" in
     step "once-only ledger (executed)" "$FPL_PY" "$PLUGIN/tests/ledger-test.py"
     step "execution attestation (executed)" bash "$PLUGIN/tests/attest-test.sh"
     step "lessons across runs (executed)" "$FPL_PY" "$PLUGIN/tests/memory-test.py"
+    step "hybrid recall pipeline (executed)" "$FPL_PY" "$PLUGIN/tests/recall-test.py"
+    step "embedder quarantine (executed)" "$FPL_PY" "$PLUGIN/tests/embedder-test.py"
     step "graph metrics aggregator (executed)" "$FPL_PY" "$PLUGIN/tests/metrics-test.py"
     step "relation gate" bash "$PLUGIN/tests/pair-test.sh"
     step "credential gate (executed)" bash "$PLUGIN/tests/secret-guard-test.sh"

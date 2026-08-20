@@ -126,6 +126,24 @@ if [ -d "$runs" ]; then
   fi
 fi
 
+# Lessons recalled from the memory index, ranked against the work file and
+# the session's touched paths. Offline and never rebuilding by contract —
+# a SessionStart that spends its window rebuilding injects nothing at all —
+# so a stale or absent index degrades to a named fallback inside recall.py,
+# and the section is silent in a repo that has filed no memory. The wall
+# clock guard exists because a hook that can wedge a session is a worse
+# failure than the memory it was protecting.
+recall_py="$(dirname "$0")/recall.py"
+if [ "${FPL_RECALL_INJECT:-1}" = "1" ] && [ -f "$recall_py" ] \
+   && [ -f "$sd/memory.jsonl" ]; then
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 5 "$FPL_PY" "$recall_py" --for-session 2>/dev/null \
+      || echo "- Memory recall skipped (overran its 5s slot); run /fluxpoint:recall for the ranked view."
+  else
+    "$FPL_PY" "$recall_py" --for-session 2>/dev/null || true
+  fi
+fi
+
 state="$(fpl_state_file || true)"
 if [ -n "$state" ]; then
   # A fixed line window is the wrong shape for this file. In the shipped

@@ -14,8 +14,12 @@ sweep-before-build doctrine has something deterministic to sweep.
 - `scripts/substrate-graph.mjs` — the whole engine: zero dependencies,
   Node ≥ 18, cross-platform. `--emit` writes `SUBSTRATE.md` and exits 1 on
   manifest problems (the CI half); `--check` prints the summary and always
-  exits 0 (the session half). Root resolution: `--root <dir>`, else
-  `CLAUDE_PROJECT_DIR`, else the current directory.
+  exits 0 (the session half); `--json` prints the same graph as
+  machine-readable JSON — deterministic, sanitized, exit 1 on manifest
+  problems — so other tools (fluxpoint's recall layer among them) consume
+  a projection instead of parsing prose or raw manifests. Root
+  resolution: `--root <dir>`, else `CLAUDE_PROJECT_DIR`, else the current
+  directory.
 - `hooks/hooks.json` — `SessionStart` with no matcher, so startup, resume,
   clear, and post-compaction all get the `--check` output. The output is
   factual statements only; a stale manifest is reported, never commanded.

@@ -246,5 +246,79 @@ def halt_literal_cannot_interpolate():
 
 halt_literal_cannot_interpolate()
 
+
+# memory.priors routes RUNTIME data — killed-lesson claims and objections
+# loaded from args._seen — through the PRIORS template literal and into
+# refuter prompts. Unlike the compile-time fields above, this payload
+# arrives after codegen, so the property under test is different: the data
+# must flow through String() inside an already-built literal, never through
+# source. A store row is agent-influenced (a finder's claim text becomes a
+# lesson), which makes this the same trust boundary WORK.md is.
+def priors_payload_stays_data():
+    name = "hostile killed-lesson text cannot escape the priors literal"
+    ir = {
+        "version": 1, "name": "probe",
+        "campaign": "probe hostile priors data staying inert",
+        "budget": {"maxNodes": 80},
+        "nodes": [{
+            "id": "find", "phase": "Find", "contract": "FindingsV1",
+            "prompt": "find; seen: {{seen}}",
+            "verify": "panel:1", "verifyOver": "findings",
+            "repeat": {"untilDryRounds": 1, "maxRounds": 2,
+                       "dedupeBy": ["file", "claim"]},
+            "memory": {"seed": "audit", "emit": "audit", "priors": True},
+        }],
+    }
+    errs = cg.validate(ir, CONTRACTS)
+    if errs:
+        report(name, False, f"probe IR rejected: {errs[:1]}")
+        return
+    js = cg.emit(ir, CONTRACTS, {})
+    evil = ("`+(()=>{globalThis.__PWN=1;return ''})()+`"
+            " ${(globalThis.__PWN=1)} \\` trailing \\")
+    seen = {"audit": {"keys": ["k1"],
+                      "killed": [{"claim": evil, "objection": evil}]}}
+    finding = {"file": "a.ts", "line": 1, "severity": "LOW",
+               "claim": "a legitimate finding that triggers one refute call",
+               "failure_path": "probe only"}
+    nl = chr(10)
+    with tempfile.TemporaryDirectory() as d:
+        out = os.path.join(d, "o.json")
+        w = os.path.join(d, "w.mjs")
+        with open(w, "w", encoding="utf-8") as fh:
+            fh.write(nl.join([
+                "import {writeFileSync} from 'node:fs';",
+                "const PROMPTS=[]; let round=0;",
+                "const agent=async(p,o)=>{PROMPTS.push(p);",
+                "  if(String(o.label||'').includes('refute'))",
+                "    return {refuted:false, reason:'no'};",
+                f"  return {{findings: round++ ? [] : [{json.dumps(finding)}]}}}};",
+                "const parallel=async(t)=>Promise.all(t.map(f=>f()));",
+                "const pipeline=async()=>[],log=()=>{},phase=()=>{};",
+                f"const args={json.dumps({'_seen': seen})};",
+                "const budget={total:null,spent:()=>0,remaining:()=>1e9};",
+                "const workflow=0;",
+                "(async () => {",
+                js.replace("export const meta", "const meta"),
+                "})().then(()=>{",
+                "  const verdict = globalThis.__PWN ? 'EXECUTED'",
+                "    : PROMPTS.some(p=>p.includes('trailing')) ? 'INERT'",
+                "    : 'PAYLOAD LOST';",
+                f"  writeFileSync({json.dumps(out)}, verdict)",
+                "}).catch(()=>{",
+                f"  writeFileSync({json.dumps(out)}, 'RUNTIME ERROR')",
+                "})", ""]))
+        if subprocess.run(["node", "--check", w], capture_output=True).returncode:
+            report(name, False, "emitted JS does not parse")
+            return
+        subprocess.run(["node", w], capture_output=True, timeout=60)
+        verdict = open(out).read() if os.path.exists(out) else "NO VERDICT"
+    report(name, verdict == "INERT",
+           "payload arrived verbatim as data" if verdict == "INERT"
+           else verdict)
+
+
+priors_payload_stays_data()
+
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

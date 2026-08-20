@@ -332,6 +332,28 @@ def main():
     except Exception as e:  # noqa: BLE001 - never lose the Evidence row over this
         print(f"record-run: lesson filing failed: {e}", file=sys.stderr)
 
+    # 1e. The recall index, refreshed after the lessons landed so the next
+    # session's SessionStart section and the next campaign's seedmap rank
+    # over what this run just filed. The index is a rebuildable projection
+    # — a failure here costs recall freshness, never the Evidence row, and
+    # the store stays the only truth. Dense backfill runs only when a key
+    # is present; FPL_MEMORY_INDEX=0 / FPL_MEMORY_EMBED=0 opt out.
+    recall_stats = None
+    if os.environ.get("FPL_MEMORY_INDEX", "1") != "0":
+        try:
+            import recall as _recall
+            recall_stats = _recall.refresh(
+                args.root,
+                embed=os.environ.get("FPL_MEMORY_EMBED", "1") != "0")
+            print(f"record-run: recall index refreshed — "
+                  f"{recall_stats['docs']} doc(s), dense "
+                  f"{recall_stats['provider']}"
+                  + (f", {recall_stats['pending']} pending"
+                     if recall_stats.get("pending") else ""))
+        except Exception as e:  # noqa: BLE001 - never lose the Evidence row over this
+            print(f"record-run: recall index refresh failed: {e}",
+                  file=sys.stderr)
+
     # 2. Evidence row, appended under whichever table header the file carries.
     claim = f"graph run: {ok} node(s) OK, {dead} dead, {findings} produced item(s)"
     if blocked:
@@ -350,6 +372,10 @@ def main():
         if lessons:
             parts.append(f"filed {lessons['filed']} lesson(s), "
                          f"{lessons['killed']} killed")
+        # The ranking universe is named so keyed and keyless teammates
+        # producing different seed orders stay attributable from the row.
+        if recall_stats:
+            parts.append(f"recall: {recall_stats['provider']}")
         claim += "; memory: " + ", ".join(parts)
     imported = summary.get("decisionsImported") or {}
     if imported:

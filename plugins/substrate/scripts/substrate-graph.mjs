@@ -4,6 +4,7 @@
 // timestamps in the body).
 //
 //   node substrate-graph.mjs --emit  [--root <dir>]   write <root>/SUBSTRATE.md; exit 1 on manifest problems
+//   node substrate-graph.mjs --json  [--root <dir>]   the graph as JSON on stdout; exit 1 on manifest problems
 //   node substrate-graph.mjs --check [--root <dir>]   compact summary + staleness; ALWAYS exits 0
 //
 // Root resolution: --root arg, else CLAUDE_PROJECT_DIR, else cwd.
@@ -395,7 +396,7 @@ function writeSubstrateMd(out, text) {
 
 function main() {
   const argv = process.argv.slice(2);
-  const mode = argv.includes("--emit") ? "emit" : "check";
+  const mode = argv.includes("--emit") ? "emit" : argv.includes("--json") ? "json" : "check";
   const root = resolveRoot(argv);
   const out = path.join(root, "SUBSTRATE.md");
   const problems = [];
@@ -411,6 +412,33 @@ function main() {
       for (const p of problems) console.error(`problem: ${p}`);
       process.exitCode = 1;
     }
+  } else if (mode === "json") {
+    // The same graph SUBSTRATE.md renders, as machine-readable JSON, so other
+    // tools (fluxpoint's recall layer among them) consume a projection instead
+    // of parsing prose or raw manifests. Same rules as the markdown: sorted,
+    // sanitized, capped, no timestamps — deterministic for identical manifests.
+    const prims = [...graph.nodes.keys()].sort().map((id) => {
+      const n = graph.nodes.get(id);
+      return {
+        id: clean(id, 200),
+        repo: clean(n.repo || "", 200),
+        kind: clean(n.kind || "", 80),
+        status: clean(n.status || "", 80),
+        desc: clean(n.desc || "", 500),
+        paths: (Array.isArray(n.paths) ? n.paths : []).slice(0, 50).map((p) => clean(p, 500)),
+        consumes: (Array.isArray(n.consumes) ? n.consumes : []).slice(0, 50).map((c) => clean(c, 200)),
+      };
+    });
+    console.log(JSON.stringify({
+      version: 1,
+      repos: repos.map((r) => clean(r.repo, 200)).sort(),
+      primitives: prims,
+      edges: graph.edges.map(([a, b]) => [clean(a, 200), clean(b, 200)]),
+      orphans: graph.orphans.map((id) => clean(id, 200)),
+      hubs: graph.hubs.map((id) => ({ id: clean(id, 200), inDegree: graph.inDegree.get(id) })),
+      problems: capList(problems).map((p) => clean(p)),
+    }));
+    if (problems.length) process.exitCode = 1;
   } else {
     const hubStr = graph.hubs.map((id) => `${id}(${graph.inDegree.get(id)})`).join(", ") || "none";
     console.log(`substrate: ${repos.length} repos / ${graph.nodes.size} primitives / ${graph.edges.length} edges | orphans: ${graph.orphans.length} | hubs: ${hubStr}`);
@@ -426,5 +454,7 @@ try {
   main();
 } catch (e) {
   console.log(`substrate-graph error: ${e.message}`);
-  if (process.argv.includes("--emit")) process.exitCode = 1;
+  // --check must stay exit-0 (it feeds a hook); the machine modes must not:
+  // a consumer that got prose instead of JSON needs the exit code to say so.
+  if (process.argv.includes("--emit") || process.argv.includes("--json")) process.exitCode = 1;
 }

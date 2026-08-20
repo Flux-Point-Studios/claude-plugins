@@ -364,6 +364,87 @@ false-positive rate is measured: the Stop gate blocks once when code
 changed but the Decisions/Notes hash didn't and no `--none` marker exists —
 "done" extends from code-green to memory-flushed.
 
+**3e. Hybrid recall: the memory graph + embeddings layer — shipped in
+slice 18.** The tier taxonomy above named the stores; what stayed missing
+was a way back into them that did not require guessing an exact
+`tag|dedupeKey`. The design question was researched properly — Graphiti's
+architecture read at source level, the 2024–2026 agent-memory evidence
+base surveyed (HippoRAG 2's ablations, LazyGraphRAG's indexing-cost
+result, the verbatim-beats-extracted ablation, the LoCoMo vendor-eval
+collapse), three independent designs drawn and adversarially judged — and
+the verdict was unanimous on the load-bearing point: **Graphiti's read
+path is worth adopting and its write path is not.** Its LLM
+extraction/dedup/resolution pipeline exists because it ingests
+unstructured chat; these stores are already typed, provenanced, and
+append-only, so extraction would add cost and nondeterminism for negative
+value. What shipped in `recall.py` + `embedder.py`:
+
+- a **derived knowledge graph** — lessons, runs, campaigns, IR nodes,
+  tags, files, counterexamples; edges for provenance, kill events
+  (`KILLED_BY` stays permanently valid — GRIT's formulation, so "kills
+  are priors, never suppressors" holds in the type system), supersession
+  (weight zero — never walked), path touches (resolve-or-drop, drops
+  counted) — compiled byte-identically from the stores, exactly as the
+  IR compiler treats WORK.md;
+- **bi-temporal serving** derived from the append chains (current by
+  default, `--as-of` for the version that held then), plus build-time
+  stale-kill annotation (the `--since` idea from 3a, landed as a mark
+  rather than a filter);
+- **hybrid retrieval**: BM25 (k1=1.2, b=0.4, identifier-aware tokenizer)
+  over query and files-touched legs, optional embedding cosine, and
+  personalized PageRank (damping 0.5, specificity-weighted seeds) fused
+  with weighted RRF (k=60), boosted by re-establishment count and mild
+  recency decay on lessons only;
+- an **embedder quarantine** (`voyage`/`openai`/`none`, key-resolved,
+  unknown value fatal, content-hash cached, unit-normalized, brute-force
+  dot product) sanctioned as the single non-deterministic input in the
+  memory layer, able only to reorder advisory output;
+- **budgeted injection**: a SessionStart section (offline, never
+  rebuilding, stale-and-absent modes named, `FPL_RECALL_INJECT=0`),
+  relevance-ordered seed maps for `/fluxpoint:graph-run` in
+  `memory.py --load`'s exact shape, and `/fluxpoint:recall` for humans.
+
+The follow-on slice (19) closed most of what this design left open:
+
+- **Killed priors reach refuter prompts.** `memory.priors: true` (closed
+  registry, emission-probed) builds a capped priors block — 5 killed
+  claims, 400 chars each, each with the objection that killed it — from
+  the seed tag's loaded lessons and hands it to every refuter the node
+  spawns, framed as priors the panel may overturn. The finder's prompt
+  stays clean: priors are addressed to judges, not to the search.
+- **Decisions are graph nodes.** Projected from `runs/*.json`
+  `summary.decisions` — the one row class with a stable machine identity
+  (the id the compiler already resolves `imports` by), so the sha-of-row
+  churn problem never arises; WORK.md's Evidence rows stay out until that
+  identity question has an answer.
+- **Substrate primitives join the walk.** `substrate-graph.mjs --json`
+  emits the workspace graph machine-readably (deterministic, sanitized,
+  exit 1 on manifest problems), and recall ingests the repo's own
+  `substrate.json` — sanitized as hostile input, skipped by name on
+  damage — so a lesson touching a primitive's file sits two hops from the
+  primitive and one more from its consumers.
+- **The per-prompt hook ships dark.** A UserPromptSubmit hook exists but
+  is gated behind `FPL_MEM_PROMPT=1` (default off), offline,
+  never-rebuilding, capped at 3 items / 1200 bytes, with a precision
+  floor: two genuinely independent retrieval legs, or a lexical match on
+  at least two informative query tokens. The graph leg never counts as
+  corroboration — with only a prompt to go on, its seeds come from the
+  lexical leg's own top ranks, so lex + graph is one signal counted
+  twice, which the adversarial review caught before it shipped.
+  It stays dark until an artifact-grounded eval shows lift — the
+  strongest external result (SWE-ContextBench) says wrongly retrieved
+  memories cost more than none, and that is a bet, not a default.
+- **Consolidation is a canonical campaign.** `WORK.consolidate.md` (3d's
+  template half): a curator proposes merges/restatements as findings, a
+  skeptic attacks each one with the killed priors in hand, and
+  record-run.py files survivors through the single-writer path.
+  Supersession stays append-only; nothing deletes.
+
+Still open: `evidence.py --replay` and validity-graded injection (the
+other half of slice 11); WORK.md Evidence rows as graph nodes (stable
+identity unsolved); cross-repo federation (unscheduled, needs its own
+Decisions row).
+
 **3d. Consolidation as an ordinary campaign.** A shipped
 `WORK.consolidate.md` template — read recent runs and `memory.jsonl` →
 propose merges/supersessions → `skeptic:1` refutation → a `mutates` node
@@ -563,6 +644,8 @@ existing harness and each is independently shippable.
 | 15 | `onRed` as a closed registry, enforced on fan-out and discovery (a dead worker can halt; a round that lost any worker never reads as dry; a ceiling-declined spawn files SKIPPED and halts as BUDGET-EXHAUSTED, never NODE-DEAD) | **shipped** |
 | 16 | Graph metrics: `spawned`/`planned`/`spent` in summaries, structured provenance data, `scripts/metrics.py`, scope-creep and serialization warnings (circuit 10) | **shipped** |
 | 17 | Hygiene scan no longer flags the proof ratchet's OWN baseline — `.fluxpoint-proof-baseline.json` records a count for every marker the scan hunts, so `"lean.sorry": 0` (the evidence a repo is clean) read as a proof hole and turned the gate red | **shipped** |
+| 18 | Hybrid recall (Part 3e): derived memory graph + pluggable embeddings + BM25 + PPR fused with weighted RRF; bi-temporal serving, stale-kill marks, relevance-ordered seed maps, SessionStart recall section, `/fluxpoint:recall` | **shipped** |
+| 19 | Recall follow-ons (Part 3e): `memory.priors` refuter wiring with emission probe; decision nodes from run artifacts; `substrate-graph.mjs --json` + primitive ingestion; gemini provider; dark-launched per-prompt hook (`FPL_MEM_PROMPT=1`); `WORK.consolidate.md` (3d's template half) | **shipped** |
 
 ## Part 6 — named absences
 
