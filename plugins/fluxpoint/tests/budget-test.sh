@@ -111,23 +111,23 @@ mkrepo; blueprint 4000
 out="$($PB . --check 2>&1)"
 case "$out" in *"execution units NOT measured"*) ok "unmeasured ex-units are called out" "reported" ;;
   *) bad "unmeasured ex-units are called out" "${out:0:70}" ;; esac
-case "$out" in *"14,000,000"*) ok "says what to measure against" "limits printed" ;;
+case "$out" in *"16,500,000"*) ok "says what to measure against" "limits printed" ;;
   *) bad "says what to measure against" "${out:0:70}" ;; esac
 case "$out" in *"no maxScriptBytes"*) ok "missing headroom target is called out" "reported" ;;
   *) bad "missing headroom target is called out" "${out:0:70}" ;; esac
 
 # ================= 7. measured ex-units are checked ======================
 mkrepo; blueprint 4000
-printf '{"exUnits": {"mem": 15000000, "steps": 1000}}\n' >.fluxpoint-budget.json
+printf '{"exUnits": {"mem": 17000000, "steps": 1000}}\n' >.fluxpoint-budget.json
 err="$($PB . --check 2>&1 >/dev/null)"; rc=$?
 check "measured mem over the protocol limit fails" 1 "$rc"
 case "$err" in *maxTxExMem*) ok "names the ex-unit limit" "reported" ;;
   *) bad "names the ex-unit limit" "${err:0:70}" ;; esac
 
-printf '{"exUnits": {"mem": 7000000, "steps": 5000000000}}\n' >.fluxpoint-budget.json
+printf '{"exUnits": {"mem": 8250000, "steps": 5000000000}}\n' >.fluxpoint-budget.json
 out="$($PB . --check 2>&1)"; rc=$?
 check "measured ex-units within budget pass" 0 "$rc"
-case "$out" in *"50.0% of 14,000,000"*) ok "reports ex-unit headroom" "50.0%" ;;
+case "$out" in *"50.0% of 16,500,000"*) ok "reports ex-unit headroom" "50.0%" ;;
   *) bad "reports ex-unit headroom" "${out:0:70}" ;; esac
 
 # ================= 8. real protocol parameters win =======================
