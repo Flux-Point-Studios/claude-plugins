@@ -73,6 +73,37 @@ def normalize(cmd):
     return s
 
 
+EXIT_RE = re.compile(r"\A\s*Error: Exit code (\d+)")
+
+
+def exit_of(resp):
+    """The exit status a PostToolUse Bash payload reports, or None.
+
+    `tool_response` has no `exit_code` field. The runtime reports the status
+    in the SHAPE of the value: a success arrives as an object carrying
+    `stdout`/`stderr`/`interrupted`, and a failure arrives as a plain string
+    beginning `Error: Exit code N`. Reading only for `exit_code` meant every
+    gate run since gates shipped was recorded as unreadable, and the tests
+    did not catch it because their fixtures invent the field.
+
+    None means "not readable", never "passed". An interrupted command and an
+    unrecognized error string (a denied permission, a blocked path) must stay
+    UNATTESTED rather than be recorded as a pass — an attestation that
+    guesses is worse than an absent one, because record-run.py trusts it.
+    """
+    if isinstance(resp, str):
+        m = EXIT_RE.match(resp)
+        return int(m.group(1)) if m else None
+    if not isinstance(resp, dict):
+        return None
+    # Honored first, so the fix survives the field actually arriving one day.
+    if isinstance(resp.get("exit_code"), int):
+        return resp["exit_code"]
+    if resp.get("interrupted"):
+        return None
+    return 0 if "stdout" in resp else None
+
+
 def sha(text):
     return hashlib.sha256(str(text).encode("utf-8", "replace")).hexdigest()
 
@@ -176,23 +207,25 @@ def record(root, payload):
     if not gate:
         return None, []
     resp = payload.get("tool_response")
-    if not isinstance(resp, dict) or not isinstance(resp.get("exit_code"), int):
+    code = exit_of(resp)
+    if code is None:
         # The gate ran and its verdict was unreadable. Silence here would be
         # indistinguishable from the gate never running, so say so.
         return None, [
-            f"gate '{gate}' ran but the hook payload carried no integer "
-            f"tool_response.exit_code — nothing was attested for this run"]
+            f"gate '{gate}' ran but the hook payload carried no readable exit "
+            f"status — nothing was attested for this run"]
     when = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     norm = normalize(command)
-    log = f"{resp.get('stdout') or ''}\n---\n{resp.get('stderr') or ''}"
+    out = resp if isinstance(resp, dict) else {"stdout": str(resp)}
+    log = f"{out.get('stdout') or ''}\n---\n{out.get('stderr') or ''}"
     session = str(payload.get("session_id") or "")
     row = {
-        "attestId": "att_" + sha(f"{when}|{norm}|{resp['exit_code']}|{session}"
+        "attestId": "att_" + sha(f"{when}|{norm}|{code}|{session}"
                                  f"|{payload.get('tool_use_id') or ''}")[:12],
         "gate": gate,
         "command": norm,
         "commandSha": sha(norm),
-        "exit": resp["exit_code"],
+        "exit": code,
         "logSha256": sha(log),
         "headSha": head_sha(root),
         "when": when,

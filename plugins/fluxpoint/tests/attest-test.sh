@@ -45,15 +45,50 @@ gates() { printf '{"version":1,"gates":{"harness":"scripts/harness.sh --full"}}'
   >"$ROOT/r/.fluxpoint-gates.json"; }
 
 # A PostToolUse payload for the Bash tool, exactly as the runtime shapes it.
+#
+# The runtime reports status in the SHAPE of tool_response, never in an
+# exit_code field: a success arrives as an object carrying stdout/stderr/
+# interrupted, and a failure arrives as a plain string beginning
+# "Error: Exit code N". This fixture used to invent an exit_code, which is how
+# attest.py came to read a field that has never existed while every test here
+# still passed. A fixture that invents its own contract certifies nothing.
 payload() { # $1 = command, $2 = exit code, $3 = stdout (optional)
   "$FPL_PY" - "$1" "$2" "${3:-}" <<'PY'
+import json, sys
+cmd, code, out = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+resp = ({"stdout": out, "stderr": "", "interrupted": False, "isImage": False}
+        if code == 0 else f"Error: Exit code {code}\n{out}")
+print(json.dumps({
+    "session_id": "s1", "cwd": ".", "hook_event_name": "PostToolUse",
+    "tool_name": "Bash", "tool_use_id": "toolu_x",
+    "tool_input": {"command": cmd},
+    "tool_response": resp,
+}))
+PY
+}
+
+# The same payload carrying an explicit integer exit_code, which the runtime
+# does not send today. Kept so the reader keeps honoring it if it ever does.
+payload_with_field() { # $1 = command, $2 = exit code
+  "$FPL_PY" - "$1" "$2" <<'PY'
 import json, sys
 print(json.dumps({
     "session_id": "s1", "cwd": ".", "hook_event_name": "PostToolUse",
     "tool_name": "Bash", "tool_use_id": "toolu_x",
     "tool_input": {"command": sys.argv[1]},
-    "tool_response": {"exit_code": int(sys.argv[2]), "stdout": sys.argv[3],
-                      "stderr": ""},
+    "tool_response": {"exit_code": int(sys.argv[2]), "stdout": "", "stderr": ""},
+}))
+PY
+}
+
+# An interrupted run: the object arrives carrying no status at all.
+payload_interrupted() { # $1 = command
+  "$FPL_PY" - "$1" <<'PY'
+import json, sys
+print(json.dumps({
+    "session_id": "s1", "tool_name": "Bash", "tool_use_id": "toolu_x",
+    "tool_input": {"command": sys.argv[1]},
+    "tool_response": {"stdout": "", "stderr": "", "interrupted": True},
 }))
 PY
 }
@@ -123,7 +158,7 @@ print(json.dumps({"session_id": "s1", "tool_name": "Bash",
                   "tool_response": "ran it"}))
 PY
 )"
-case "$err" in *"no integer tool_response.exit_code"*)
+case "$err" in *"no readable exit status"*)
   ok "an unreadable exit is reported, not invented" "said" ;;
   *) bad "an unreadable exit is reported, not invented" "got: ${err:0:40}" ;; esac
 check "and nothing is attested for it" 0 "$(rows)"
@@ -284,6 +319,28 @@ case "$out" in *"[UNATTESTED]"*) ok "a prove: node citing nothing is UNATTESTED"
 case "$out" in *"| INCOMPLETE |"*)
   ok "and the run is INCOMPLETE — neither tampered nor clean" "INCOMPLETE" ;;
   *) bad "and the run is INCOMPLETE — neither tampered nor clean" "${out:0:56}" ;; esac
+
+# --- 9. every shape the runtime actually sends -------------------------
+# The reason this section exists: with the old fixture inventing exit_code,
+# all four of these were unreachable and the whole layer recorded nothing.
+
+newrepo; gates
+payload_with_field "scripts/harness.sh --full" 7 \
+  | "$FPL_PY" "$ATTEST" --root "$ROOT/r" --record >/dev/null
+check "an explicit exit_code is still honored if it arrives" 7 "$(field exit)"
+
+newrepo; gates
+rec "scripts/harness.sh --full" 0 "all green" >/dev/null
+check "a success object with no exit_code attests 0" 0 "$(field exit)"
+
+newrepo; gates
+rec "scripts/harness.sh --full" 3 >/dev/null
+check "an Error-Exit-code-N string attests N" 3 "$(field exit)"
+
+newrepo; gates
+payload_interrupted "scripts/harness.sh --full" \
+  | "$FPL_PY" "$ATTEST" --root "$ROOT/r" --record >/dev/null 2>&1
+check "an interrupted command attests nothing, never a pass" 0 "$(rows)"
 
 cd /; rm -rf "$ROOT"
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
