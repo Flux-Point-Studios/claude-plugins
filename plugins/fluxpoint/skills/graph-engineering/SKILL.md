@@ -301,7 +301,14 @@ node that ran it wrote by hand.
   contract; worker nodes consume it. The planner never grades its own plan.
 - **Zone defense** (org graph): stable `agents/*.md` roles own domains —
   `red-team-reviewer` owns the adversarial pass — referenced by
-  `agentType`, not re-prompted inline.
+  `agentType`, not re-prompted inline. An agent file may declare the contract
+  it answers in (`contract: RedTeamV1` in its frontmatter, or `contract: prose`
+  for one that reports rather than returns a schema). Binding a node to a
+  resolved agent whose declared contract is not the node's is rejected at
+  compile time: the name being real is not evidence the answer fits, and that
+  mismatch otherwise surfaces as a dead gate late in the run. An `agentType`
+  the compiler cannot resolve is only ever a **warning** — plugins and
+  built-in types are outside its view, so refusing would reject valid IR.
 - **Loop-until-dry** (`templates/WORK.discovery.md`): a `repeat` block on a
   finder turns fixed fan-out into unknown-size discovery. Use it when "how
   many are there" is the question rather than an input — audits, sweeps,

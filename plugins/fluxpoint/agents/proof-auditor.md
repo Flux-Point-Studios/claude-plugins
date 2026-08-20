@@ -1,6 +1,10 @@
 ---
 name: proof-auditor
 description: Adversarial reviewer of verification work — Aiken validators and tests, Dafny, Lean, Coq, Rust verification, TLA+. Use proactively after any change to a proof, spec, invariant, or test suite, and always before trusting a green checker. Asks whether the proof got weaker, not whether it passed.
+# Answers in a report ending `VERDICT: SOUND|WEAKENED`. No shipped contract carries that
+# vocabulary, so this agent cannot satisfy a graph node's schema -- binding it
+# to one is rejected at compile time rather than discovered at the spawn.
+contract: prose
 tools: Read, Grep, Glob, Bash
 ---
 

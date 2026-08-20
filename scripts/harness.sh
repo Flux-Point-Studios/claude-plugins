@@ -140,6 +140,7 @@ case "${1:---full}" in
     step "portable interpreter invocations" portable_invocations
     step "templates compile + emit valid JS" compile_templates
     step "compiler invariants" "$FPL_PY" "$PLUGIN/tests/compile-test.py"
+    step "agentType resolution + contract" "$FPL_PY" "$PLUGIN/tests/agenttype-test.py"
     step "emission coverage" "$FPL_PY" "$PLUGIN/tests/emission-test.py"
     step "codegen injection + red-team regressions" "$FPL_PY" "$PLUGIN/tests/security-test.py"
     step "stop-gate regression" bash "$PLUGIN/tests/gate-test.sh"
