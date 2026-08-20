@@ -47,6 +47,12 @@ for ((i = 1; i <= MAX_ITER; i++)); do
     exit 0
   fi
   echo "loop: iteration $i/$MAX_ITER"
+  # Where this iteration started. The commit below empties `git diff HEAD`,
+  # so without a base the co-change tier judges an empty diff and every
+  # declared pair reports "no changes to compare" — silently, and for the
+  # one class of pair that has no parity command to fall back on.
+  # `|| true` because an unborn HEAD must not kill the runner.
+  iter_base="$(git rev-parse HEAD 2>/dev/null || true)"
   # shellcheck disable=SC2086
   claude -p "$(cat WORK_PROMPT.md)" $PERMISSION_ARGS --max-turns "$MAX_TURNS" \
     --output-format stream-json --verbose \
@@ -54,7 +60,8 @@ for ((i = 1; i <= MAX_ITER; i++)); do
     echo "loop: claude exited non-zero on iteration $i (see logs)" >&2
   git add -A
   git commit -q -m "loop: iteration $i" || true
-  if bash scripts/harness.sh --full && grep -q '^STATUS: DONE' WORK.md; then
+  if FPL_PAIR_AGAINST="${FPL_PAIR_AGAINST:-$iter_base}" bash scripts/harness.sh --full \
+     && grep -q '^STATUS: DONE' WORK.md; then
     echo "loop: harness green and STATUS DONE after iteration $i"
     exit 0
   fi
@@ -62,7 +69,14 @@ done
 echo "loop: iteration budget exhausted, harness red or STATUS still ACTIVE. Checkpoint." >&2
 # An unattended run that gives up silently is a run nobody learns about
 # until they wonder why nothing shipped.
-ib="$(find "$HOME/.claude/plugins" -type f -name inbox.py 2>/dev/null | head -1)"
+# `|| true` is load-bearing, and templates/harness.sh documents the same
+# trap: find exits 1 when ~/.claude/plugins is absent, pipefail carries
+# that through the pipe, and set -e then kills the runner ON THIS LINE —
+# before the notification these three lines exist to send, and with the
+# same exit 1 the intended path would have produced, so nothing looks
+# wrong. The deterministic trigger is a machine with no plugins dir:
+# exactly the sandboxed container this file's own header recommends.
+ib="$({ find "$HOME/.claude/plugins" -type f -name inbox.py 2>/dev/null || true; } | head -1)"
 [ -n "${FPL_PLUGIN_ROOT:-}" ] && [ -f "$FPL_PLUGIN_ROOT/scripts/inbox.py" ] \
   && ib="$FPL_PLUGIN_ROOT/scripts/inbox.py"
 [ -n "$ib" ] && "$FPL_PY" "$ib" --add --kind budget-exhausted \

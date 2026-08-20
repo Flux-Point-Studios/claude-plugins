@@ -86,10 +86,16 @@ check "no working interpreter exits 127, not 49" 127 $?
 
 # --- structural: no copy of the resolver has gone back to the name test ---
 
-stale=$(cd "$REPO" && git grep -l 'then FPL_PY=python3' -- '*.sh' | wc -l | tr -d ' ')
+# Both patterns carry a one-character regex class so this file does not match
+# its own greps. A structural check that scans a tree containing itself counts
+# itself: the first form of this test reported one stale copy on a fully-fixed
+# tree and could never go green, because the string it hunts for lived in the
+# line doing the hunting. `pytho[n]3` matches `python3` in every other file
+# and never the pattern here, wherever this file is moved or copied.
+stale=$(cd "$REPO" && git grep -l 'then FPL_PY=pytho[n]3' -- '*.sh' | wc -l | tr -d ' ')
 check "no copy resolves the interpreter by name alone" 0 "$stale"
 
-probes=$(cd "$REPO" && git grep -l '"\$_fpl_cand" -c "import sys"' -- '*.sh' | wc -l | tr -d ' ')
+probes=$(cd "$REPO" && git grep -l '"\$_fpl_cand" -c "import sy[s]"' -- '*.sh' | wc -l | tr -d ' ')
 [ "$probes" -ge 20 ] && ok "every resolver copy probes" "$probes copies" \
   || bad "every resolver copy probes" "$probes copies (wanted >= 20)"
 

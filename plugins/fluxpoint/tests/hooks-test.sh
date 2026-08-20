@@ -116,11 +116,13 @@ check "PostToolUse[1]: matcher is Bash" "Bash" "$m"
 bash_input() { # $1 = command, $2 = exit code
   "$FPL_PY" - "$ROOT/r" "$1" "$2" <<'PY'
 import json, sys
+code = int(sys.argv[3])
+resp = ({"stdout": "", "stderr": "", "interrupted": False}
+        if code == 0 else f"Error: Exit code {code}\n")
 print(json.dumps({"session_id": "s", "cwd": sys.argv[1], "tool_name": "Bash",
                   "tool_use_id": "toolu_x",
                   "tool_input": {"command": sys.argv[2]},
-                  "tool_response": {"exit_code": int(sys.argv[3]), "stdout": "",
-                                    "stderr": ""}}))
+                  "tool_response": resp}))
 PY
 }
 newrepo 0
