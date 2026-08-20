@@ -29,7 +29,17 @@ jobs:
           python-version: '3.11'
 
       - name: Install Claude Code CLI (for plugin validate)
-        run: npm install -g @anthropic-ai/claude-code
+        # Recent CLI releases ship a platform-native binary behind an npm
+        # postinstall that global installs on CI runners can skip, leaving
+        # a shim that errors "claude native binary not installed" — which
+        # turned the manifests-validate step red with the plugin blameless.
+        # Run the installer by hand when it exists, then prove the binary
+        # actually executes before the harness depends on it.
+        run: |
+          npm install -g @anthropic-ai/claude-code
+          pkg="$(npm root -g)/@anthropic-ai/claude-code"
+          if [ -f "$pkg/install.cjs" ]; then node "$pkg/install.cjs"; fi
+          claude --version
 
       - name: Run the Definition-of-Done harness
         run: bash scripts/harness.sh --full
