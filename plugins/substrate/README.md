@@ -23,6 +23,8 @@ sweep-before-build doctrine has something deterministic to sweep.
 - `hooks/hooks.json` — `SessionStart` with no matcher, so startup, resume,
   clear, and post-compaction all get the `--check` output. The output is
   factual statements only; a stale manifest is reported, never commanded.
+  A second SessionStart hook runs `memory-lint.mjs` over the workspace's
+  memory files (see below).
 - `commands/` — `/substrate:init` (onboard a workspace), `/substrate:status`
   (run and interpret `--check`), `/substrate:emit` (regenerate, and keep the
   manifest edit in the same commit as the primitive it describes).
@@ -144,6 +146,23 @@ What the lint cannot see — and what therefore stays hand-declared: HTTP seams
 between processes, Apex and other non-scanned languages, cross-repo imports,
 and dependencies expressed as file handoffs. A green lint means no import
 contradicts the manifest, never that the manifest is complete.
+
+## The memory lint
+
+Memory files rot the same way manifests do: a memory cites a module that was
+since renamed, the index points at a deleted entry, a "still unsent" claim
+outlives the send it describes. `memory-lint.mjs` runs at session start over
+`~/.claude/projects/<key>/memory/` and alarms on the three staleness classes
+it can prove: a cited path whose anchor directory exists but whose file is
+gone, a `MEMORY.md` index entry pointing at a missing memory file, and an
+"unsent" claim contradicted by a `deliverables.json` `sentAt`. Detection is
+mechanical and precision-first — URLs, API-endpoint fragments, command lines
+with flags, and citations without a workspace anchor stay silent, because a
+false alarm teaches the reader to ignore the channel. The lint never rewrites
+a memory: the agent reading the alarm owns the repair, with the truth in
+front of it. Echoed content is control-character-stripped and capped, and the
+exit code is 0 unconditionally — a lint that can wedge a session start is
+worse than the staleness it reports.
 
 ## Honest limitations
 
