@@ -1591,8 +1591,8 @@ def emit_parked(n):
     a(f"    ? await spawn(")
     a(f"        `A campaign step cannot be run by an agent and is about to be "
       f"handed to a person. Do not simply agree.\\n\\n` +")
-    a(f"        `The step: ` + {js_str(str(n['prompt']))} + `\\n` +")
-    a(f"        `What the human is being asked to do: ` + {js_str(instructions)} + `\\n` +")
+    a(f"        `The step: ` + {js_template(str(n['prompt']))} + `\\n` +")
+    a(f"        `What the human is being asked to do: ` + {js_template(instructions)} + `\\n` +")
     a(f"        `The stated reason no agent can do it: ` + "
       f"{js_str(str(rel.get('whyNotAgent', 'unstated')))} + `\\n\\n` +")
     a("        `FIRST, challenge that reason. Could this actually be done "
@@ -1618,10 +1618,10 @@ def emit_parked(n):
     a(f"    log(`{nid}: BLOCKED with no recommendation — the advisory call was "
       f"declined by the budget floor. This is a worse hand-off, not a cheaper one.`)")
     a("  }")
-    a(f"  note({js_str(nid)}, 'BLOCKED', {js_str(instructions)}"
+    a(f"  note({js_str(nid)}, 'BLOCKED', {js_template(instructions)}"
       f" + (advice_{var} ? ` | RECOMMENDED: ${{advice_{var}.chosen}} — "
       f"${{advice_{var}.rationale}}` : ''))")
-    a(f"  log(`BLOCKED at {nid} ({actor}): ` + {js_str(instructions)})")
+    a(f"  log(`BLOCKED at {nid} ({actor}): ` + {js_template(instructions)})")
     a(f"  BLOCKED.add({js_str(nid)})")
     a("  INCOMPLETE = true")
     w = n.get("wake")

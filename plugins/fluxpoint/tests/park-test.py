@@ -462,5 +462,48 @@ PANEL = {**copy.deepcopy(DEC_IR), "nodes": [
 report("refuter reasons survive the tally",
        "objections: cast.map(v => v.reason)" in cg.emit(PANEL, CONTRACTS), "carried")
 
+# ==================== the parked node's own placeholders ==================
+# A parked node's prompt and instructions used to be emitted through js_str,
+# which is a double-quoted JS literal and interpolates nothing — so the
+# advisor was handed the characters "{{A.branch}}" while being told to ground
+# its recommendation in the repo, and the blocked human read the same. Every
+# other prompt goes through js_template. The validator made it worse than a
+# gap: its scope check walks SUBST over every non-reduce prompt, so the token
+# was blessed as in-scope while the emitter rendered it literal — a binding
+# promised and never made.
+SUB = copy.deepcopy(IR)
+SUB["argDefaults"] = {"branch": "claude/graph-x", "base": "main"}
+SUB["nodes"][1]["prompt"] = "sign the tx on {{A.branch}} and compare it to {{A.base}}"
+SUB["nodes"][1]["release"]["instructions"] = "check out {{A.branch}}, then merge to {{A.base}}"
+emitted = cg.emit(SUB, CONTRACTS)
+
+report("a parked prompt interpolates its args",
+       "${A.branch}" in emitted and "{{A.branch}}" not in emitted,
+       "interpolated" if "{{A.branch}}" not in emitted else "left literal")
+report("and so do its release instructions",
+       emitted.count("${A.base}") >= 2, f"{emitted.count('${A.base}')} site(s)")
+
+# The emitted script must still parse: js_template escapes backticks and ${,
+# and a release string is operator prose that can contain either.
+EVIL = copy.deepcopy(SUB)
+EVIL["nodes"][1]["release"]["instructions"] = "run `cmd` and mind ${notAVar} and a \\ backslash"
+ev = cg.emit(EVIL, CONTRACTS)
+# The emitted script is a workflow BODY, not a module: the runtime wraps it,
+# so it carries top-level `return` and `node --check` rejects it on its own.
+# Re-wrap it the way the runtime does before asking whether it parses.
+wrapped = "async function _fpl_body() {\n" + \
+    ev.replace("export const meta", "const meta", 1) + "\n}\n"
+with tempfile.NamedTemporaryFile("w", suffix=".mjs", delete=False,
+                                 encoding="utf-8") as fh:
+    fh.write(wrapped)
+    evp = fh.name
+rc = subprocess.run([os.environ.get("FPL_NODE", "node"), "--check", evp],
+                    capture_output=True, text=True)
+report("a release string with backticks and ${ still parses",
+       rc.returncode == 0, "parses" if rc.returncode == 0 else rc.stderr.strip()[:60])
+report("and the literal ${ is escaped, not interpolated",
+       "\\${notAVar}" in ev, "escaped" if "\\${notAVar}" in ev else "LEAKED")
+os.unlink(evp)
+
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)
