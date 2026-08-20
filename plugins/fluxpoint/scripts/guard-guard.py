@@ -49,17 +49,77 @@ MANIFEST (.fluxpoint-guards.json), committed beside the code:
 failure needs to know what the guard was FOR, and a rule nobody understands gets deleted.
 """
 import argparse
+import atexit
 import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
 
 MANIFEST = ".fluxpoint-guards.json"
 BASELINE = ".fluxpoint-guards-baseline.json"
-DEFAULT_RUN = "python3 -m pytest -q {file}::{test}"
+# Resolved by RUNNING each candidate, never by name: Windows ships a `python3`
+# App Execution Alias that satisfies `command -v` on a machine with no python3
+# and exits 49 for every argument. A hardcoded `python3` there makes every
+# proof fail command-not-found, which -- before the intact run below existed --
+# read as "every guard is real".
+def _python():
+    for cand in ("python3", "python"):
+        try:
+            if subprocess.run([cand, "-c", "import sys"],
+                              capture_output=True).returncode == 0:
+                return cand
+        except OSError:
+            continue
+    return sys.executable or "python3"
+
+
+DEFAULT_RUN = "{py} -m pytest -q {file}::{test}"
+
+# A guard is disabled on disk for the length of one proof run. `finally` covers
+# an exception and Ctrl-C; it does NOT cover SIGTERM, which is what CI
+# cancellation sends -- and a killed run left `if False:` in place of a
+# money-moving guard with no breadcrumb, since the backup was a random name in
+# the system temp dir. These two make the window survivable: the pending
+# restore is replayed from a signal handler and at interpreter exit, and while
+# it is open a sentinel sits in the repo where a human or a later --check will
+# see it.
+SENTINEL = ".fluxpoint-guards-restoring"
+_PENDING = {}
+
+
+def _restore_pending():
+    for target, backup in list(_PENDING.items()):
+        try:
+            shutil.copyfile(backup, target)
+            os.unlink(backup)
+        except OSError:
+            pass
+        _PENDING.pop(target, None)
+    try:
+        os.unlink(_PENDING_SENTINEL[0])
+    except (OSError, IndexError):
+        pass
+
+
+_PENDING_SENTINEL = []
+atexit.register(_restore_pending)
+
+
+def _on_signal(signum, _frame):
+    _restore_pending()
+    raise SystemExit(128 + signum)
+
+
+for _sig in (getattr(signal, "SIGTERM", None), getattr(signal, "SIGHUP", None)):
+    if _sig is not None:
+        try:
+            signal.signal(_sig, _on_signal)
+        except (OSError, ValueError):
+            pass
 
 
 def _die(msg):
@@ -128,7 +188,11 @@ def check(root, guards):
 
 
 def verify_one(root, g, quiet=False):
-    """Disable the guard, run its proof, require the proof to fail. Always restore."""
+    """Prove the guard bites: the proof must pass intact, then fail disabled.
+
+    Two runs, because one cannot tell a guard that bites from a proof that
+    never ran. Always restores, including on SIGTERM.
+    """
     rel = g["guard"]["file"]
     path = os.path.join(root, rel)
     original = _read(root, rel)
@@ -142,13 +206,44 @@ def verify_one(root, g, quiet=False):
     if mutated == original:
         return False, f"mutation changed nothing in {rel}"
 
-    cmd = g.get("run", DEFAULT_RUN).format(file=g["proof"]["file"], test=g["proof"]["test"])
+    cmd = g.get("run", DEFAULT_RUN).format(
+        py=_python(), file=g["proof"]["file"], test=g["proof"]["test"])
+
+    # The intact run. Without it, ANY non-zero exit read as "the guard is
+    # real", so a proof that could not run at all -- a broken import, a
+    # collection error, a missing interpreter, a suite red for a fortnight --
+    # verified green. That is this tool's own motivating failure, passing
+    # itself. A proof must first be shown to PASS on a healthy tree; only then
+    # does its failure under mutation testify to anything.
+    try:
+        intact = subprocess.run(cmd, shell=True, cwd=root, capture_output=True,
+                                text=True, timeout=900)
+    except subprocess.TimeoutExpired:
+        return False, f"the proof did not finish in 900s with the guard intact: {cmd}"
+    if intact.returncode != 0:
+        tail = (intact.stdout or intact.stderr).strip().splitlines()[-3:]
+        return False, ("the proof does not pass with the guard INTACT "
+                       f"(rc={intact.returncode}) — a proof that cannot pass cannot "
+                       "testify that its guard bites. Fix the proof, or the run "
+                       "command, before trusting this ratchet.\n"
+                       f"      command: {cmd}\n"
+                       + "\n".join(f"      {line}" for line in tail))
+    if not quiet:
+        print("    intact   -> proof passed")
+
     backup = tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8")
     backup.write(original)
     backup.close()
+    sentinel = os.path.join(root, SENTINEL)
     try:
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(mutated)
+        # Registered only while the file on disk is mutated, so a SIGTERM or a
+        # hard exit in the window below still puts the guard back.
+        _PENDING[path] = backup.name
+        with open(sentinel, "w", encoding="utf-8") as fh:
+            fh.write(f"{g['id']}\n{rel}\n")
+        _PENDING_SENTINEL[:] = [sentinel]
         proc = subprocess.run(cmd, shell=True, cwd=root, capture_output=True, text=True, timeout=900)
         if proc.returncode == 0:
             tail = (proc.stdout or proc.stderr).strip().splitlines()[-3:]
@@ -164,6 +259,12 @@ def verify_one(root, g, quiet=False):
         # Restore unconditionally: an interrupted run must never leave a guard disabled.
         shutil.copyfile(backup.name, path)
         os.unlink(backup.name)
+        _PENDING.pop(path, None)
+        _PENDING_SENTINEL[:] = []
+        try:
+            os.unlink(sentinel)
+        except OSError:
+            pass
 
 
 def main():

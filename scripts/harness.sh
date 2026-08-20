@@ -151,6 +151,7 @@ case "${1:---full}" in
     step "statement ratchet" bash "$PLUGIN/tests/spec-guard-test.sh"
     step "counterexample ledger (executed)" bash "$PLUGIN/tests/cex-test.sh"
     step "mutation ratchet (executed)" bash "$PLUGIN/tests/mutation-test.sh"
+    step "guard ratchet (executed)" bash "$PLUGIN/tests/guard-guard-test.sh"
     step "on-chain budget gate" bash "$PLUGIN/tests/budget-test.sh"
     step "once-only ledger (executed)" "$FPL_PY" "$PLUGIN/tests/ledger-test.py"
     step "execution attestation (executed)" bash "$PLUGIN/tests/attest-test.sh"
