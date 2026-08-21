@@ -240,7 +240,19 @@ def load_agents(root="."):
     out = {}
     here = os.path.dirname(os.path.abspath(__file__))
     plugin_dir = os.path.dirname(here)
+    # From the manifest, never from the directory name. A real install lives at
+    # ~/.claude/plugins/cache/fluxpoint/fluxpoint/<VERSION>/, so basename() is
+    # the VERSION — and every agent got qualified as "1.27.0:graph-auditor",
+    # leaving `fluxpoint:graph-auditor` resolving to nothing. The rejection this
+    # loader exists to enable then never fired anywhere the plugin is installed,
+    # while passing in this repo, where the basename happens to be the name.
     plugin_name = os.path.basename(plugin_dir)
+    try:
+        with open(os.path.join(plugin_dir, ".claude-plugin", "plugin.json"),
+                  encoding="utf-8") as fh:
+            plugin_name = json.load(fh).get("name") or plugin_name
+    except (OSError, ValueError):
+        pass
     roots = [
         (os.path.join(plugin_dir, "agents"), plugin_name),
         (os.path.join(root, ".claude", "agents"), None),

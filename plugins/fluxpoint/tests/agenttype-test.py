@@ -20,6 +20,8 @@ are the regression that keeps the rejection honest.
 """
 import copy
 import importlib.util
+import shutil
+import tempfile
 import os
 import sys
 
@@ -113,6 +115,33 @@ for t in sorted(glob.glob(os.path.join(PLUGIN, "templates", "WORK*.md"))):
     te = cg.validate(tir, CONTRACTS, None, AGENTS)
     report(f"shipped {os.path.basename(t)} still compiles",
            not te, "valid" if not te else te[0][:44])
+
+# ===== the plugin namespace survives a real install ======================
+# load_agents took the qualified prefix from basename(plugin_dir). In this repo
+# that is "fluxpoint" and every assertion above passes. A real install lives at
+# ~/.claude/plugins/cache/fluxpoint/fluxpoint/<VERSION>/, so the prefix became
+# the VERSION STRING -- and `fluxpoint:graph-auditor`, the exact binding the
+# reported incident used, resolved to nothing and was accepted in silence. The
+# feature was green in the repo and inert everywhere it ships.
+with tempfile.TemporaryDirectory() as _d:
+    _inst = os.path.join(_d, "cache", "fluxpoint", "fluxpoint", "9.9.9")
+    shutil.copytree(PLUGIN, _inst, ignore=shutil.ignore_patterns("tests", "__pycache__"))
+    _spec = importlib.util.spec_from_file_location(
+        "cg_installed", os.path.join(_inst, "scripts", "compile-graph.py"))
+    _cg = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_cg)
+    _agents = _cg.load_agents(os.path.dirname(_inst))
+    _ns = sorted({k.split(":")[0] for k in _agents if ":" in k})
+    report("an installed plugin still qualifies agents as 'fluxpoint'",
+           _ns == ["fluxpoint"], ",".join(_ns) or "NONE")
+
+    _ir = {"version": 1, "campaign": "c", "budget": {"maxNodes": 5},
+           "nodes": [{"id": "gate", "agentType": "fluxpoint:graph-auditor",
+                      "contract": "RedTeamV1", "prompt": "judge"}]}
+    _hit = [f for f in _cg.validate(_ir, CONTRACTS, None, _agents)
+            if "answers in a report" in f]
+    report("and the qualified binding is still rejected from an install",
+           bool(_hit), "rejected" if _hit else "ACCEPTED — the gate never fires")
 
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)
