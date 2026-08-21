@@ -1,6 +1,11 @@
 ---
 name: red-team-reviewer
 description: Adversarial security reviewer for Cardano/DeFi smart contracts, oracles, keepers, key handling, and cloud infra. Use proactively after any change to validators, oracle publishers, transaction builders, spending logic, enclave boundaries, or Terraform.
+# Graph nodes binding this agent must be contracted to RedTeamV1: its verdict
+# vocabulary (SHIP/BLOCK) and its findings table (severity, finding, exploit
+# path, minimal fix) are that schema, and the report format below is how the
+# same answer reads when it runs outside a graph.
+contract: RedTeamV1
 tools: Read, Grep, Glob, Bash
 ---
 
