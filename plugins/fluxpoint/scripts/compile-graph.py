@@ -585,60 +585,73 @@ def validate(ir, contracts, gates=None):
             bound.update({"item", "i"})
         if n.get("repeat"):
             bound.add("seen")
-        for tok in SUBST.findall(str(n.get("prompt", ""))):
-            root = tok.split(".")[0].split("[")[0]
-            if root == "decisions":
-                # Scoped per id on purpose: honoring one decision must not
-                # hand the node every decision the campaign ever made.
-                want = tok.split(".", 1)[1] if "." in tok else ""
-                if want not in (hon or []):
-                    f.append(
-                        f"{where}: prompt uses {{{{{tok}}}}} but '{want}' is not "
-                        f"in this node's honors — name it there, so what binds "
-                        f"this node is declared rather than implied"
-                    )
-                continue
-            # {{prev.<field>}} projects one field of the predecessor's
-            # contract instead of pasting the whole object — the cheapest
-            # form of compress-before-reason. It used to pass this check on
-            # its root and emit `${prev.<field>}` with no JS binding: a
-            # graph that compiled clean and died at launch, which is the
-            # precise failure this scope check exists to prevent. So the
-            # token is validated all the way down, and emission binds it.
-            if root == "prev" and "prev" in bound and tok != "prev":
-                if "[" in tok or tok.count(".") != 1:
-                    f.append(
-                        f"{where}: prompt uses {{{{{tok}}}}} — only "
-                        f"{{{{prev}}}} or a single-hop {{{{prev.<field>}}}} "
-                        f"is supported")
-                else:
-                    pred = seen.get(after) or {}
-                    field = tok.split(".", 1)[1]
-                    shape = result_shape(pred)
-                    if shape != "object":
-                        yields = ("a flat array of judged items"
-                                  if shape == "items"
-                                  else "an array of contract objects")
+        # Both fields the emitter interpolates must be checked, or the
+        # validator blesses a token the emitter renders into executable
+        # position. release.instructions became a `${...}` site when it
+        # moved to js_template; unchecked, {{process.env.X}} in operator
+        # prose compiled clean and read a secret into the advisor prompt,
+        # the provenance note and the run log. Same rule, same message,
+        # named by whichever field carried the token.
+        subst_sites = [("prompt", str(n.get("prompt", "")))]
+        rel_block = n.get("release") or {}
+        if rel_block.get("instructions") is not None:
+            subst_sites.append(("release.instructions",
+                                str(rel_block["instructions"])))
+        for site, site_text in subst_sites:
+            for tok in SUBST.findall(site_text):
+                root = tok.split(".")[0].split("[")[0]
+                if root == "decisions":
+                    # Scoped per id on purpose: honoring one decision must not
+                    # hand the node every decision the campaign ever made.
+                    want = tok.split(".", 1)[1] if "." in tok else ""
+                    if want not in (hon or []):
                         f.append(
-                            f"{where}: prompt uses {{{{{tok}}}}} but "
-                            f"'{after}' yields {yields}, not its contract "
-                            f"object — consume {{{{prev}}}} whole, or put a "
-                            f"reduce node between them")
+                            f"{where}: {site} uses {{{{{tok}}}}} but '{want}' is not "
+                            f"in this node's honors — name it there, so what binds "
+                            f"this node is declared rather than implied"
+                        )
+                    continue
+                # {{prev.<field>}} projects one field of the predecessor's
+                # contract instead of pasting the whole object — the cheapest
+                # form of compress-before-reason. It used to pass this check on
+                # its root and emit `${prev.<field>}` with no JS binding: a
+                # graph that compiled clean and died at launch, which is the
+                # precise failure this scope check exists to prevent. So the
+                # token is validated all the way down, and emission binds it.
+                if root == "prev" and "prev" in bound and tok != "prev":
+                    if "[" in tok or tok.count(".") != 1:
+                        f.append(
+                            f"{where}: {site} uses {{{{{tok}}}}} — only "
+                            f"{{{{prev}}}} or a single-hop {{{{prev.<field>}}}} "
+                            f"is supported")
                     else:
-                        pc = pred.get("contract")
-                        if pc in contracts and field not in contracts[pc].get(
-                                "properties", {}):
+                        pred = seen.get(after) or {}
+                        field = tok.split(".", 1)[1]
+                        shape = result_shape(pred)
+                        if shape != "object":
+                            yields = ("a flat array of judged items"
+                                      if shape == "items"
+                                      else "an array of contract objects")
                             f.append(
-                                f"{where}: prompt uses {{{{{tok}}}}} but "
-                                f"'{field}' is not a field of {pc} — it "
-                                f"would interpolate null at launch")
-                continue
-            if root not in bound:
-                f.append(
-                    f"{where}: prompt uses {{{{{tok}}}}} but '{root}' is not in "
-                    f"scope for this node (available: {', '.join(sorted(bound))}) — "
-                    f"it would compile clean and throw at launch"
-                )
+                                f"{where}: {site} uses {{{{{tok}}}}} but "
+                                f"'{after}' yields {yields}, not its contract "
+                                f"object — consume {{{{prev}}}} whole, or put a "
+                                f"reduce node between them")
+                        else:
+                            pc = pred.get("contract")
+                            if pc in contracts and field not in contracts[pc].get(
+                                    "properties", {}):
+                                f.append(
+                                    f"{where}: {site} uses {{{{{tok}}}}} but "
+                                    f"'{field}' is not a field of {pc} — it "
+                                    f"would interpolate null at launch")
+                    continue
+                if root not in bound:
+                    f.append(
+                        f"{where}: {site} uses {{{{{tok}}}}} but '{root}' is not in "
+                        f"scope for this node (available: {', '.join(sorted(bound))}) — "
+                        f"it would compile clean and throw at launch"
+                    )
 
         # Discovery loops: unknown-size work needs a dry rule, a hard round
         # ceiling, and a dedup key, or it either never converges or never ends.
@@ -1127,6 +1140,49 @@ def js_template(s, mapping=None):
     return "`" + s + "`"
 
 
+def subst_mapping(n, var=None, texts=None):
+    """The JS expression each blessed {{token}} binds to.
+
+    validate() proves a token is in scope; this is the other half of that
+    promise -- the binding the emitter actually makes. A token blessed there
+    and left unmapped here emits `${prev}` against no such variable: a graph
+    that compiles clean and throws ReferenceError at launch, which is the
+    precise failure the scope check exists to prevent.
+
+    `texts` names the strings scanned for {{prev.<field>}} projections, so a
+    field a parked node uses only in its release instructions is bound too.
+    """
+    texts = [str(n.get("prompt", ""))] if texts is None else texts
+    mapping = {}
+    if n.get("after"):
+        # {{prev}} carries the predecessor's contract into this prompt -- the
+        # justified barrier (judging candidates side by side, reducing a set).
+        # {{prev.<field>}} projects one validated field instead: bracket access
+        # through js_str so the field name can never become code, `?? null` so
+        # an absent optional field reads as null rather than the string
+        # "undefined". validate() already proved the field is in the contract.
+        mapping["prev"] = f"JSON.stringify(RESULTS[{js_str(n['after'])}])"
+        for text in texts:
+            for tok in SUBST.findall(text):
+                if (tok.startswith("prev.") and tok.count(".") == 1
+                        and "[" not in tok):
+                    fld = tok.split(".", 1)[1]
+                    mapping[tok] = (
+                        f"JSON.stringify((RESULTS[{js_str(n['after'])}] || {{}})"
+                        f"[{js_str(fld)}] ?? null)")
+    if n.get("repeat") and var:
+        # Later rounds are told what earlier rounds already surfaced, so the
+        # finder spends its round on new ground instead of re-reporting.
+        mapping["seen"] = f"(seenList_{var}.join('; ') || 'nothing yet')"
+    # Honored decisions arrive as the record alone, at any distance and with
+    # no `after` chain. Pasting the deciding node's whole result instead is
+    # the context-packet smell graph-auditor already flags -- and `after` is
+    # single-valued, so a chain could not carry more than one hop anyway.
+    for h in (n.get("honors") or []):
+        mapping[f"decisions.{h}"] = f"JSON.stringify(DECISIONS[{js_str(h)}])"
+    return mapping
+
+
 def opts(n, ir, phase, label):
     roles = ir.get("roles") or {}
     role = roles.get(n.get("role"), {})
@@ -1574,6 +1630,10 @@ def emit_parked(n):
     rel = n.get("release") or {}
     actor = n.get("actor")
     instructions = str(rel.get("instructions", ""))
+    # Both interpolated strings are scanned, so a {{prev.<field>}} the
+    # validator blessed in the release instructions binds here too rather
+    # than emitting against a variable that does not exist.
+    mapping = subst_mapping(n, texts=[str(n["prompt"]), instructions])
     L = []
     a = L.append
     a(f"const rel_{var} = RELEASES[{js_str(nid)}] || null")
@@ -1591,8 +1651,8 @@ def emit_parked(n):
     a(f"    ? await spawn(")
     a(f"        `A campaign step cannot be run by an agent and is about to be "
       f"handed to a person. Do not simply agree.\\n\\n` +")
-    a(f"        `The step: ` + {js_str(str(n['prompt']))} + `\\n` +")
-    a(f"        `What the human is being asked to do: ` + {js_str(instructions)} + `\\n` +")
+    a(f"        `The step: ` + {js_template(str(n['prompt']), mapping)} + `\\n` +")
+    a(f"        `What the human is being asked to do: ` + {js_template(instructions, mapping)} + `\\n` +")
     a(f"        `The stated reason no agent can do it: ` + "
       f"{js_str(str(rel.get('whyNotAgent', 'unstated')))} + `\\n\\n` +")
     a("        `FIRST, challenge that reason. Could this actually be done "
@@ -1618,10 +1678,10 @@ def emit_parked(n):
     a(f"    log(`{nid}: BLOCKED with no recommendation — the advisory call was "
       f"declined by the budget floor. This is a worse hand-off, not a cheaper one.`)")
     a("  }")
-    a(f"  note({js_str(nid)}, 'BLOCKED', {js_str(instructions)}"
+    a(f"  note({js_str(nid)}, 'BLOCKED', {js_template(instructions, mapping)}"
       f" + (advice_{var} ? ` | RECOMMENDED: ${{advice_{var}.chosen}} — "
       f"${{advice_{var}.rationale}}` : ''))")
-    a(f"  log(`BLOCKED at {nid} ({actor}): ` + {js_str(instructions)})")
+    a(f"  log(`BLOCKED at {nid} ({actor}): ` + {js_template(instructions, mapping)})")
     a(f"  BLOCKED.add({js_str(nid)})")
     a("  INCOMPLETE = true")
     w = n.get("wake")
@@ -1697,31 +1757,7 @@ def emit_node(n, ir):
     panel = int(m.group(2) or m.group(3) or 0) if m else 0
     is_panel = m and m.group(3)
     over = n.get("verifyOver")
-    # {{prev}} carries the predecessor's contract into this prompt — the
-    # justified barrier (judging candidates side by side, reducing a set).
-    # {{prev.<field>}} projects one validated field instead: bracket access
-    # through js_str so the field name can never become code, `?? null` so
-    # an absent optional field reads as null rather than the string
-    # "undefined". validate() already proved the field is in the contract.
-    mapping = {}
-    if n.get("after"):
-        mapping["prev"] = f"JSON.stringify(RESULTS[{js_str(n['after'])}])"
-        for tok in SUBST.findall(str(n.get("prompt", ""))):
-            if tok.startswith("prev.") and tok.count(".") == 1 and "[" not in tok:
-                fld = tok.split(".", 1)[1]
-                mapping[tok] = (
-                    f"JSON.stringify((RESULTS[{js_str(n['after'])}] || {{}})"
-                    f"[{js_str(fld)}] ?? null)")
-    if n.get("repeat"):
-        # Later rounds are told what earlier rounds already surfaced, so the
-        # finder spends its round on new ground instead of re-reporting.
-        mapping["seen"] = f"(seenList_{var}.join('; ') || 'nothing yet')"
-    # Honored decisions arrive as the record alone, at any distance and with
-    # no `after` chain. Pasting the deciding node's whole result instead is
-    # the context-packet smell graph-auditor already flags — and `after` is
-    # single-valued, so a chain could not carry more than one hop anyway.
-    for h in (n.get("honors") or []):
-        mapping[f"decisions.{h}"] = f"JSON.stringify(DECISIONS[{js_str(h)}])"
+    mapping = subst_mapping(n, var)
     prompt = js_template(n["prompt"], mapping) if not is_reduce(n) else None
     L = []
     a = L.append
