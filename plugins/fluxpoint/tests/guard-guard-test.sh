@@ -58,6 +58,7 @@ mkrepo() {
   "guard": {"file": "server.py", "contains": "if amount > 100"},
   "proof": {"file": "test_fee.py", "test": "test_fee"},
   "mutation": {"find": "if amount > 100", "replace": "if False"},
+  "expect": "guard gone",
   "run": "$FPL_PY test_fee.py"
 }]}
 JSON
@@ -146,6 +147,88 @@ mkrepo removed
 printf '{"guards": []}\n' >"$WORK/removed/.fluxpoint-guards.json"
 "$FPL_PY" "$GG" --root "$WORK/removed" --check >/dev/null 2>&1
 check "dropping a guard from the manifest fails the floor" 1 $?
+
+# ========== 6. the DISABLED run must refuse non-evidence too ==============
+# The intact run closes "the proof cannot run". These two close its twin: a
+# proof that reddens for a reason with nothing to do with the guard. Both
+# reported "the guard is real" before the manifest carried `expect`.
+
+# 6a. DECORATION. The proof only walks the happy path, so it never exercises the
+# pin at all; the mutation deletes the constant, so the module raises NameError
+# and the proof reddens on a broken reference. Non-zero, and evidence of
+# nothing. This is the shape the tool is named for, wearing a passing costume.
+r="$WORK/decoration"; rm -rf "$r"; mkdir -p "$r"
+printf 'PINNED_VKH = "abc123"\n\n\ndef serve(vkh):\n    if vkh != PINNED_VKH:\n        raise ValueError("unpinned key accepted")\n    return vkh\n' >"$r/server.py"
+printf 'import server\n\n\ndef test_pin():\n    assert server.serve("abc123") == "abc123"\n\n\ntest_pin()\n' >"$r/test_pin.py"
+cat >"$r/.fluxpoint-guards.json" <<JSON
+{"guards": [{
+  "id": "key-pin",
+  "protects": "serving an unpinned key produces addresses no client can rebuild",
+  "guard": {"file": "server.py", "contains": "if vkh != PINNED_VKH:"},
+  "proof": {"file": "test_pin.py", "test": "test_pin"},
+  "mutation": {"find": "PINNED_VKH = \"abc123\"", "replace": "pass"},
+  "expect": "unpinned key accepted",
+  "run": "$FPL_PY test_pin.py"
+}]}
+JSON
+out="$("$FPL_PY" "$GG" --root "$r" --verify 2>&1)"; rc=$?
+check "a DECORATIVE proof reddened by a broken module is refused" 1 "$rc"
+case "$out" in
+  *"not for the declared reason"*) ok "and the refusal names the declared reason as absent" "named" ;;
+  *) bad "and the refusal names the declared reason as absent" "$(printf '%s' "$out" | tr '\n' ' ' | cut -c1-60)" ;;
+esac
+grep -q 'PINNED_VKH = "abc123"' "$r/server.py" \
+  && ok "and the guard is restored after that refusal" "intact" \
+  || bad "and the guard is restored after that refusal" "LEFT DISABLED"
+
+# 6b. KILLED. A proof that dies from a signal evaluated nothing. 143 is what a
+# shell reports for a SIGTERM-killed child, which is the shape a CI cancellation
+# or a job timeout actually delivers -- spelled as an exit so the case is
+# deterministic on every platform instead of racing a real kill. The proof
+# passes intact and dies only inside the mutated window.
+r="$WORK/killedproof"; rm -rf "$r"; mkdir -p "$r"
+printf 'def fee_ok(amount):\n    if amount > 100:\n        return False\n    return True\n' >"$r/server.py"
+printf 'import sys\n\n\ndef test_fee():\n    if "if False" in open("server.py").read():\n        sys.exit(143)\n\n\ntest_fee()\n' >"$r/test_fee.py"
+cat >"$r/.fluxpoint-guards.json" <<JSON
+{"guards": [{
+  "id": "fee-bound",
+  "protects": "a fee above the cap must never be accepted",
+  "guard": {"file": "server.py", "contains": "if amount > 100"},
+  "proof": {"file": "test_fee.py", "test": "test_fee"},
+  "mutation": {"find": "if amount > 100", "replace": "if False"},
+  "expect": "guard gone",
+  "run": "$FPL_PY test_fee.py"
+}]}
+JSON
+out="$("$FPL_PY" "$GG" --root "$r" --verify 2>&1)"; rc=$?
+check "a KILLED proof is refused, not read as 'the guard is real'" 1 "$rc"
+case "$out" in
+  *"the guard is real"*) bad "and the verdict does not claim the guard is real" "CLAIMED REAL" ;;
+  *KILLED*)              ok  "and the verdict does not claim the guard is real" "named as killed" ;;
+  *)                     bad "and the verdict does not claim the guard is real" "$(printf '%s' "$out" | tr '\n' ' ' | cut -c1-60)" ;;
+esac
+
+# ========== 7. the same-file refusal reads the RESOLVED path ==============
+# A proof living in the guard's own file is refused: one deletion takes both.
+# Spelling the same file two ways walked straight past a string comparison.
+mkrepo alias
+cat >"$WORK/alias/.fluxpoint-guards.json" <<JSON
+{"guards": [{
+  "id": "fee-bound",
+  "protects": "a fee above the cap must never be accepted",
+  "guard": {"file": "server.py", "contains": "if amount > 100"},
+  "proof": {"file": "./server.py", "test": "fee_ok"},
+  "mutation": {"find": "if amount > 100", "replace": "if False"},
+  "expect": "guard gone",
+  "run": "$FPL_PY test_fee.py"
+}]}
+JSON
+out="$("$FPL_PY" "$GG" --root "$WORK/alias" --check 2>&1)"; rc=$?
+check "a proof aliased into the guard file is still refused" 1 "$rc"
+case "$out" in
+  *"same file as the guard"*) ok "and that refusal says why" "named" ;;
+  *) bad "and that refusal says why" "$(printf '%s' "$out" | tr '\n' ' ' | cut -c1-60)" ;;
+esac
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

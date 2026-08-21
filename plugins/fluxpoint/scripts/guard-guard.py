@@ -103,6 +103,7 @@ def _restore_pending():
         os.unlink(_PENDING_SENTINEL[0])
     except (OSError, IndexError):
         pass
+    _PENDING_SENTINEL.clear()
 
 
 _PENDING_SENTINEL = []
@@ -141,13 +142,17 @@ def load_manifest(root):
         _die(f"{MANIFEST} must contain a 'guards' list")
     seen = set()
     for g in guards:
-        for field in ("id", "protects", "guard", "proof", "mutation"):
+        for field in ("id", "protects", "guard", "proof", "mutation", "expect"):
             if field not in g:
                 _die(f"guard {g.get('id', '<unnamed>')!r} is missing {field!r}")
         if g["id"] in seen:
             _die(f"duplicate guard id {g['id']!r}")
         seen.add(g["id"])
     return guards
+
+
+def _resolve(root, rel):
+    return os.path.normcase(os.path.realpath(os.path.join(root, rel)))
 
 
 def _read(root, rel):
@@ -179,7 +184,11 @@ def check(root, guards):
             problems.append(
                 f"{g['id']}: {pf} no longer defines {g['proof']['test']}")
 
-        if gf == pf:
+        # Resolved paths, not strings: "server.py", "./server.py" and
+        # "tests/../server.py" name one file, and on Windows so does "Server.py".
+        # Comparing the manifest spellings lets the exact arrangement this
+        # refuses walk straight past it.
+        if _resolve(root, gf) == _resolve(root, pf):
             problems.append(
                 f"{g['id']}: the proof lives in the same file as the guard ({gf}). "
                 f"A refactor that deletes one deletes the other — that is the failure "
@@ -208,6 +217,7 @@ def verify_one(root, g, quiet=False):
 
     cmd = g.get("run", DEFAULT_RUN).format(
         py=_python(), file=g["proof"]["file"], test=g["proof"]["test"])
+    expect = g["expect"]
 
     # The intact run. Without it, ANY non-zero exit read as "the guard is
     # real", so a proof that could not run at all -- a broken import, a
@@ -238,33 +248,58 @@ def verify_one(root, g, quiet=False):
     try:
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(mutated)
-        # Registered only while the file on disk is mutated, so a SIGTERM or a
-        # hard exit in the window below still puts the guard back.
+        # Registered only once the write is CLOSED, not before it: a restore that
+        # fires from the signal handler while this handle is still open is undone
+        # by the flush on close, which puts the mutation back and leaves the guard
+        # disabled. Registering after is what makes the window survivable.
         _PENDING[path] = backup.name
         with open(sentinel, "w", encoding="utf-8") as fh:
             fh.write(f"{g['id']}\n{rel}\n")
         _PENDING_SENTINEL[:] = [sentinel]
         proc = subprocess.run(cmd, shell=True, cwd=root, capture_output=True, text=True, timeout=900)
+        out = f"{proc.stdout or ''}\n{proc.stderr or ''}"
+        tail = out.strip().splitlines()[-3:]
         if proc.returncode == 0:
-            tail = (proc.stdout or proc.stderr).strip().splitlines()[-3:]
             return False, ("the proof PASSED with the guard disabled — it proves nothing.\n"
                            f"      command: {cmd}\n"
                            + "\n".join(f"      {line}" for line in tail))
+        # A non-zero exit is not evidence by itself. The intact run above closes
+        # "the proof cannot run"; this closes its twin — "the proof failed for a
+        # reason that has nothing to do with the guard". A mutation that breaks
+        # the module reddens the proof on an import error, and a killed proof
+        # reddens without evaluating anything. Both would otherwise be reported
+        # as "the guard is real", which is the exact decoration this tool exists
+        # to name.
+        if proc.returncode < 0 or proc.returncode >= 128:
+            return False, (f"the proof was KILLED with the guard disabled (rc={proc.returncode}) "
+                           "— a proof that did not finish evaluated nothing, and cannot "
+                           "testify that its guard bites. A CI cancellation, a job timeout "
+                           "and an OOM kill all land here.\n"
+                           f"      command: {cmd}")
+        if proc.returncode == 127:
+            return False, ("the proof command was NOT FOUND with the guard disabled "
+                           f"(rc=127) — nothing ran.\n      command: {cmd}")
+        if expect not in out:
+            return False, ("the proof failed with the guard disabled, but not for the "
+                           f"declared reason: {expect!r} is absent from its output. The "
+                           "mutation may have broken the file rather than the behaviour — "
+                           "an import or compile error reddens the proof without the guard "
+                           "being exercised at all.\n"
+                           f"      command: {cmd}\n"
+                           + "\n".join(f"      {line}" for line in tail))
         if not quiet:
-            print(f"    disabled -> proof failed (rc={proc.returncode}) — the guard is real")
+            print(f"    disabled -> proof failed (rc={proc.returncode}) on {expect!r} — the guard is real")
         return True, None
     except subprocess.TimeoutExpired:
         return False, f"the proof did not finish in 900s: {cmd}"
     finally:
-        # Restore unconditionally: an interrupted run must never leave a guard disabled.
-        shutil.copyfile(backup.name, path)
-        os.unlink(backup.name)
-        _PENDING.pop(path, None)
-        _PENDING_SENTINEL[:] = []
-        try:
-            os.unlink(sentinel)
-        except OSError:
-            pass
+        # Restore unconditionally: an interrupted run must never leave a guard
+        # disabled. Routed through the same replay the signal handler uses, so a
+        # SIGTERM that already restored makes this a no-op instead of a
+        # FileNotFoundError on the deleted backup — which would mask the verdict.
+        # setdefault covers the write above failing before anything registered.
+        _PENDING.setdefault(path, backup.name)
+        _restore_pending()
 
 
 def main():
