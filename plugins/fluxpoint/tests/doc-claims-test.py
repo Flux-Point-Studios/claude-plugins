@@ -17,6 +17,7 @@ Pinned here so they cannot drift back:
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -41,6 +42,7 @@ def read(*parts):
 SKILL = read("skills", "graph-engineering", "SKILL.md")
 ATTEST = read("scripts", "attest.py")
 LEDGER = read("scripts", "ledger.py")
+INIT = read("commands", "init.md")
 
 # ==================== the ledger is local, and says so ==================
 m = re.search(r'LEDGER_PATH\s*=\s*os\.path\.join\((.*?)\)', LEDGER)
@@ -102,6 +104,61 @@ for label, needle in (("the worktree base is not chosen here", "You do not choos
 
 report("init.md tells you to prove the harness in a worktree",
        "worktree add --detach" in read("commands", "init.md"), "step present")
+
+# ===== and the snippet it tells you to run reports what it found ========
+# EXECUTED, not grepped. The block ended `...harness.sh --full); git worktree
+# remove --force ...` — a `;` before cleanup, so the whole thing exits with
+# the REMOVE's status and a red harness reported success. `/fluxpoint:init`
+# is a command an agent runs, and the exit code is the machine-readable
+# answer, so following the documented step gave a false green.
+_blocks = re.findall(r"```[a-z]*\n(.*?)```", INIT, re.S)
+_probe = next((b for b in _blocks if "worktree add --detach" in b), None)
+report("the worktree probe snippet is extractable", bool(_probe),
+       "found" if _probe else "NOT FOUND")
+
+
+def _bash():
+    """A bash that RUNS, resolved by an explicit path rather than by name.
+
+    subprocess resolves a bare "bash" through CreateProcess, which searches
+    System32 first and finds the WSL launcher — present on stock Windows with
+    no distribution installed. It exits non-zero for every argument, which made
+    the case below PASS while executing nothing: the exact shape this file
+    exists to catch, in the test doing the catching.
+    """
+    for c in (os.environ.get("SHELL"), shutil.which("bash"),
+              r"C:\Program Files\Git\bin\bash.exe", "/bin/bash"):
+        if not c:
+            continue
+        try:
+            r = subprocess.run([c, "-c", "echo FPLOK"], capture_output=True,
+                               text=True, timeout=60)
+        except OSError:
+            continue
+        if r.returncode == 0 and "FPLOK" in r.stdout:
+            return c
+    return None
+
+
+_sh = _bash()
+report("a working bash is resolved for the executed case", bool(_sh),
+       os.path.basename(_sh) if _sh else "NONE — case would prove nothing")
+if _probe and _sh:
+    with tempfile.TemporaryDirectory() as d:
+        repo = os.path.join(d, "r")
+        os.makedirs(os.path.join(repo, "scripts"))
+        with open(os.path.join(repo, "scripts", "harness.sh"), "w",
+                  encoding="utf-8", newline="\n") as fh:
+            fh.write("#!/usr/bin/env bash\necho 'harness: RED'\nexit 1\n")
+        for cmd in (["git", "init", "-q", "."], ["git", "config", "user.email", "t@t"],
+                    ["git", "config", "user.name", "t"], ["git", "add", "-A"],
+                    ["git", "commit", "-qm", "init"]):
+            subprocess.run(cmd, cwd=repo, capture_output=True)
+        r = subprocess.run([_sh, "-c", _probe], cwd=repo,
+                           capture_output=True, text=True)
+        report("a failing harness in the worktree is not reported as green",
+               r.returncode != 0, f"rc={r.returncode}"
+               + ("" if r.returncode else " — SWALLOWED BY CLEANUP"))
 
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)
