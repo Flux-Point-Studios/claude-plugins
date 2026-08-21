@@ -102,5 +102,28 @@ printf 'y = 2  # FIXME upstream\n' > "$R/__pycache__/c.py"
 n="$(scan "$R" | grep -cE '\.venv|__pycache__' || true)"
 check "a virtualenv is not walked by the scan" 0 "$n"
 
+# ====== the list has to work on the machines that author it =============
+# Both of these leave the gate blocked while the operator has done exactly
+# what the feature asks, which is the failure mode a silent no-op always has:
+# the fix looks applied and nothing changes.
+
+# A list written on Windows carries CRLF. `read -r` keeps the CR, it lands
+# INSIDE the glob, and `scratch/*<CR>` matches nothing — so the file silently
+# does nothing and the gate keeps blocking.
+R="$(mkrepo crlf)"
+mkdir -p "$R/scratch"; printf 'x = 1  # TODO later\n' > "$R/scratch/notes.py"
+printf 'scratch/*\r\n' > "$R/.fluxpoint-hygiene-ignore"
+n="$(scan "$R" | wc -l | tr -d ' ')"
+check "a CRLF-authored ignore list still narrows the scan" 0 "$n"
+
+# The list is untracked too, so the scan reads it — and the natural comment a
+# person writes when adding an entry names the marker they are ignoring. The
+# act of documenting the exclusion then blocks the gate on the exclusion file.
+R="$(mkrepo selfscan)"
+mkdir -p "$R/scratch"; printf 'x = 1  # TODO later\n' > "$R/scratch/notes.py"
+printf '# the scratch dir, full of TODO markers\nscratch/*\n' > "$R/.fluxpoint-hygiene-ignore"
+n="$(scan "$R" | wc -l | tr -d ' ')"
+check "the ignore list is not scanned as its own violation" 0 "$n"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

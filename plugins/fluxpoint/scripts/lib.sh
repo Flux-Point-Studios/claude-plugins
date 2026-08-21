@@ -286,6 +286,11 @@ _fpl_hygiene_ignored() {
   local pat
   [ -f .fluxpoint-hygiene-ignore ] || return 1
   while IFS= read -r pat; do
+    # This list is hand-authored, so on Windows it arrives CRLF. Without the
+    # strip the CR lands INSIDE the glob, `scratch/*<CR>` matches nothing, and
+    # the file silently does nothing while the gate keeps blocking — the fix
+    # looks applied and the behaviour never changes.
+    pat="${pat%$'\r'}"
     case "$pat" in ""|\#*) continue ;; esac
     # shellcheck disable=SC2254 - the pattern is a glob on purpose
     case "$1" in $pat) return 0 ;; esac
@@ -323,6 +328,11 @@ fpl_scan_hygiene() {
   while IFS= read -r f; do
     [ -n "$f" ] && [ -f "$f" ] || continue
     _fpl_skip_path "$f" && continue
+    # The list is untracked too, so the scan reads it — and the natural comment
+    # someone writes when adding an entry names the marker being excluded
+    # ("# scratch dir, full of TODOs"). Documenting the exclusion then blocks
+    # the gate on the exclusion file. It is never scanned as its own violation.
+    [ "$f" = ".fluxpoint-hygiene-ignore" ] && continue
     _fpl_hygiene_ignored "$f" && continue
     grep -nEIH "$pat" "$f" || true
     grep -nEIH "$catch" "$f" || true
