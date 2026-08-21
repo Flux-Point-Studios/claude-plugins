@@ -211,6 +211,66 @@ def resolve_imports(ir, contracts, runs_dir):
 
 
 # ---------------------------------------------------------------- validation
+AGENT_FM = re.compile(r"\A---\s*\n(.*?)\n---", re.S)
+
+
+def _fm_value(block, key):
+    """One scalar out of a frontmatter block. Not YAML -- these files carry a
+    handful of flat `key: value` lines, and a parser dependency for that would
+    be a heavier promise than the data."""
+    m = re.search(rf"^{re.escape(key)}:\s*(.+?)\s*$", block, re.M)
+    if not m:
+        return None
+    v = m.group(1).strip()
+    if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+        v = v[1:-1]
+    return v or None
+
+
+def load_agents(root="."):
+    """Agents this compiler can SEE, name -> {"contract": str|None, "from": str}.
+
+    Deliberately partial. Agents also resolve from every installed plugin and
+    from the runtime's built-in types, so this set is a lower bound and a name
+    missing from it proves nothing -- which is exactly why an unresolvable
+    agentType is a warning and never a rejection. What it can prove is the
+    opposite: that a name DOES resolve, to an agent whose declared contract
+    contradicts the node's.
+    """
+    out = {}
+    here = os.path.dirname(os.path.abspath(__file__))
+    plugin_dir = os.path.dirname(here)
+    plugin_name = os.path.basename(plugin_dir)
+    roots = [
+        (os.path.join(plugin_dir, "agents"), plugin_name),
+        (os.path.join(root, ".claude", "agents"), None),
+        (os.path.join(os.path.expanduser("~"), ".claude", "agents"), None),
+    ]
+    for d, ns in roots:
+        if not os.path.isdir(d):
+            continue
+        for fn in sorted(os.listdir(d)):
+            if not fn.endswith(".md"):
+                continue
+            try:
+                with open(os.path.join(d, fn), encoding="utf-8") as fh:
+                    head = fh.read(4096)
+            except OSError:
+                continue
+            m = AGENT_FM.match(head)
+            if not m:
+                continue
+            block = m.group(1)
+            name = _fm_value(block, "name") or fn[:-3]
+            rec = {"contract": _fm_value(block, "contract"),
+                   "from": os.path.join(d, fn)}
+            out.setdefault(name, rec)
+            if ns:
+                # Plugin agents are addressable either way.
+                out.setdefault(f"{ns}:{name}", rec)
+    return out
+
+
 def load_gates(root):
     """Declared gate names, or None when the repo declares no manifest."""
     p = os.path.join(root or ".", GATES)
@@ -393,7 +453,7 @@ def _validate_reduce(n, where, seen, contracts):
     return f
 
 
-def validate(ir, contracts, gates=None):
+def validate(ir, contracts, gates=None, agents=None):
     """Return a list of findings. Empty list means the graph may compile."""
     f = []
     if ir.get("version") != 1:
@@ -567,6 +627,37 @@ def validate(ir, contracts, gates=None):
                         f"{where}: haltWhen tests '{field}', which is not a field of "
                         f"{c} — the condition could never fire"
                     )
+
+        # An agentType that RESOLVES to an agent whose declared contract is not
+        # this node's is the expensive shape: the name is real, the agent runs,
+        # and it answers in a schema the node cannot accept -- so the node dies
+        # on a mismatch or, worse, answers about the wrong subject while
+        # holding the campaign's only haltWhen. Rejected here because it is
+        # provable. An UNRESOLVABLE name is only warned about (see warnings()),
+        # since agents also come from installed plugins and built-in types that
+        # this compiler cannot enumerate, and rejecting on a partial view would
+        # refuse valid IR.
+        want_agent = n.get("agentType") or (
+            (ir.get("roles") or {}).get(n.get("role"), {}) or {}).get("agentType")
+        if want_agent and (agents or {}).get(want_agent):
+            declared = agents[want_agent].get("contract")
+            if declared == "prose" and n.get("contract"):
+                f.append(
+                    f"{where}: agentType '{want_agent}' answers in a report, not "
+                    f"in a contract, but this node is contracted to "
+                    f"'{n['contract']}' — it would die on the schema or answer "
+                    f"about the wrong subject. Bind an agent that produces "
+                    f"{n['contract']}, or park this check outside the graph."
+                )
+            elif declared and declared != "prose" and n.get("contract") \
+                    and declared != n["contract"]:
+                f.append(
+                    f"{where}: agentType '{want_agent}' declares contract "
+                    f"'{declared}', but this node is contracted to "
+                    f"'{n['contract']}' — that agent cannot produce this node's "
+                    f"schema. Bind an agent that can, or change the node's "
+                    f"contract to match."
+                )
 
         hon = n.get("honors") or []
 
@@ -985,13 +1076,29 @@ def validate(ir, contracts, gates=None):
     return f
 
 
-def warnings(ir):
+def warnings(ir, agents=None):
     """Non-blocking findings: shapes that compile but will predictably
     disappoint. Returned separately from validate() so they inform without
     refusing to build."""
     w = []
     for n in ir.get("nodes") or []:
         nid = n.get("id", "?")
+        # A bad agentType fails at the worst possible node: `agent type not
+        # found` is raised at the spawn, so a gate late in the graph pays for
+        # it only after everything upstream has run. The compiler cannot close
+        # the agent namespace -- plugins and built-in types are outside its
+        # view -- so this names the risk before the first spawn instead of
+        # refusing IR that may be perfectly valid.
+        want = n.get("agentType") or (
+            (ir.get("roles") or {}).get(n.get("role"), {}) or {}).get("agentType")
+        if want and agents is not None and want not in agents:
+            w.append(
+                f"node '{nid}': agentType '{want}' does not resolve to any agent "
+                f"this compiler can see. That is not proof it is missing — "
+                f"plugins and built-in types are outside its view — but if it "
+                f"is, the graph dies at this node's spawn after everything "
+                f"upstream has run. Confirm it is registered in this session."
+            )
         rep = n.get("repeat") or {}
         dry, mx = rep.get("untilDryRounds"), rep.get("maxRounds")
         if isinstance(dry, int) and isinstance(mx, int):
@@ -2195,7 +2302,8 @@ def main():
         print(f"graph-compile: no contracts found in {contracts_dir}", file=sys.stderr)
         return 1
 
-    findings = validate(ir, contracts, load_gates(args.gates_root))
+    agents = load_agents(args.gates_root)
+    findings = validate(ir, contracts, load_gates(args.gates_root), agents)
     if findings:
         print("graph-compile: IR rejected\n", file=sys.stderr)
         for f in findings:
@@ -2205,7 +2313,7 @@ def main():
     planned = plan_node_count(ir)
     # Warnings inform, never block: these shapes are legal and occasionally
     # deliberate, but they will usually disappoint whoever reads the result.
-    for w in warnings(ir):
+    for w in warnings(ir, agents):
         print(f"graph-compile: warning — {w}", file=sys.stderr)
 
     # Resolved for --check too: a missing decision should fail preflight,
