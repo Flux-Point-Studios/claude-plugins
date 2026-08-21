@@ -36,13 +36,13 @@ MANIFEST (.fluxpoint-guards.json), committed beside the code:
 
   {"guards": [
     {"id": "cosigner-deployed-key-pin",
-     "protects": "serving a key that is not the pinned one silently produces channel "
-                 "addresses no client can reconstruct",
+     "protects": "serving an unpinned key produces addresses no client can rebuild",
      "guard":  {"file": "server.py", "contains": "if self.vkh != pinned_vkh:"},
      "proof":  {"file": "test_signer_pin.py",
                 "test": "test_a_key_that_does_not_match_its_pin_is_fatal"},
      "mutation": {"find": "if self.vkh != pinned_vkh:", "replace": "if False:"},
-     "run": "python3 -m pytest -q {file}::{test}"}
+     "expect": "does not match its pin",
+     "run": "{py} -m pytest -q {file}::{test}"}
   ]}
 
 `protects` is prose and is never parsed. It is there because the next person to read a

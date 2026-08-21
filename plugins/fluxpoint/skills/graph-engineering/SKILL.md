@@ -319,11 +319,14 @@ its contract by hand. So declare the commands that decide things in
 `.fluxpoint-gates.json`, and a PostToolUse hook records the runtime's own
 exit for every one of those runs. `record-run.py` then cross-checks each
 claimed gate exit against that log and reports `ATTESTED`, `UNATTESTED`, or
-`MISMATCH`. Two things to know: only the exact declared invocation is
+`MISMATCH`. Three things to know: only the exact declared invocation is
 attested (a pipe or a trailing `|| true` reports a different exit and is
-credited to nothing), and an absent attestation is `UNATTESTED`, never a
+credited to nothing); an absent attestation is `UNATTESTED`, never a
 failure — an executor that does not route through the Bash tool must not
-read as guilt.
+read as guilt; and PostToolUse has been measured not to fire when a Bash
+call fails, so the log binds passes and may hold no reds at all. The third
+bounds the second: a node claiming exit 0 with no row should have left one,
+and `record-run.py` lists exactly those separately as the unverified ones.
 
 **`verify: "prove:<gate>"` turns that observation into enforcement.** The
 node returns `ExecutionV1` — `{gate, exit, attestId}` — and cites the

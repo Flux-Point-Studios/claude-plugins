@@ -26,8 +26,7 @@ rather than assuming.
 Audit checklist, in priority order:
 
 - Stakes vs tier: `schema-only` on a claim that will cost a human real
-  time; `panel:5` on something trivial; `verify: harness` declared in a
-  repo with no `scripts/harness.sh`; a gate whose `haltWhen` cannot fire
+  time; `panel:5` on something trivial; a gate whose `haltWhen` cannot fire
   because the contract cannot produce that field's failing value.
 - Contract semantics: a schema that is structurally strict but vacuous for
   this campaign — one no useless answer would fail. Fields the downstream

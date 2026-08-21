@@ -28,7 +28,7 @@ Evidence table, and one authority on done: `scripts/harness.sh`.
 | Mutation score | `scripts/mutation-guard.py` | Every other gate asks whether the tests pass; this asks whether they can fail — break the implementation on purpose and count what the suite notices. `--measure` carries the ratchet (red when the score falls *or* the survivor count rises, since a ratio can hold flat while coverage shrinks) and runs off-session; `--check` is cheap enough for `--full` and only asks whether a measurement exists and still describes this tree. Staleness is named and raised in the inbox, fatal only if the repo asks. |
 | Counterexamples | `scripts/cex.py`, `.fluxpoint-cex.jsonl` | A prover's shrunk failing input is the most reusable thing it produces and it lives in a log the next command overwrites. `aiken check`'s JSON is captured, each failure recorded, and a fix pinned to a regression test — accepted only when the recorded value is physically in that test's body, outside comments and strings, in a test that is neither `fail`-annotated nor hollow. Losing a pinned test is red; releasing one costs a reason and a Decisions row. |
 | Decisions | `scripts/decision.py`, `PreCompact` hook | A choice with more than one defensible answer is recorded against `DecisionV1` — the options, the best case against each including the winner, the rationale — so it survives the context that made it; `--none` makes silence a statement. At compaction the hook records whether anything reached the disk, and SessionStart tells the next context when the reasoning behind the current diff is gone. `FPL_DISTILL=1` makes the Stop gate ask for one; off by default. |
-| Attestation | `PostToolUse` hook on `Bash` | For every command declared in `.fluxpoint-gates.json`, records the runtime's own exit code to `.claude/fluxpoint/attest.jsonl`. The number a gate produced stops depending on an agent typing it back. Dormant in a repo that declares no gates. |
+| Attestation | `PostToolUse` hook on `Bash` | For a declared command that succeeds, records the runtime's own exit code to `.claude/fluxpoint/attest.jsonl`, so a green stops depending on an agent typing it back. PostToolUse has been measured not to fire when a Bash call fails, so the log binds passes and is silent about reds. Dormant in a repo that declares no gates. |
 | Proved gates | `verify: "prove:<gate>"`, `ExecutionV1` | A node can declare that its verdict must match the hook's record. The gate name resolves at compile time, so a tier naming nothing refuses to compile; at record time a citation that does not exist or disagrees files the run `TAMPERED-EXECUTION`, and citing nothing files it `INCOMPLETE`. Where a repo declares gates, an `irreversible` node's guard must be prove-gated — an effect nobody can undo may not rest on a self-reported exit code. |
 | Review | `red-team-reviewer` agent, `/fluxpoint:red-team` | Adversarial pass over the diff: eUTxO, oracle, authority, numeric, off-chain, and infra attack surface. Ends `VERDICT: SHIP` or `VERDICT: BLOCK`. |
 | Drivers | `loop-engineering` skill + templates | `/goal` for interactive convergence, native `/loop` (self-paced) for in-session grinding, `/schedule` Routines for cloud standing guardrails, `scripts/loop.sh` for multi-hour outer Ralph runs with fresh context per iteration. |
@@ -69,7 +69,7 @@ shipped as a real bug in v0.1, so it is now unexpressible.
 
 ## Hybrid memory recall (graph + embeddings)
 
-`memory.jsonl` remembers what campaigns established; until v1.25 the only
+`memory.jsonl` remembers what campaigns established; until v1.26 the only
 way back in was an exact `tag|dedupeKey` match, so a lesson about
 beacon-prefix derivation was invisible to a session working on two-way
 asset beacons. `scripts/recall.py` closes that gap with the architecture
@@ -155,7 +155,8 @@ local models); graph databases, bundled MCP servers, daemons; new writers
 to `memory.jsonl`; and retrieval-driven suppression of any kind — ranking
 decides what reaches a prompt first, never what gets judged.
 
-Requires `python3` and a Claude Code version with the Workflow tool
+Requires a Python 3 interpreter reachable as `python3` or `python`, and a
+Claude Code version with the Workflow tool
 (`/workflows` resolves); where absent, runs degrade to parallel subagent
 fan-out with the same contracts, recorded as `degraded-subagents` in
 Evidence.
@@ -287,7 +288,7 @@ hooks still honor `LOOP.md`, so a half-migrated repo keeps working.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `FPL_DISABLE=1` | off | Kill switch: all three hooks become no-ops. |
+| `FPL_DISABLE=1` | off | Kill switch: every hook becomes a no-op. |
 | `FPL_MAX_BLOCKS` | 3 | Consecutive Stop blocks before the gate yields with a checkpoint. |
 | `FPL_ALLOW_MISSING_GATES=1` | off | Accept, on purpose, that a gate your manifest declares is not installed. Without it the harness is RED when a declared gate's script cannot be found — a check that does not run must not read as a check that passed. A repo declaring no gates is unaffected and stays runnable without the plugin. |
 | `CLAUDE_PLUGIN_ROOT` | set by the runtime | Where the harness resolves gate scripts from. Version-correct by construction; `FPL_PLUGIN_ROOT` overrides it. Without either, the fallback prefers a marketplace install, then the highest cached version. |
@@ -295,16 +296,17 @@ hooks still honor `LOOP.md`, so a half-migrated repo keeps working.
 | `MAX_ITER` / `MAX_TURNS` | 25 / 40 | Outer loop budgets. |
 | `PERMISSION_ARGS` | `--permission-mode acceptEdits` | Outer loop permission flags. |
 
-Dependencies: `git` required; `jq` preferred with a `python3` fallback
+Dependencies: `git` required; `jq` preferred with a Python fallback
 built into the hooks.
 
 ## This repo gates itself
 
 `scripts/harness.sh --full` is the same contract `/fluxpoint:init` scaffolds
 into any other repo, and `.github/workflows/harness.yml` runs it on every
-push and pull request. It checks every manifest and contract, syntax-checks
+push to `main`, every pull request, and on demand. It checks every manifest and contract, syntax-checks
 every script, validates the plugin, compiles all campaign templates and
-`node --check`s the generated JavaScript, then runs eight suites: compiler
+`node --check`s the generated JavaScript, then runs every suite in
+`plugins/fluxpoint/tests/` (32 today), among them: compiler
 invariants, field-effect probes, codegen-injection regressions, Stop-gate
 regression cases, hook wiring and PostToolUse behavior, migration against
 real pre-1.0 fixtures, the proof-strength ratchet across seven provers, and
@@ -426,7 +428,7 @@ payloads and runs the output to prove they stay inert:
   time. The second exists because the first cannot see source written
   through the Bash tool (`cat >`, `sed -i`, `git apply`) — before v0.1.3
   such a session could stop with the harness never run.
-  `plugins/fluxpoint/tests/gate-test.sh` pins all seven cases.
+  `plugins/fluxpoint/tests/gate-test.sh` pins all ten cases.
 - A green produced by a working tree in which `scripts/harness.sh` itself
   is modified or untracked is reported, not swallowed: the verdict is only
   as trustworthy as the contract that produced it.
@@ -471,9 +473,9 @@ semantics, and honest limitations live in
 plugins/substrate/
 ├── .claude-plugin/plugin.json
 ├── hooks/hooks.json
-├── scripts/substrate-graph.mjs
-├── commands/           init.md, status.md, emit.md
-├── templates/DOCTRINE.snippet.md
+├── scripts/            substrate-graph.mjs, memory-lint.mjs, prose-smell.mjs
+├── commands/           init.md, status.md, emit.md, smell.md
+├── templates/          DOCTRINE.snippet.md, WRITING.snippet.md
 └── tests/              graph.test.mjs, staleness.test.mjs
 plugins/fluxpoint/
 ├── .claude-plugin/plugin.json
