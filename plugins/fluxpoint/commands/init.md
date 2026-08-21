@@ -90,4 +90,5 @@ step; do not stop at copying files.
    required CI check names the merge will wait on.
 11. Finish with a short report: files created, harness verdict, MODE, merge
    policy, and the one command that starts an outer loop
-   (`scripts/loop.sh`) or a campaign (`/fluxpoint:graph-run`).
+   (`scripts/loop.sh`) or a campaign (`/fluxpoint:graph-design`, which flips
+   the work file to READY, then `/fluxpoint:graph-run`).

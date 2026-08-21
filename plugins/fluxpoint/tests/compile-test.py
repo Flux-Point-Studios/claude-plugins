@@ -652,12 +652,36 @@ def emission_bytes_case():
         with open(out, "rb") as fh:
             raw = fh.read()
 
+        # The two emit paths are separately fallible, so a test on one proves
+        # nothing about the other. `--out` opens with newline="\n"; stdout is
+        # a TextIOWrapper that translated every \n to os.linesep, so the same
+        # compiler shipped LF through one path and CRLF through the other, and
+        # the Workflow tool refused the result naming neither CRLF nor the
+        # compiler. Run it again with no -o and compare the bytes.
+        #
+        # PYTHONIOENCODING is forced to a CRLF-hostile setting here on purpose:
+        # it pins the ENCODING and says nothing about line endings, which is
+        # precisely why fixing the encoding half left this half broken.
+        env = dict(os.environ, PYTHONIOENCODING="utf-8")
+        r2 = subprocess.run(
+            [sys.executable,
+             os.path.join(PLUGIN, "scripts", "compile-graph.py"), src],
+            capture_output=True, env=env)
+
         problems = []
-        crs = raw.count(b"\r")
+        if r2.returncode != 0:
+            problems.append("stdout emit exited %d" % r2.returncode)
+        elif r2.stdout != raw:
+            problems.append(
+                "the stdout and --out paths disagree: %d vs %d bytes, %d vs %d CR"
+                % (len(r2.stdout), len(raw),
+                   r2.stdout.count(b"\r"), raw.count(b"\r")))
+        crs = raw.count(b"\r") + r2.stdout.count(b"\r")
         if crs:
             problems.append(
-                "emitted script contains %d CR byte(s); it must be LF-only or the "
-                "Workflow permission handler rejects it as control characters" % crs)
+                "emitted script contains %d CR byte(s) across the two emit paths; "
+                "it must be LF-only or the Workflow permission handler rejects it "
+                "as control characters" % crs)
         text = ""
         try:
             text = raw.decode("utf-8")
@@ -671,7 +695,8 @@ def emission_bytes_case():
                 print("FAIL emission-bytes:", m)
             failed += 1
         else:
-            print("ok   emission-bytes: utf-8, LF-only, non-ASCII preserved")
+            print("ok   emission-bytes: utf-8, LF-only on BOTH emit paths, "
+                  "non-ASCII preserved")
             passed += 1
 
 

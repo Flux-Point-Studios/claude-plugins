@@ -41,6 +41,11 @@ Resolve the plugin root first: `${CLAUDE_PLUGIN_ROOT}`, else
    This removes `LOOP.md` and `GRAPH.md`, and refuses if `WORK.md` carries
    fewer Evidence rows than the sources did. If it refuses, the migration
    lost history — fix `WORK.md`, do not force it.
-6. Commit as one change naming what merged, then report: MODE, Evidence
+6. **If MODE is graph or both, design before running.** A migrated graph
+   carries `STATUS: DESIGN`, and `/fluxpoint:graph-run` accepts only `READY`
+   or `RUNNING`. Run `/fluxpoint:graph-design` to review the IR and flip it
+   to `READY`; the campaign is not runnable until it does.
+
+7. Commit as one change naming what merged, then report: MODE, Evidence
    rows carried, harness verdict, compile check, and anything that needed
    a judgment call so the user can review it.
