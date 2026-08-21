@@ -31,6 +31,32 @@ step; do not stop at copying files.
    checks, preview-net exercises). Then run `scripts/harness.sh --full` and
    iterate until it exits 0, or report precisely what is red and why.
 
+   **Then prove it once in a worktree.** A graph node marked `mutates: true`
+   runs worktree-isolated, and green in the primary checkout is not green
+   there: `git worktree add` checks out tracked files only, so a gitignored
+   build artifact or an installed `node_modules` is absent, and a test that
+   pins an absolute path is false in a worktree by construction. Under
+   `set -euo pipefail` the first such failure aborts the rest of `--full`,
+   including gates a later campaign node was told to read.
+
+   ```sh
+   git worktree add --detach ../.fpl-probe
+   (cd ../.fpl-probe && bash scripts/harness.sh --full); probe=$?
+   git worktree remove --force ../.fpl-probe
+   [ "$probe" -eq 0 ] || echo "worktree probe FAILED (rc=$probe)" >&2
+   ( exit "$probe" )
+   ```
+
+   The status is captured before cleanup and re-raised after it. Written as
+   one `&&` chain ending in `git worktree remove`, the whole thing exits with
+   the REMOVE's status — so a red harness reports success, and this is a step
+   an agent runs and reads the exit code of.
+
+   Fix what that finds now. A harness only ever proven in the primary
+   checkout is not proven for the isolation a campaign imposes, and the
+   failure surfaces later as a verification node blaming the implementer —
+   wrong, and pointed at an innocent node.
+
    While you are reading the stack, ask the one question the harness cannot
    answer for itself: **which artifacts have to agree with each other?** An
    on-chain predicate and the off-chain builder that constructs

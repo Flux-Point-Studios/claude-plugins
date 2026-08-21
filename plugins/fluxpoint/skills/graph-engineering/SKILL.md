@@ -198,6 +198,52 @@ independent slices hanging off it, which is what campaigns actually look
 like. A DAG scheduler is the right answer to a problem no graph here has
 had yet; build it when one does, not before.
 
+## What a worktree is, and what it is not
+
+`mutates: true` compiles to `isolation: 'worktree'`. Three things about that
+are worth knowing before you depend on it, because each has cost a real
+campaign a wrong answer rather than an error:
+
+- **You do not choose the base.** The compiler emits the literal string and
+  the runtime cuts the worktree; nothing in this plugin selects the commit.
+  A node given isolation has been observed reading a tree cut from the
+  default branch rather than the campaign's, which makes a file an earlier
+  node committed simply ABSENT. Nothing inside says so: `git status` is
+  clean and a missing file looks like a missing file, so the node returns a
+  confident, well-evidenced, wrong report. **Have any node that measures or
+  verifies the tree state its base** — `git rev-parse HEAD` and
+  `git log --oneline -1` in its evidence — so a wrong-base finding can be
+  told apart from a true one. A downstream node that must read what an
+  upstream node committed should fetch or check out that branch by name
+  rather than assuming it is there.
+
+- **Isolation is opt-in, and a fan-out that measures needs it.**
+  `parallel()` and `pipeline()` read as isolated units and, for pure
+  reasoning, effectively are. The moment a node's output is a *measurement*
+  of the tree — a build size, a byte delta, a benchmark — a shared working
+  tree makes that number a function of what every sibling is doing, and the
+  failure is silent: every node exits 0 with a confident figure. Declare
+  isolation on anything that builds, compiles, or measures, not only on
+  things that write.
+
+- **A node that dirties the shared tree invalidates what ran before it.**
+  "Throw the branch away" in a prompt is prose to a model, not a cleanup
+  contract; nothing evaluates it. A gate that already passed was judging a
+  tree that no longer exists. Until the runtime offers a scratch mode, a
+  measuring node should either declare isolation or restore what it touched
+  as part of its own contract, and a gate should re-assert the tree it is
+  judging rather than trusting a green from before the mutation.
+
+**Prove the harness in a worktree before you trust a `mutates` node.** Green
+in the primary checkout is not green under the isolation the campaign
+imposes: `git worktree add` checks out tracked files only, so a gitignored
+build artifact or an installed `node_modules` is absent, and a test that
+pins an absolute path is false there by construction. Run
+`git worktree add --detach` and `bash scripts/harness.sh --full` inside it
+once. Otherwise the campaign halts at its verification node blaming the
+implementer, which is both wrong and pointed at an innocent node — and the
+repair it invites is weakening the assertion that was right.
+
 ## Effects that cannot be undone
 
 `mutates: true` buys `isolation: 'worktree'`. That is real containment for
@@ -215,11 +261,22 @@ the one that matters:
 2. **Resume stops double-firing.** Repair-one-node-and-resume is the
    recovery path this skill prescribes, and it is also the operation that
    mints twice: every node after the repair re-runs. Before each
-   irreversible spawn the compiled graph checks a committed ledger keyed by
-   campaign, node, and prompt hash; a hit restores the recorded result and
-   logs `REPLAYED-FROM-LEDGER` instead of performing the effect. A replayed
-   node is filed `REPLAYED`, never `OK` — a ceremony that did not happen
-   must not read like one that did.
+   irreversible spawn the compiled graph checks a ledger keyed by campaign,
+   node, and prompt hash; a hit restores the recorded result and logs
+   `REPLAYED-FROM-LEDGER` instead of performing the effect. A replayed node
+   is filed `REPLAYED`, never `OK` — a ceremony that did not happen must not
+   read like one that did.
+
+   **The ledger is local, not committed, and that bounds what it can
+   promise.** It lives at `.claude/fluxpoint/irreversible.jsonl`, inside the
+   directory `init` and `migrate` add to `.gitignore`, so a fresh clone
+   starts with none: `--load` returns `{}` and exits 0, which the guard reads
+   as "first run" and the effect fires again. Within one checkout the
+   once-only property holds; across checkouts it does not, and no amount of
+   care in the graph changes that. If an effect must be once-only for a
+   ceremony that more than one machine can reach, the receipt has to outlive
+   the working copy — a committed receipt log, or a lock the effect's own
+   service holds. Do not read this ledger as that guarantee.
 3. The gate must be *ordered before* the effect. The compiler requires an
    earlier `independent` node with a `haltWhen`, because a verifier that
    runs afterwards cannot un-mint an NFT.
