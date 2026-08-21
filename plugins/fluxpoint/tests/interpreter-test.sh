@@ -52,7 +52,7 @@ if [ -z "$REAL" ]; then
   echo "interpreter-test: no working interpreter to build the fixture with" >&2
   exit 127
 fi
-printf '#!/usr/bin/env bash\nexec %s "$@"\n' "$REAL" >"$BIN/python"
+printf '#!/usr/bin/env bash\nexec "%s" "$@"\n' "$REAL" >"$BIN/python"
 chmod +x "$BIN/python"
 
 # --- behavioural: the shipped resolver, with the alias winning the name test ---
@@ -96,8 +96,8 @@ stale=$(cd "$REPO" && git grep -l 'then FPL_PY=pytho[n]3' -- '*.sh' | wc -l | tr
 check "no copy resolves the interpreter by name alone" 0 "$stale"
 
 probes=$(cd "$REPO" && git grep -l '"\$_fpl_cand" -c "import sy[s]"' -- '*.sh' | wc -l | tr -d ' ')
-[ "$probes" -ge 20 ] && ok "every resolver copy probes" "$probes copies" \
-  || bad "every resolver copy probes" "$probes copies (wanted >= 20)"
+[ "$probes" -ge 21 ] && ok "every resolver copy probes" "$probes copies" \
+  || bad "every resolver copy probes" "$probes copies (wanted >= 21)"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
