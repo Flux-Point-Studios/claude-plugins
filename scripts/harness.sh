@@ -153,6 +153,7 @@ case "${1:---full}" in
     step "portable interpreter invocations" portable_invocations
     step "templates compile + emit valid JS" compile_templates
     step "compiler invariants" "$FPL_PY" "$PLUGIN/tests/compile-test.py"
+    step "agentType resolution + contract" "$FPL_PY" "$PLUGIN/tests/agenttype-test.py"
     step "emission coverage" "$FPL_PY" "$PLUGIN/tests/emission-test.py"
     step "codegen injection + red-team regressions" "$FPL_PY" "$PLUGIN/tests/security-test.py"
     step "stop-gate regression" bash "$PLUGIN/tests/gate-test.sh"
@@ -175,6 +176,7 @@ case "${1:---full}" in
     step "embedder quarantine (executed)" "$FPL_PY" "$PLUGIN/tests/embedder-test.py"
     step "graph metrics aggregator (executed)" "$FPL_PY" "$PLUGIN/tests/metrics-test.py"
     step "relation gate" bash "$PLUGIN/tests/pair-test.sh"
+    step "gate presence + resolver (executed)" bash "$PLUGIN/tests/gate-presence-test.sh"
     step "credential gate (executed)" bash "$PLUGIN/tests/secret-guard-test.sh"
     step "secret-handling skill shapes (executed)" "$FPL_PY" "$PLUGIN/tests/secret-handling-test.py"
     step "park layer (executed)" "$FPL_PY" "$PLUGIN/tests/park-test.py"

@@ -1,6 +1,10 @@
 ---
 name: graph-auditor
 description: Adversarial reviewer of Graph Engineering specs — the WORK.md graph-ir block and the campaign it describes. Use proactively after any change to an IR, its contracts, or its verification tiers, and always before a graph runs.
+# Answers in a report ending `VERDICT: SOUND|REWIRE`. No shipped contract carries that
+# vocabulary, so this agent cannot satisfy a graph node's schema -- binding it
+# to one is rejected at compile time rather than discovered at the spawn.
+contract: prose
 tools: Read, Grep, Glob, Bash
 ---
 
