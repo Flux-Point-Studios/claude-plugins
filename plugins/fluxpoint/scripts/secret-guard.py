@@ -422,7 +422,7 @@ def dir_head(pat):
     `secrets/*.txt` and `secrets/vault.txt` both live in `secrets/`, and the
     question `grep -r . secrets` asks is about the directory, not the file.
     """
-    lit = re.split(r"[*?]", norm_text(pat), 1)[0]
+    lit = re.split(r"[*?]", norm_text(pat), maxsplit=1)[0]
     cut = lit.rfind("/")
     return lit[:cut + 1].lower() if cut >= 0 else ""
 

@@ -12,11 +12,24 @@
 set -uo pipefail
 
 # Interpreter name differs by platform: `python3` on Linux/macOS, `python` on a
-# standard Windows install. Resolve once rather than hardcoding either.
+# standard Windows install. Resolve by running each candidate, because a
+# name on PATH is not evidence of an interpreter.
 if [ -z "${FPL_PY:-}" ]; then
-  if command -v python3 >/dev/null 2>&1; then FPL_PY=python3
-  elif command -v python >/dev/null 2>&1; then FPL_PY=python
-  else echo "fluxpoint: no python interpreter on PATH" >&2; exit 127
+  # Probe each candidate by RUNNING it, rather than asking whether the name
+  # exists. Windows ships a `python3` App Execution Alias that is on PATH by
+  # default on a machine with no python3 at all: it satisfies `command -v`,
+  # then prints "Python was not found" and exits 49 for every argument.
+  for _fpl_cand in python3 python; do
+    if command -v "$_fpl_cand" >/dev/null 2>&1 &&
+       "$_fpl_cand" -c "import sys" >/dev/null 2>&1; then
+      FPL_PY="$_fpl_cand"
+      break
+    fi
+  done
+  unset _fpl_cand
+  if [ -z "${FPL_PY:-}" ]; then
+    echo "fluxpoint: no working python interpreter on PATH" >&2
+    exit 127
   fi
 fi
 # Force UTF-8 on every embedded interpreter's stdio. Without it Windows writes
@@ -147,10 +160,12 @@ case "${1:---full}" in
     step "hook wiring + PostToolUse" bash "$PLUGIN/tests/hooks-test.sh"
     step "decisions + compaction memory" bash "$PLUGIN/tests/decision-test.sh"
     step "migration against pre-1.0 fixtures" bash "$PLUGIN/tests/migrate-test.sh"
+    step "STATUS vocabulary" "$FPL_PY" "$PLUGIN/tests/status-vocab-test.py"
     step "proof-strength ratchet" bash "$PLUGIN/tests/proof-guard-test.sh"
     step "statement ratchet" bash "$PLUGIN/tests/spec-guard-test.sh"
     step "counterexample ledger (executed)" bash "$PLUGIN/tests/cex-test.sh"
     step "mutation ratchet (executed)" bash "$PLUGIN/tests/mutation-test.sh"
+    step "guard ratchet (executed)" bash "$PLUGIN/tests/guard-guard-test.sh"
     step "on-chain budget gate" bash "$PLUGIN/tests/budget-test.sh"
     step "once-only ledger (executed)" "$FPL_PY" "$PLUGIN/tests/ledger-test.py"
     step "execution attestation (executed)" bash "$PLUGIN/tests/attest-test.sh"
@@ -164,6 +179,7 @@ case "${1:---full}" in
     step "secret-handling skill shapes (executed)" "$FPL_PY" "$PLUGIN/tests/secret-handling-test.py"
     step "park layer (executed)" "$FPL_PY" "$PLUGIN/tests/park-test.py"
     step "unified state + compatibility" bash "$PLUGIN/tests/unify-test.sh"
+    step "interpreter resolution" bash "$PLUGIN/tests/interpreter-test.sh"
     step "outer runner + co-change base" bash "$PLUGIN/tests/loop-runner-test.sh"
     step "substrate: node --check" node --check "$SUB/scripts/substrate-graph.mjs"
     step "substrate: registry graph + staleness suites" substrate_tests
