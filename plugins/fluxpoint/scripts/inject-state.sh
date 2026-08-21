@@ -6,11 +6,24 @@
 set -u
 
 # Interpreter name differs by platform: `python3` on Linux/macOS, `python` on a
-# standard Windows install. Resolve once rather than hardcoding either.
+# standard Windows install. Resolve by running each candidate, because a
+# name on PATH is not evidence of an interpreter.
 if [ -z "${FPL_PY:-}" ]; then
-  if command -v python3 >/dev/null 2>&1; then FPL_PY=python3
-  elif command -v python >/dev/null 2>&1; then FPL_PY=python
-  else echo "fluxpoint: no python interpreter on PATH" >&2; exit 127
+  # Probe each candidate by RUNNING it, rather than asking whether the name
+  # exists. Windows ships a `python3` App Execution Alias that is on PATH by
+  # default on a machine with no python3 at all: it satisfies `command -v`,
+  # then prints "Python was not found" and exits 49 for every argument.
+  for _fpl_cand in python3 python; do
+    if command -v "$_fpl_cand" >/dev/null 2>&1 &&
+       "$_fpl_cand" -c "import sys" >/dev/null 2>&1; then
+      FPL_PY="$_fpl_cand"
+      break
+    fi
+  done
+  unset _fpl_cand
+  if [ -z "${FPL_PY:-}" ]; then
+    echo "fluxpoint: no working python interpreter on PATH" >&2
+    exit 127
   fi
 fi
 # Force UTF-8 on every embedded interpreter's stdio. Without it Windows writes
