@@ -289,6 +289,8 @@ hooks still honor `LOOP.md`, so a half-migrated repo keeps working.
 |---|---|---|
 | `FPL_DISABLE=1` | off | Kill switch: all three hooks become no-ops. |
 | `FPL_MAX_BLOCKS` | 3 | Consecutive Stop blocks before the gate yields with a checkpoint. |
+| `FPL_ALLOW_MISSING_GATES=1` | off | Accept, on purpose, that a gate your manifest declares is not installed. Without it the harness is RED when a declared gate's script cannot be found — a check that does not run must not read as a check that passed. A repo declaring no gates is unaffected and stays runnable without the plugin. |
+| `CLAUDE_PLUGIN_ROOT` | set by the runtime | Where the harness resolves gate scripts from. Version-correct by construction; `FPL_PLUGIN_ROOT` overrides it. Without either, the fallback prefers a marketplace install, then the highest cached version. |
 | `MAX_ITER` / `MAX_TURNS` | 25 / 40 | Outer loop budgets. |
 | `PERMISSION_ARGS` | `--permission-mode acceptEdits` | Outer loop permission flags. |
 

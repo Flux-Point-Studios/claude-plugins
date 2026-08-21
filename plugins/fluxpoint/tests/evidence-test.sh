@@ -204,7 +204,12 @@ cat >"$ROOT/ps.sh" <<'EOF'
 set -euo pipefail
 EOF
 sed -n '/^plugin_script()/,/^}/p' "$PLUGIN/templates/harness.sh" >>"$ROOT/ps.sh"
-printf 'HOME=/nonexistent-home\np="$(plugin_script proof-guard.py)"\necho "survived:[$p]"\n' \
+# The root vars are unset here on purpose: this case is about the `find`
+# branch surviving a missing plugin directory, and this file exports
+# CLAUDE_PLUGIN_ROOT at the top. Once the resolver started honoring that root
+# — which is what makes it version-correct — an inherited value would resolve
+# the script and this case would stop exercising the branch it names.
+printf 'unset FPL_PLUGIN_ROOT CLAUDE_PLUGIN_ROOT\nHOME=/nonexistent-home\np="$(plugin_script proof-guard.py)"\necho "survived:[$p]"\n' \
   >>"$ROOT/ps.sh"
 out="$(bash "$ROOT/ps.sh" 2>&1)"; rc=$?
 check "plugin_script survives a missing plugin directory" 0 "$rc"
