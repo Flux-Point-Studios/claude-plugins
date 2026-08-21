@@ -124,8 +124,23 @@ def build_work(s):
     lines = preamble.splitlines()
     title = next((l for l in lines if l.startswith("# ")), "# WORK: <goal>")
     title = re.sub(r"^# (LOOP|GRAPH):", "# WORK:", title)
-    status = next((l for l in lines if l.startswith("STATUS:")), "STATUS: ACTIVE")
     mode = "both" if (s["loop"] and s["graph"]) else ("graph" if s["graph"] else "loop")
+    # A migrated graph lands at DESIGN, not ACTIVE. graph-run's preflight
+    # accepts READY or RUNNING, and /fluxpoint:graph-design is what flips
+    # DESIGN to READY -- so defaulting a graph to ACTIVE handed the user a
+    # file the run gate refuses, with the command that fixes it named
+    # nowhere in the migrate flow. Loop mode keeps ACTIVE, where READY has
+    # no meaning.
+    default_status = "STATUS: DESIGN" if mode in ("graph", "both") else "STATUS: ACTIVE"
+    status = next((l for l in lines if l.startswith("STATUS:")), default_status)
+    if mode in ("graph", "both"):
+        # ACTIVE is a loop word. Carrying it into a graph file is the drift
+        # itself: graph-run accepts READY or RUNNING, so a migrated campaign
+        # inherited a status its own run gate refuses. DESIGN is the honest
+        # landing state -- the IR came from a loop and has not been reviewed
+        # as a graph yet -- and graph-design is what flips it to READY.
+        if status.split(":", 1)[1].strip() in ("ACTIVE", ""):
+            status = "STATUS: DESIGN"
 
     ev_rows = to_unified(table_rows(get(loop_secs, "Evidence"))) + \
               to_unified(table_rows(get(graph_secs, "Evidence")))

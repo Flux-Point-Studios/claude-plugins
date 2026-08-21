@@ -149,6 +149,7 @@ Mark those `actor: human` or `actor: third-party` with a `release` block:
 
 ```json
 { "id": "sign", "actor": "human", "contract": "HarnessCheckV1",
+  "prompt": "The campaign has built an unsigned transaction body and needs 2-of-3 hardware signatures before it can submit. Attack the claim that this needs a person before accepting it, then recommend how the operator should proceed.",
   "release": { "instructions": "Sign with 2 of the 3 hardware keys and paste the cardano-cli output.",
                "whyNotAgent": "the keys live on hardware devices held by three people; an agent may never hold them. The unsigned body IS built headlessly by the previous node.",
                "proofContract": "HarnessCheckV1" },

@@ -462,5 +462,106 @@ PANEL = {**copy.deepcopy(DEC_IR), "nodes": [
 report("refuter reasons survive the tally",
        "objections: cast.map(v => v.reason)" in cg.emit(PANEL, CONTRACTS), "carried")
 
+# ==================== the parked node's own placeholders ==================
+# A parked node's prompt and instructions used to be emitted through js_str,
+# which is a double-quoted JS literal and interpolates nothing — so the
+# advisor was handed the characters "{{A.branch}}" while being told to ground
+# its recommendation in the repo, and the blocked human read the same. Every
+# other prompt goes through js_template. The validator made it worse than a
+# gap: its scope check walks SUBST over every non-reduce prompt, so the token
+# was blessed as in-scope while the emitter rendered it literal — a binding
+# promised and never made.
+SUB = copy.deepcopy(IR)
+SUB["argDefaults"] = {"branch": "claude/graph-x", "base": "main"}
+SUB["nodes"][1]["prompt"] = "sign the tx on {{A.branch}} and compare it to {{A.base}}"
+SUB["nodes"][1]["release"]["instructions"] = "check out {{A.branch}}, then merge to {{A.base}}"
+emitted = cg.emit(SUB, CONTRACTS)
+
+report("a parked prompt interpolates its args",
+       "${A.branch}" in emitted and "{{A.branch}}" not in emitted,
+       "interpolated" if "{{A.branch}}" not in emitted else "left literal")
+report("and so do its release instructions",
+       emitted.count("${A.base}") >= 2, f"{emitted.count('${A.base}')} site(s)")
+
+# The emitted script must still parse: js_template escapes backticks and ${,
+# and a release string is operator prose that can contain either.
+EVIL = copy.deepcopy(SUB)
+EVIL["nodes"][1]["release"]["instructions"] = "run `cmd` and mind ${notAVar} and a \\ backslash"
+ev = cg.emit(EVIL, CONTRACTS)
+# The emitted script is a workflow BODY, not a module: the runtime wraps it,
+# so it carries top-level `return` and `node --check` rejects it on its own.
+# Re-wrap it the way the runtime does before asking whether it parses.
+wrapped = "async function _fpl_body() {\n" + \
+    ev.replace("export const meta", "const meta", 1) + "\n}\n"
+with tempfile.NamedTemporaryFile("w", suffix=".mjs", delete=False,
+                                 encoding="utf-8") as fh:
+    fh.write(wrapped)
+    evp = fh.name
+rc = subprocess.run([os.environ.get("FPL_NODE", "node"), "--check", evp],
+                    capture_output=True, text=True)
+report("a release string with backticks and ${ still parses",
+       rc.returncode == 0, "parses" if rc.returncode == 0 else rc.stderr.strip()[:60])
+report("and the literal ${ is escaped, not interpolated",
+       "\\${notAVar}" in ev, "escaped" if "\\${notAVar}" in ev else "LEAKED")
+os.unlink(evp)
+
+# ============ the other half of the interpolation promise ================
+# Moving these two fields to js_template made them ${...} sites. The scope
+# check walked only n["prompt"], so release.instructions was an interpolation
+# surface no validator covered: {{process.env.X}} in operator prose compiled
+# clean and read a secret into the advisor prompt, the provenance note and
+# the run log. A validator that blesses what the emitter will not bind, and
+# an emitter that binds what no validator checked, are the same defect from
+# opposite ends -- both are covered below.
+
+HOSTILE = copy.deepcopy(IR)
+HOSTILE["nodes"][1]["release"]["instructions"] = (
+    "Sign and paste. leak={{process.env.AWS_SECRET_ACCESS_KEY}}")
+h_errs = cg.validate(HOSTILE, CONTRACTS)
+report("an out-of-scope token in release.instructions is refused",
+       any("release.instructions uses" in e and "not in scope" in e
+           for e in h_errs),
+       h_errs[0][:58] if h_errs else "ACCEPTED")
+
+# The compiler must refuse the IR, not merely notice it: main() returns 1 on
+# findings before emit() is ever called, which is what makes the rejection a
+# gate rather than a remark.
+report("and the same token in the prompt is refused as before",
+       any("prompt uses" in e and "not in scope" in e
+           for e in cg.validate(
+               {**copy.deepcopy(IR), "nodes": [
+                   {**copy.deepcopy(IR)["nodes"][0]},
+                   {**copy.deepcopy(IR)["nodes"][1],
+                    "prompt": "sign {{process.env.SECRET}}"},
+                   *copy.deepcopy(IR)["nodes"][2:]]}, CONTRACTS)),
+       "refused")
+
+# A token the validator DOES bless must bind, or the graph compiles clean and
+# throws ReferenceError at launch -- the failure the scope check exists to
+# prevent, one field over.
+BOUND = copy.deepcopy(IR)
+BOUND["nodes"][1]["after"] = "prepare"
+BOUND["nodes"][1]["prompt"] = "sign what {{prev}} produced"
+BOUND["nodes"][1]["release"]["instructions"] = (
+    "Sign the body from {{prev.exit}} and paste the result.")
+b_errs = cg.validate(BOUND, CONTRACTS)
+report("a parked node may consume its predecessor",
+       not b_errs, str(b_errs)[:58] if b_errs else "accepted")
+bj = cg.emit(BOUND, CONTRACTS)
+report("{{prev}} in a parked prompt binds to RESULTS",
+       "${JSON.stringify(RESULTS[\"prepare\"])}" in bj,
+       "bound" if "${JSON.stringify(RESULTS[\"prepare\"])}" in bj else "UNBOUND")
+report("{{prev.field}} in release instructions binds too",
+       "${prev.exit}" not in bj and 'RESULTS["prepare"] || {})["exit"]' in bj,
+       "bound" if "${prev.exit}" not in bj else "UNBOUND ${prev.exit}")
+
+# The blessed tokens are exactly the ones that could go unbound, so assert on
+# them by name rather than by scanning every ${...} the script legitimately
+# writes. `${prev`, `${decisions.` and `${seen}` name no JS binding anywhere.
+leaked = [t for t in ("${prev}", "${prev.", "${decisions.", "${seen}")
+          if t in bj]
+report("no blessed token reaches the script unbound", not leaked,
+       "clean" if not leaked else f"unbound: {leaked}")
+
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)
