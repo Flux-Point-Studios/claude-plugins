@@ -208,7 +208,14 @@ full() {
     # than maxTxSize cannot go on chain at all, and the prover has nothing
     # to say about it. Protocol limits are enforced unconditionally; set a
     # headroom target in .fluxpoint-budget.json when you want one.
-    if need_gate plutus-budget.py .fluxpoint-budget.json contracts/aiken.toml; then
+    # Armed by aiken.toml, not contracts/aiken.toml: reaching this line already
+    # required aiken.toml at the ROOT, so the contracts/ path could never arm
+    # anything. Arming on the manifest that got us here is what makes the
+    # sentence above true — a repo that just built a validator cannot report
+    # green without someone having checked it fits on chain.
+    # .fluxpoint-budget.json stays first so the more specific declaration is
+    # the one named when a repo has set a headroom target.
+    if need_gate plutus-budget.py .fluxpoint-budget.json aiken.toml; then
       "$FPL_PY" "$FPL_GATE" --check ${FPL_PROTOCOL_PARAMS:+--params "$FPL_PROTOCOL_PARAMS"}
     fi
   fi

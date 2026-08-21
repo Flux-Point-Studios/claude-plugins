@@ -106,5 +106,25 @@ got="$( set -uo pipefail
 case "$got" in "$ROOT"/*) ok "CLAUDE_PLUGIN_ROOT resolves the gate" "honored" ;;
   *) bad "CLAUDE_PLUGIN_ROOT resolves the gate" "${got:-empty}" ;; esac
 
+# ====== 5. an on-chain repo cannot skip the protocol-limit gate ==========
+# The budget gate sits INSIDE `[ -f aiken.toml ] && has aiken`, so listing
+# contracts/aiken.toml as one of its arming configs could never arm anything:
+# reaching that line already required aiken.toml at the ROOT, and a repo whose
+# manifest lives at contracts/ never enters the block at all. The gate was
+# therefore armed only by .fluxpoint-budget.json, while the comment above it
+# says protocol limits are enforced unconditionally. An Aiken repo without that
+# optional file built a validator and skipped the maxTxSize check in silence --
+# this harness's own defect, wearing the fix's clothes.
+mkrepo onchain
+printf 'name = "t/t"\nversion = "0.0.0"\n' > "$WORK/onchain/aiken.toml"
+STUB="$WORK/stub"; mkdir -p "$STUB"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB/aiken"; chmod +x "$STUB/aiken"
+out="$(cd "$WORK/onchain" && env -u FPL_PLUGIN_ROOT -u CLAUDE_PLUGIN_ROOT \
+  HOME="$EMPTY_HOME" PATH="$STUB:$PATH" bash scripts/harness.sh --full 2>&1)"; rc=$?
+check "an aiken repo cannot skip the protocol-limit gate" 1 "$rc"
+case "$out" in *"plutus-budget.py is not installed"*)
+    ok "and names the budget gate" "reported" ;;
+  *) bad "and names the budget gate" "${out:0:70}" ;; esac
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
