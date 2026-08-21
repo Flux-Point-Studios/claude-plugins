@@ -31,6 +31,11 @@ does.
   ledger: a prover's shrunk failing input, pinned to a regression);
   `mutation-guard.py` (mutation score — whether the tests can fail, not
   just whether they pass);
+  `guard-guard.py` (guard ratchet: the guards that stop money moving
+  wrongly, and whether each is still held down by a test that fails
+  without it — `--verify` runs the proof intact, then disables the guard
+  and requires the same proof to break, so a proof that cannot run is
+  reported rather than counted as evidence);
   `plutus-budget.py` (on-chain
   size and execution-unit limits); `pair-guard.py` (relation gate over
   declared artifact pairs); `ledger.py` (once-only guard for
