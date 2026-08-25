@@ -130,6 +130,17 @@ PY
   fi
 fi
 
+# What the repo keeps re-learning, above what it has learned. A lesson filed
+# a second time used to REPLACE the first, so the store looked identical the
+# third time round and only a human noticing the pattern could act on it.
+# This is the one memory line phrased as a demand rather than a recollection,
+# because the answer to it is a gate and never another lesson. Silent in a
+# repo that has filed nothing, and it exits 0 no matter what.
+rec_py="$(dirname "$0")/recurrence-guard.py"
+if [ -f "$rec_py" ] && [ -f "$sd/memory.jsonl" ]; then
+  "$FPL_PY" "$rec_py" --for-session 2>/dev/null || true
+fi
+
 # Latest graph run, if this repo runs campaigns.
 runs="$sd/runs"
 if [ -d "$runs" ]; then

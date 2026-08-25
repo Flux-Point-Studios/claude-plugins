@@ -39,7 +39,7 @@ Copy over `WORK.md`'s Campaign section to use it.
       "phase": "Discover",
       "role": "hunter",
       "foreach": "modalities",
-      "prompt": "Hunt for defects in {{A.target}} using this modality: {{item.brief}}. Read the code yourself. Report only findings with a concrete failure path (inputs/state -> wrong outcome). Already surfaced in earlier rounds, do NOT report these again: {{seen}}. Spend this round on ground the earlier rounds did not cover. An empty findings list is a valid answer and ends the sweep.",
+      "prompt": "Hunt for defects in {{A.target}} using this modality: {{item.brief}}. Read the code yourself. Report only findings with a concrete failure path (inputs/state -> wrong outcome). Give each finding a defectClass naming its SHAPE rather than its location — the words a defect of the same kind in an unrelated file would also use, like 'hand-maintained-enumeration' or 'unchecked-boundary-crossing'. file, line and claim already say where it is; defectClass is what lets the same shape recurring in three places be counted as three, and reusing an existing class is the point, so prefer a class already in {{seen}} over a new spelling of it. Already surfaced in earlier rounds, do NOT report these again: {{seen}}. Spend this round on ground the earlier rounds did not cover. An empty findings list is a valid answer and ends the sweep.",
       "contract": "FindingsV1",
       "verify": "panel:3",
       "verifyOver": "findings",
@@ -50,7 +50,11 @@ Copy over `WORK.md`'s Campaign section to use it.
         "maxRounds": 6,
         "dedupeBy": ["file", "line", "claim"]
       },
-      "memory": { "seed": "defect-sweep", "emit": "defect-sweep" }
+      "memory": {
+        "seed": "defect-sweep",
+        "emit": "defect-sweep",
+        "classBy": ["defectClass"]
+      }
     }
   ]
 }
@@ -74,6 +78,15 @@ Copy over `WORK.md`'s Campaign section to use it.
   set. A re-found item still flows through and is judged again, because a
   finding that comes back is evidence the lesson went stale, and silently
   dropping it would hide the regression the sweep exists to catch.
+- `memory.classBy` is the second, coarser identity. `dedupeBy` decides
+  whether two findings are the same FINDING; the class decides whether they
+  are the same defect SHAPE, which no combination of file, line and claim
+  can express — those three describe a defect's location and its wording.
+  One shape found in three files files three lessons and one class, and
+  `recurrence-guard.py` counts the class: at the second arrival the item
+  stops being answerable by another lesson and demands a command whose exit
+  code is its verdict. Keep classes few and reused; a class per finding
+  counts nothing, and a class covering everything fires on everything.
 
 ## Failure policy
 - Dry rule: 2 consecutive rounds with nothing new ends the sweep. This is

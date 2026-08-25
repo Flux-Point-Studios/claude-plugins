@@ -133,6 +133,9 @@ case "${1:---full}" in
       "$PLUGIN"/scripts/recall.py | "$PLUGIN"/scripts/embedder.py)
         step "hybrid recall pipeline" "$FPL_PY" "$PLUGIN/tests/recall-test.py"
         step "embedder quarantine" "$FPL_PY" "$PLUGIN/tests/embedder-test.py" ;;
+      "$PLUGIN"/scripts/memory.py | "$PLUGIN"/scripts/recurrence-guard.py)
+        step "recurrence gate" "$FPL_PY" "$PLUGIN/tests/recurrence-test.py"
+        step "lessons across runs" "$FPL_PY" "$PLUGIN/tests/memory-test.py" ;;
     esac
     ;;
   --full)
@@ -173,6 +176,7 @@ case "${1:---full}" in
     step "execution attestation (executed)" bash "$PLUGIN/tests/attest-test.sh"
     step "documented claims match the code" "$FPL_PY" "$PLUGIN/tests/doc-claims-test.py"
     step "lessons across runs (executed)" "$FPL_PY" "$PLUGIN/tests/memory-test.py"
+    step "recurrence gate (executed)" "$FPL_PY" "$PLUGIN/tests/recurrence-test.py"
     step "hybrid recall pipeline (executed)" "$FPL_PY" "$PLUGIN/tests/recall-test.py"
     step "embedder quarantine (executed)" "$FPL_PY" "$PLUGIN/tests/embedder-test.py"
     step "graph metrics aggregator (executed)" "$FPL_PY" "$PLUGIN/tests/metrics-test.py"

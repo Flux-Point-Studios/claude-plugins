@@ -25,7 +25,12 @@ does.
   row and this writes it — it executes nothing);
   `compile-graph.py`, `record-run.py` (graph);
   `exec-attest.sh`, `attest.py` (hook-minted exit codes for declared
-  gates); `memory.py` (lessons a sweep leaves for the next one);
+  gates); `memory.py` (lessons a sweep leaves for the next one, and the
+  arrival count that survives supersession);
+  `recurrence-guard.py` (a lesson learned twice is a missing gate: past two
+  arrivals an identity stops being answerable by restating it and demands a
+  command from `.fluxpoint-recurrence.json` whose real exit code is the
+  lesson's verdict, executed by the harness and reported at session start);
   `proof-guard.py` (proof-strength ratchet); `spec-guard.py` (statement
   ratchet — what is being proved, not just how); `cex.py` (counterexample
   ledger: a prover's shrunk failing input, pinned to a regression);

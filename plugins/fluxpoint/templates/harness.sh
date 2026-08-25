@@ -291,6 +291,17 @@ full() {
     pair_base="${FPL_PAIR_AGAINST:-${FPL_DIFF_BASE:-}}"
     "$FPL_PY" "$FPL_GATE" --check ${pair_base:+--against "$pair_base"}
   fi
+  # Recurrence gate. Every check above judges the tree; this one judges what
+  # the repo keeps re-learning. A lesson filed a second time is not a
+  # duplicate to collapse, it is a missing gate — so past the threshold the
+  # item stops being satisfiable by another lesson and demands a command
+  # whose exit code is its verdict, executed here rather than reported.
+  # Armed by the lesson store itself, so it cannot be dodged by deleting the
+  # manifest, and dormant in every repo that has filed none.
+  if need_gate recurrence-guard.py .fluxpoint-recurrence.json \
+       .claude/fluxpoint/memory.jsonl; then
+    "$FPL_PY" "$FPL_GATE" --check
+  fi
 }
 
 case "$mode" in

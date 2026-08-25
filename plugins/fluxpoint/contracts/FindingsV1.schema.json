@@ -13,7 +13,11 @@
           "line": { "type": "integer" },
           "claim": { "type": "string", "minLength": 20 },
           "failure_path": { "type": "string", "minLength": 20 },
-          "severity": { "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW"] }
+          "severity": { "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW"] },
+          "defectClass": {
+            "type": "string",
+            "description": "The defect's SHAPE, not its location — the words a later finding of the same kind in another file would also use. Optional, and only meaningful when the node declares memory.classBy. file, line and claim all describe where a defect is or how it was worded, so one shape recurring in three places reads as three unrelated lessons; this is the field that makes it one."
+          }
         }
       }
     }

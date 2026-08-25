@@ -458,8 +458,26 @@ The compiler rejects: a `memory` block declaring neither side; `seed`
 without `repeat` (the seed feeds a sweep's seen-list); `emit` without a
 verification tier (filing unjudged output would promote a well-formed guess
 to institutional knowledge) or without `verifyOver`, or on a contract whose
-items carry no `claim`; and `memory.key` alongside `repeat.dedupeBy`, since
-two spellings of one identity is how they drift apart.
+items carry no `claim`; `memory.key` alongside `repeat.dedupeBy`, since two
+spellings of one identity is how they drift apart; and `memory.classBy` that
+is not a non-empty list of real item fields, or that sits on a node emitting
+nothing.
+
+**A lesson learned twice is not a lesson. It is a missing gate.** Every
+filed row carries `arrivals`, the distinct runs that have filed that
+identity, and it is carried onto the superseding row rather than reset by
+it: latest-state-wins is right for the claim and was silently wrong for the
+count, so a thing learned a third time left a store that looked exactly as
+it had the first time. `memory.classBy` declares a second, coarser identity
+— the defect's SHAPE — because `file`, `line` and `claim` between them
+describe only where a defect is and how it was worded, so one shape found in
+three places files three lessons and no join over those fields recovers it.
+The class is declared by the finder and never inferred; a class guessed from
+claim similarity collapses unrelated lessons, and a gate that fires on
+everything is one people learn to skim. At two arrivals `recurrence-guard.py`
+stops accepting a restated claim as an answer and demands a command in
+`.fluxpoint-recurrence.json` whose real exit code is the lesson's verdict,
+run by `harness.sh --full` and reported at session start until it passes.
 
 **A seed is advisory and never suppressive.** It reaches the finder's
 prompt; it never enters the dedup set. Seeding the dedup set would silently

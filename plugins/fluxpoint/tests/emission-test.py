@@ -227,6 +227,11 @@ probe("memory", "seed", MEMF_BASE,
 # — which is the effect, and why the field is not decorative.
 probe("memory", "key", MEMF_BASE,
       lambda ir: ir["nodes"][N]["memory"].update(key=["file"]))
+# classBy is the coarse identity the recurrence counter runs on, and it has
+# to reach the filed row: a class declared in the IR and dropped by the sink
+# would leave every recurrence looking like a first arrival.
+probe("memory", "classBy", MEMF_BASE,
+      lambda ir: ir["nodes"][N]["memory"].update(classBy=["file"]))
 # priors rides the seed tag's killed lessons into the refuter prompts, so
 # it is probed on a base that already seeds — otherwise the probe would be
 # registering seed's own emission change, and priors could go inert.
@@ -366,7 +371,7 @@ probed = {
     },
     "repeat": {"untilDryRounds", "maxRounds", "dedupeBy"},
     "reduce": {"from", "over", "dedupeBy", "sortBy", "order", "topK"},
-    "memory": {"seed", "emit", "key", "priors"},
+    "memory": {"seed", "emit", "key", "priors", "classBy"},
     "release": {"instructions", "proofContract", "whyNotAgent"},
     "wake": {"check", "everyMinutes", "deadline"},
     "budget": {"maxNodes", "verifyFloorTokens", "nodeFloorTokens"},

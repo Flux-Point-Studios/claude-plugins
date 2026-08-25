@@ -39,7 +39,7 @@ tags, not arguments.
       "id": "curate",
       "phase": "Consolidate",
       "role": "curator",
-      "prompt": "Curate this repo's lesson store for the tag defect-sweep. Read .claude/fluxpoint/memory.jsonl yourself — append-only JSONL of LessonV1 rows, identity is tag|dedupeKey, the latest row per identity wins — and compare each surviving lesson against the CURRENT code it describes. Propose consolidations as findings, one per item: (a) near-duplicates — two identities describing one defect — restated as a single canonical claim carrying the file and the strongest evidence from both; (b) claims whose code has changed enough that the lesson is misleading as written, restated against what the code does today; (c) killed lessons whose objection no longer holds because the guard or type that killed them moved, restated as live claims. Each finding needs file (the file the lesson is actually about), claim (the canonical statement, standing alone, >= 20 chars) and a concrete failure_path. Do NOT propose deletions — the store is append-only and a replaced identity stays readable. Already proposed this run: {{seen}}. An empty findings list is a valid answer and ends the pass.",
+      "prompt": "Curate this repo's lesson store for the tag defect-sweep. Read .claude/fluxpoint/memory.jsonl yourself — append-only JSONL of LessonV1 rows, identity is tag|dedupeKey, the latest row per identity wins, and each row carries arrivals/classArrivals counting the distinct runs that have filed it — and compare each surviving lesson against the CURRENT code it describes. Propose consolidations as findings, one per item: (a) near-duplicates — two identities describing one defect — restated as a single canonical claim carrying the file and the strongest evidence from both; (b) claims whose code has changed enough that the lesson is misleading as written, restated against what the code does today; (c) killed lessons whose objection no longer holds because the guard or type that killed them moved, restated as live claims. Give every finding a defectClass naming the SHAPE the lesson is an instance of, and carry the EXISTING class forward when the rows you are merging already have one — merging two identities into one canonical claim is exactly how a recurrence gets laundered into a single first-time lesson, and the class is what survives that. Each finding needs file (the file the lesson is actually about), claim (the canonical statement, standing alone, >= 20 chars) and a concrete failure_path. Do NOT propose deletions — the store is append-only and a replaced identity stays readable. Already proposed this run: {{seen}}. An empty findings list is a valid answer and ends the pass.",
       "contract": "FindingsV1",
       "verify": "skeptic:1",
       "verifyOver": "findings",
@@ -50,7 +50,12 @@ tags, not arguments.
         "maxRounds": 3,
         "dedupeBy": ["file", "claim"]
       },
-      "memory": { "seed": "defect-sweep", "emit": "defect-sweep", "priors": true }
+      "memory": {
+        "seed": "defect-sweep",
+        "emit": "defect-sweep",
+        "priors": true,
+        "classBy": ["defectClass"]
+      }
     }
   ]
 }
@@ -75,6 +80,14 @@ tags, not arguments.
   append-only, with its history intact. Nothing here deletes, and recall's
   latest-wins collapse plus near-duplicate dedupe do the rest at read
   time.
+- What consolidation must NOT collapse is the count. Merging two identities
+  into one canonical claim is the single move that can turn a recurrence
+  back into a first-time lesson, and it is why `classBy` is declared here as
+  well as on the sweep: the restated row starts its own instance count and
+  inherits the class one, so the recurrence gate still sees it. A class that
+  has arrived twice is not answerable by a better-worded claim — it is
+  answerable only by a command in `.fluxpoint-recurrence.json` whose exit
+  code is the lesson's verdict.
 
 ## Failure policy
 - Dry rule: one pass with nothing new to propose ends the campaign — a
