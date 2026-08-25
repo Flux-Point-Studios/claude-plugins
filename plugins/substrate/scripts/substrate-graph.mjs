@@ -149,8 +149,17 @@ function loadManifests(root, excludeDirs, problems) {
 // ---- deliverables ledger (deliverables.json beside — or without — substrate.json) ----
 // Task boards and scratchpads that hold "built but not yet sent" state do not
 // survive an assistant's context compaction; a file in the repo does. Any entry
-// with a builtAt and no sentAt is an open obligation, surfaced at every session
-// start until someone records the send.
+// with a builtAt and no recorded ending is an open obligation, surfaced at every
+// session start until someone records how it ended.
+//
+// An obligation ends in more than one way. When sentAt was the only exit, the
+// only way to quiet a deliverable that was superseded, withdrawn, or delivered
+// in a meeting was to write a send that never happened — a register that had to
+// lie to stay quiet, and whose alarms then read as noise. So a non-send ending
+// closes on closedAt plus a reason from a fixed vocabulary plus a sentence
+// saying why, and sentAt keeps meaning exactly one thing: an email left.
+const CLOSE_REASONS = ["superseded", "withdrawn", "answered-elsewhere"];
+
 function fmtAge(ms) {
   const h = Math.round(ms / 3600000);
   if (h < 1) return "under an hour";
@@ -182,7 +191,20 @@ function deliverableAlarms(root, excludeDirs, problems) {
         problems.push(`invalid deliverable in ${clean(entry.name)}: each needs a string "id"`);
         continue;
       }
-      if (isStr(d.sentAt) && d.sentAt.trim()) continue; // sent — the obligation is closed
+      const sent = isStr(d.sentAt) && d.sentAt.trim();
+      const closed = isStr(d.closedAt) && d.closedAt.trim();
+      if (sent && closed) {
+        problems.push(`deliverable ${clean(d.id)} in ${clean(entry.name)}: has both "sentAt" and "closedAt" — a send and a non-send closure cannot both be true`);
+      }
+      if (sent) continue; // sent — the obligation is closed
+      if (closed) {
+        const reason = isStr(d.closedReason) ? d.closedReason.trim() : "";
+        const because = isStr(d.closedBecause) ? d.closedBecause.trim() : "";
+        // A half-written closure keeps alarming: going quiet on a typo is the
+        // failure this field exists to end.
+        if (CLOSE_REASONS.includes(reason) && because) continue;
+        problems.push(`deliverable ${clean(d.id)} in ${clean(entry.name)}: "closedAt" needs a "closedReason" of ${CLOSE_REASONS.join("/")} and a "closedBecause" saying why`);
+      }
       const built = isStr(d.builtAt) ? Date.parse(d.builtAt) : NaN;
       if (Number.isNaN(built)) {
         problems.push(`invalid deliverable ${clean(d.id)} in ${clean(entry.name)}: "builtAt" must be a parseable date`);
@@ -191,7 +213,10 @@ function deliverableAlarms(root, excludeDirs, problems) {
       // One-line alarms are injected session context — cap every field hard.
       const who = isStr(d.recipient) && d.recipient.trim() ? clean(d.recipient, 80) : "unnamed recipient";
       const what = isStr(d.artifact) && d.artifact.trim() ? ` (${clean(d.artifact, 120)})` : "";
-      alarms.push(`UNSENT deliverable: ${clean(entry.name, 80)}/${clean(d.id, 80)} for ${who} — built ${fmtAge(Date.now() - built)} ago${what}`);
+      // A built artifact whose claims went stale is worse than an unbuilt one:
+      // it reads as ready. The warning rides the alarm so it reaches the reader.
+      const warn = isStr(d.warning) && d.warning.trim() ? ` ⚠ DO NOT SEND COLD: ${clean(d.warning, 160)}` : "";
+      alarms.push(`UNSENT deliverable: ${clean(entry.name, 80)}/${clean(d.id, 80)} for ${who} — built ${fmtAge(Date.now() - built)} ago${what}${warn}`);
     }
   }
   return alarms;

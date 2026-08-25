@@ -27,6 +27,13 @@ Two disciplines carried over from the ledger, both load-bearing:
   * Identity is the thing, not the event: `tag|dedupeKey`, latest state
     wins. Re-finding a lesson appends a new row rather than editing the old
     one, so the history of what was believed when stays readable.
+  * Latest-state-wins applies to the CLAIM and never to the count. Every row
+    carries `arrivals` — the distinct runs that have filed this identity —
+    and, where the emitting node declared one, `classArrivals` over a coarser
+    class key. Without those, a lesson found a third time left a store that
+    looked exactly as it had the first time, which is how a defect recurs
+    while every individual fix for it was correct. recurrence-guard.py reads
+    them; this file only counts.
 
 What this deliberately does NOT do: suppress. Seeds are advisory — they
 tell a finder what earlier rounds surfaced so it can spend itself on new
@@ -39,6 +46,7 @@ import argparse
 import datetime
 import json
 import os
+import re
 import sys
 
 MEMORY = os.path.join(".claude", "fluxpoint", "memory.jsonl")
@@ -77,6 +85,60 @@ def current(root, tag=None):
             continue
         state[f"{r.get('tag')}|{r.get('dedupeKey')}"] = r
     return list(state.values())
+
+
+def norm_class(v):
+    """One spelling per class. Case and punctuation only — never meaning.
+
+    Multi-key classes arrive with their components '|'-joined by the sink,
+    and the component boundary IS meaning: ('x','y-z') and ('x-y','z') are
+    different classes. Each component normalizes alone and the boundary
+    survives as '.', which component normalization can never produce.
+    '.' in raw input is treated as the same boundary, keeping the function
+    idempotent — its own output round-trips unchanged."""
+    parts = re.split(r"[|.]", str(v or "").lower())
+    segs = [re.sub(r"[^a-z0-9]+", "-", p).strip("-") for p in parts]
+    return ".".join(segs).strip(".")
+
+
+def absorb(inst, cls, row):
+    """Fold one row into the arrival index. Returns its (instance, class) entry.
+
+    An arrival is a RUN, not a row: a run that files the same item twice
+    learned it once. Counted across the whole append-only file, so
+    supersession cannot lower it — the newest row wins on CONTENT and
+    inherits the count, which is the join the store was missing. Content
+    latest-wins was never the defect; forgetting how many times the content
+    had to be written was.
+    """
+    rid = (row.get("provenance") or {}).get("runId")
+    tag = row.get("tag")
+    ident = f"{tag}|{row.get('dedupeKey')}"
+    ie = inst.setdefault(ident, {"runs": [], "first": None, "claim": ""})
+    if rid and rid not in ie["runs"]:
+        ie["runs"].append(rid)
+    if not ie["first"]:
+        ie["first"] = row.get("establishedWhen")
+    ie["claim"] = row.get("claim") or ie["claim"]
+    ck = norm_class(row.get("classKey"))
+    if not ck:
+        return ie, None
+    ce = cls.setdefault(f"{tag}|{ck}", {"runs": [], "identities": [],
+                                        "claim": ""})
+    if rid and rid not in ce["runs"]:
+        ce["runs"].append(rid)
+    if ident not in ce["identities"]:
+        ce["identities"].append(ident)
+    ce["claim"] = row.get("claim") or ce["claim"]
+    return ie, ce
+
+
+def arrival_index(rows):
+    """({tag|dedupeKey: entry}, {tag|classKey: entry}) over rows, oldest first."""
+    inst, cls = {}, {}
+    for r in rows:
+        absorb(inst, cls, r)
+    return inst, cls
 
 
 def validate(row):
@@ -119,7 +181,9 @@ def append_from_summary(root, summary, run_id, state_dir=None):
             f"in {runs_dir} — provenance that points at nothing is how a "
             f"fabricated summary would plant durable memory"]
     when = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    known = {f"{r.get('tag')}|{r.get('dedupeKey')}": r for r in read(root)}
+    history = read(root)
+    known = {f"{r.get('tag')}|{r.get('dedupeKey')}": r for r in history}
+    inst, cls = arrival_index(history)
     written, findings = [], []
     p = path_for(root)
     os.makedirs(os.path.dirname(p), exist_ok=True)
@@ -139,6 +203,9 @@ def append_from_summary(root, summary, run_id, state_dir=None):
                 "provenance": {"runId": run_id},
                 "establishedWhen": when,
             }
+            ck = norm_class(r.get("classKey"))
+            if ck:
+                row["classKey"] = ck
             bad = validate(row)
             if bad:
                 findings.append(
@@ -150,6 +217,15 @@ def append_from_summary(root, summary, run_id, state_dir=None):
                 # Nothing is rewritten: the older row keeps its place in the
                 # file and the new one names what it replaced.
                 row["supersededBy"] = run_id
+            # The count the store used to throw away. Latest-state-wins is
+            # right for the CLAIM and wrong for the fact that it had to be
+            # made again, so the new row carries the arrival history forward
+            # instead of resetting it. A recurrence gate reads this.
+            ie, ce = absorb(inst, cls, row)
+            row["arrivals"] = len(ie["runs"])
+            row["firstSeen"] = ie["first"]
+            if ce is not None:
+                row["classArrivals"] = len(ce["runs"])
             fh.write(json.dumps(row) + "\n")
             written.append(row)
             known[f"{row['tag']}|{row['dedupeKey']}"] = row
@@ -212,7 +288,9 @@ def main():
             killed = sum(1 for r in rs if r.get("status") == "killed")
             print(f"  [{tag}] {len(rs)} lesson(s), {killed} killed")
             for r in rs[:10]:
-                print(f"      ({r.get('status')}) {str(r.get('claim'))[:90]}")
+                n = max(r.get("arrivals") or 1, r.get("classArrivals") or 1)
+                seen = f" x{n}" if n > 1 else ""
+                print(f"      ({r.get('status')}{seen}) {str(r.get('claim'))[:90]}")
                 if r.get("objection"):
                     print(f"          objection: {str(r['objection'])[:80]}")
             if len(rs) > 10:

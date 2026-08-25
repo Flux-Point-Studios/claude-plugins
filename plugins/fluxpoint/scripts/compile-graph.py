@@ -63,7 +63,7 @@ REPEAT_FIELDS = {"untilDryRounds", "maxRounds", "dedupeBy"}
 # Use models for ambiguity and code for plumbing — a synthesis node that
 # receives every raw fan-out item pays a reasoning model to do a Set's job.
 REDUCE_FIELDS = {"from", "over", "dedupeBy", "sortBy", "order", "topK"}
-MEMORY_FIELDS = {"seed", "emit", "key", "priors"}
+MEMORY_FIELDS = {"seed", "emit", "key", "priors", "classBy"}
 BUDGET_FIELDS = {"maxNodes", "verifyFloorTokens", "nodeFloorTokens"}
 ROLE_FIELDS = {"agentType", "effort", "model"}
 DEFAULTS_FIELDS = {"effort", "model"}
@@ -861,6 +861,39 @@ def validate(ir, contracts, gates=None, agents=None):
                                 f.append(
                                     f"{where}: memory.key '{k}' is not a field of "
                                     f"{c}.{n['verifyOver']} items")
+                # The class: a second, coarser identity carried beside the
+                # instance key. The instance key answers "is this the same
+                # finding"; every field it can be built from names a defect's
+                # LOCATION or its WORDING, so one defect shape recurring in
+                # three places produces three keys and reads as three lessons.
+                # The class answers "is this the same SHAPE", and it is
+                # declared rather than inferred: a class guessed from claim
+                # similarity would collapse unrelated lessons, and a gate that
+                # fires on everything is one people learn to skim.
+                cls = mem.get("classBy")
+                if cls is not None:
+                    if not isinstance(cls, list) or not cls or not all(
+                            isinstance(k, str) and k for k in cls):
+                        f.append(
+                            f"{where}: memory.classBy must be a non-empty list "
+                            f"of field names — the class is declared by the "
+                            f"finder, never inferred from the claim")
+                    elif not mem.get("emit"):
+                        f.append(
+                            f"{where}: memory.classBy without memory.emit — a "
+                            f"class on a node that files nothing groups nothing")
+                    elif c in contracts and n.get("verifyOver"):
+                        item_props = (
+                            contracts[c].get("properties", {})
+                            .get(n["verifyOver"], {})
+                            .get("items", {})
+                            .get("properties", {})
+                        )
+                        for k in cls:
+                            if item_props and k not in item_props:
+                                f.append(
+                                    f"{where}: memory.classBy '{k}' is not a "
+                                    f"field of {c}.{n['verifyOver']} items")
                 pri = mem.get("priors")
                 if pri is not None:
                     if pri is not True:
@@ -1222,11 +1255,14 @@ def lesson_sink(n, need):
     keyexpr = " + '|' + ".join(f"String(it[{js_str(k)}])" for k in keys)
     status = (f"(it.kills || 0) >= {need} ? 'killed' : 'surviving'"
               if need > 0 else "'surviving'")
+    cls = mem.get("classBy")
+    clsexpr = (", classKey: " + " + '|' + ".join(
+        f"String(it[{js_str(k)}] || '')" for k in cls)) if cls else ""
     return (
         f"it => MEMORY.push({{ tag: {js_str(mem['emit'])}, dedupeKey: {keyexpr}, "
         f"claim: String(it.claim || ''), status: {status}, "
         f"objection: (it.objections || [])[0] || '', kills: it.kills || 0, "
-        f"node: {js_str(n['id'])} }})"
+        f"node: {js_str(n['id'])}{clsexpr} }})"
     )
 
 

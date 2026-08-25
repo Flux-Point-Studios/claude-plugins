@@ -46,7 +46,23 @@
     "establishedWhen": { "type": "string" },
     "supersededBy": {
       "type": "string",
-      "description": "The runId whose row replaced this one. Supersession appends; nothing here is ever rewritten."
+      "description": "Present when an earlier row already held this identity. Supersession appends; nothing here is ever rewritten. Carries the filing run's own id, so it reads as a flag rather than a count — `arrivals` is the number."
+    },
+    "classKey": {
+      "type": "string",
+      "description": "Coarse identity: the defect's SHAPE rather than its location. Declared by the emitting node as memory.classBy and never inferred, because a class guessed from claim similarity collapses unrelated lessons and a gate that fires on everything gets skimmed. Absent when the node declared none."
+    },
+    "arrivals": {
+      "type": "integer",
+      "description": "Distinct runs that have filed this tag|dedupeKey, this one included. Carried forward onto every new row: the claim is latest-state-wins, the count is not."
+    },
+    "classArrivals": {
+      "type": "integer",
+      "description": "Distinct runs that have filed anything in this tag|classKey. This is the number that survives a consolidation restating two identities as one, and the one a recurrence gate acts on."
+    },
+    "firstSeen": {
+      "type": "string",
+      "description": "establishedWhen of the oldest row under this identity, carried forward. How long the thing has been known, which supersession used to erase."
     }
   }
 }

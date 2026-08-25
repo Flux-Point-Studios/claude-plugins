@@ -35,7 +35,15 @@ nothing.
    out any recorded run whose `attestation.tally` carries `mismatch` — a
    node claimed a gate exit the hook-minted log contradicts, which makes
    that run's verdict untrustworthy regardless of what it reported.
-3b. If `runs/` holds more than one artifact, add
+3b. If `.claude/fluxpoint/memory.jsonl` exists, add
+   `bash "${CLAUDE_PLUGIN_ROOT}/scripts/py.sh" recurrence-guard.py --scan`:
+   what this repo keeps re-learning, and whether each recurrence has a
+   command holding it down. Report anything past the threshold as work,
+   not as knowledge — the answer to a lesson filed twice is a gate in
+   `.fluxpoint-recurrence.json`, and filing it a third time is the
+   failure rather than the remedy. Say so plainly if the recommended next
+   action is writing that check.
+3c. If `runs/` holds more than one artifact, add
    `bash "${CLAUDE_PLUGIN_ROOT}/scripts/py.sh" metrics.py` — the cross-run
    trend block: death and skip rates, agent calls spawned vs planned,
    sweep endings (dry rule / ceiling / budget-truncated / halted — only
