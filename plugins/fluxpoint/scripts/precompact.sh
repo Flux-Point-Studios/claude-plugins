@@ -39,9 +39,8 @@ input="$(cat)"
 proj="${CLAUDE_PROJECT_DIR:-$(printf '%s' "$input" | fpl_json_get cwd)}"
 cd "${proj:-.}" 2>/dev/null || exit 0
 
-sid="$(printf '%s' "$input" | fpl_json_get session_id)"
-sid="${sid:-nosession}"
-why="$(printf '%s' "$input" | fpl_json_get compact_reason)"
+sid="$(fpl_sid "$(printf '%s' "$input" | fpl_json_get session_id)")"
+why="$(printf '%s' "$input" | fpl_json_get trigger)"
 sd="$(fpl_state_dir)"
 mkdir -p "$sd" 2>/dev/null || exit 0
 
@@ -67,13 +66,21 @@ if [ -f "$cwin" ]; then
   [ "$now_mem" = "$(sed -n 1p "$cwin" 2>/dev/null)" ] \
     && [ "$now_aux" = "$(sed -n 2p "$cwin" 2>/dev/null)" ] && flushed="no"
 fi
+# With no observable surface at all — no work file, no memory store, no task
+# board — both hashes are constants and no action could ever clear a block.
+# A gate nobody can satisfy is not a gate; it stays open and says nothing.
+[ "$now_mem" = "nostate" ] && [ "$now_aux" = "noaux" ] && flushed="unknown"
 [ -f "$sd/$sid.nodecision" ] && flushed="declared"
 
 state="$(fpl_state_file || true)"
 blockmark="$sd/$sid.cblock"
 if [ "$flushed" = "no" ] && [ "$worked" != "no" ] \
    && [ ! -f "$blockmark" ] && [ "${FPL_COMPACT_BLOCK:-1}" != "0" ]; then
-  date -u +%FT%TZ >"$blockmark"
+  # A block that cannot be RECORDED must not be TAKEN: with this write
+  # failing (read-only state dir, full disk, a squatting path), an
+  # unconditional exit 2 would block every attempt forever — the wedge the
+  # bound exists to rule out. Fail open instead.
+  date -u +%FT%TZ >"$blockmark" 2>/dev/null || exit 0
   {
     echo "COMPACTION BLOCKED — once. This gate never blocks twice in a row: the next attempt proceeds no matter what."
     echo "Since this compaction window began, no durable surface changed: not ${state:-the work file}'s Decisions or Notes, not the memory store, not the task board. Whatever this window learned — decisions made, approaches ruled out, findings — exists only in the transcript about to be summarized."
@@ -83,11 +90,13 @@ if [ "$flushed" = "no" ] && [ "$worked" != "no" ] \
 fi
 
 blocked="no"; [ -f "$blockmark" ] && blocked="yes"
-printf '{"when":"%s","reason":"%s","codeChanged":"%s","flushed":"%s","blocked":"%s"}\n' \
-  "$(date -u +%FT%TZ)" "${why:-unknown}" "$worked" "$flushed" "$blocked" \
-  >"$sd/$sid.compacted"
-printf '%s\n%s\n' "$now_mem" "$now_aux" >"$cwin"
-rm -f "$blockmark"
+fpl_json_obj when "$(date -u +%FT%TZ)" reason "${why:-unknown}" \
+  codeChanged "$worked" flushed "$flushed" blocked "$blocked" \
+  >"$sd/$sid.compacted" 2>/dev/null
+printf '%s\n%s\n' "$now_mem" "$now_aux" >"$cwin" 2>/dev/null
+# Declared silence and a spent block both belong to the window that just
+# ended; the next window makes its own case.
+rm -f "$blockmark" "$sd/$sid.nodecision"
 
 echo "Flux Point: context is being compacted (${why:-unknown})."
 echo "- Durable state survives this intact and does not need summarizing: ${state:-the work file}, and .claude/fluxpoint/ (evidence, decisions, lessons, counterexamples, the inbox)."
