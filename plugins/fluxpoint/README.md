@@ -175,6 +175,17 @@ that is the real check, and `--list` names every pair that lacks one rather
 than letting a half-checked relation read as covered. Only the consuming
 repo can write parity vectors; the plugin supplies the slot.
 
+A one-sided edit is often legitimate -- a paired file gets touched for a
+reason the relation has nothing to do with -- and co-change had no way to
+record that somebody checked. It does now: `.fluxpoint-pair-acks.json`, also
+repo-owned, carries `{pair, source_sha, why}`. The ack is **content-addressed**
+over the current bytes of the source files that tripped the alarm, so the next
+edit to them re-opens it with nobody having to remember; a `why` under 60
+characters is refused, because the ack's whole content is the claim that a
+human read the mirror and found it unaffected. An ack that discharged nothing
+is reported as spent rather than left to read as coverage. It clears
+**co-change only** -- a failing parity is a broken relation and stays fatal.
+
 ## Blocked is a state
 
 A node no agent can run — 2-of-3 signing, a third party's withdrawal, a

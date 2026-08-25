@@ -25,6 +25,12 @@ checked two ways:
              becomes an exit code. This is the real check; co-change is
              the smoke alarm.
 
+An acknowledgement clears CO-CHANGE, never parity. `.fluxpoint-pair-acks.json`
+holds `{pair, source_sha, why}`; `source_sha` addresses the CURRENT bytes of the
+source files the alarm named, so editing them again makes the ack stale and the
+alarm re-opens on its own. That is the difference between recording that someone
+read the mirror and switching the alarm off.
+
 Only the consuming repo can write the parity vectors — they are specific
 to the chain, the contracts, and the builder. This supplies the slot.
 
@@ -35,6 +41,7 @@ to the chain, the contracts, and the builder. This supplies the slot.
 Dormant by design: no manifest means no declared relations, exit 0.
 """
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -42,6 +49,9 @@ import subprocess
 import sys
 
 MANIFEST = ".fluxpoint-pairs.json"
+ACKS = ".fluxpoint-pair-acks.json"
+ACK_FIELDS = {"pair", "source_sha", "why"}
+ACK_WHY_FLOOR = 60
 PAIR_FIELDS = {"id", "source", "mirror", "parity", "symmetric", "why"}
 
 
@@ -142,6 +152,73 @@ def matches(patterns, files):
     return sorted(set(hit))
 
 
+
+def source_sha(root, paths):
+    """Content address over the source files a co-change alarm named.
+
+    The whole value of an acknowledgement is that it CANNOT become a blanket
+    exemption. Keying it on the bytes that tripped the alarm means the next edit
+    to those same files produces a different address, the ack goes stale, and the
+    alarm re-opens on its own -- the pattern a consuming repo already applies to
+    its provenance census and hash surface, for the same reason.
+
+    The path is hashed with its own length in front of it, so no arrangement of
+    names and contents can collide with a different arrangement.
+    """
+    h = hashlib.sha256()
+    for rel in sorted(paths):
+        b = rel.encode("utf-8")
+        h.update(str(len(b)).encode("ascii") + b":" + b)
+        try:
+            with open(os.path.join(root, rel), "rb") as fh:
+                body = fh.read()
+        except FileNotFoundError:
+            body = b"<deleted>"
+        h.update(str(len(body)).encode("ascii") + b":")
+        h.update(body)
+    return h.hexdigest()
+
+
+def load_acks(root, pair_ids):
+    """Parse and validate the ack file. A malformed ack is a hard error.
+
+    An ack silences a check, so a half-declared one is strictly worse than none:
+    it is a gate somebody believes is armed. Naming a pair that does not exist is
+    refused for the same reason -- an ack matching nothing reads as coverage of
+    something.
+    """
+    path = os.path.join(root, ACKS)
+    if not os.path.exists(path):
+        return []
+    with open(path, encoding="utf-8") as fh:
+        try:
+            data = json.load(fh)
+        except json.JSONDecodeError as e:
+            raise SystemExit("pair-guard: %s is not valid JSON: %s" % (ACKS, e))
+    if not isinstance(data, list):
+        raise SystemExit("pair-guard: %s must be a list of acknowledgements" % ACKS)
+    for i, a in enumerate(data):
+        where = "%s[%d]" % (ACKS, i)
+        if not isinstance(a, dict):
+            raise SystemExit("pair-guard: %s must be an object" % where)
+        unknown = sorted(set(a) - ACK_FIELDS)
+        if unknown:
+            raise SystemExit("pair-guard: %s has unknown field(s): %s" % (where, unknown))
+        for f in ("pair", "source_sha", "why"):
+            if not isinstance(a.get(f), str) or not a[f].strip():
+                raise SystemExit("pair-guard: %s needs a non-empty %r" % (where, f))
+        if a["pair"] not in pair_ids:
+            raise SystemExit(
+                "pair-guard: %s acknowledges %r, which is not a declared pair. "
+                "An ack that matches nothing reads as coverage." % (where, a["pair"]))
+        if len(a["why"].strip()) < ACK_WHY_FLOOR:
+            raise SystemExit(
+                "pair-guard: %s needs a real reason (%d+ chars). The ack records "
+                "that a human READ the mirror and found it unaffected; a reason too "
+                "short to say why is not that record." % (where, ACK_WHY_FLOOR))
+    return data
+
+
 def check(root, against, run_parity, report_only):
     pairs = load_manifest(root)
     if pairs is None:
@@ -151,17 +228,40 @@ def check(root, against, run_parity, report_only):
         print(f"pair-guard: {MANIFEST} declares no pairs")
         return 0
 
+    acks = load_acks(root, {p["id"] for p in pairs})
     files = changed_files(root, against)
     failures, checked = [], 0
+    honoured = set()
 
     for p in pairs:
         src = matches(as_list(p["source"]), files)
         mir = matches(as_list(p["mirror"]), files)
         if src and not mir:
-            failures.append(
-                f"{p['id']}: {', '.join(src[:3])} changed, but nothing matching "
-                f"{as_list(p['mirror'])} did"
-                + (f" — {p['why']}" if p.get("why") else ""))
+            # An ack discharges CO-CHANGE and nothing else. It is the record that
+            # a human opened the mirror and found it genuinely unaffected -- the
+            # one answer this alarm asks for and had no slot for. It is keyed on
+            # the CURRENT bytes of the source files named here, so the next edit
+            # to them re-opens the alarm without anybody remembering to.
+            now = source_sha(root, src)
+            ack = next((a for a in acks
+                        if a["pair"] == p["id"] and a["source_sha"] == now), None)
+            if ack:
+                honoured.add(id(ack))
+                print(f"  {p['id']}: co-change acknowledged — {ack['why'].strip()}")
+            else:
+                stale = [a for a in acks if a["pair"] == p["id"]]
+                failures.append(
+                    f"{p['id']}: {', '.join(src[:3])} changed, but nothing matching "
+                    f"{as_list(p['mirror'])} did"
+                    + (f" — {p['why']}" if p.get("why") else "")
+                    + (f"\n      An ack exists for this pair but addresses different "
+                       f"bytes (source is now {now[:12]}...): the source was edited "
+                       f"again after it was written, so it no longer says anything "
+                       f"about what is there. Re-read the mirror and re-ack."
+                       if stale else
+                       f"\n      If the mirror genuinely needs no change, record that "
+                       f"in {ACKS}: {{\"pair\": \"{p['id']}\", \"source_sha\": "
+                       f"\"{now}\", \"why\": \"...\"}}"))
         elif mir and not src and p.get("symmetric"):
             failures.append(
                 f"{p['id']}: {', '.join(mir[:3])} changed, but nothing matching "
@@ -194,6 +294,13 @@ def check(root, against, run_parity, report_only):
                 failures.append(
                     f"{p['id']}: parity command failed (exit {r.returncode}): {cmd}"
                     + ("\n      " + "\n      ".join(tail) if tail else ""))
+
+    # An ack that discharged nothing is not harmless: it reads, to the next
+    # person, as a relation somebody vouched for. Say it is spent.
+    for a in acks:
+        if id(a) not in honoured:
+            print(f"  {a['pair']}: ack on file is unused — either the mirror moved "
+                  f"with the source this time, or the source changed since. Drop it.")
 
     if failures and not report_only:
         print("\npair-guard: RED — a declared relation is broken or unverified\n",
