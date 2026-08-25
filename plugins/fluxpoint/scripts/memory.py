@@ -206,6 +206,16 @@ def append_from_summary(root, summary, run_id, state_dir=None):
             ck = norm_class(r.get("classKey"))
             if ck:
                 row["classKey"] = ck
+            elif "classKey" in r:
+                # The sink only emits the field when the node DECLARED a
+                # class, so an empty value means the finder never named the
+                # shape. The row still files — a lesson is not hostage to
+                # its class — but silently dropping the emptiness would
+                # re-open the recurrence blind spot one layer down.
+                findings.append(
+                    f"lesson from node '{r.get('node')}' carries a declared "
+                    f"class left empty — the finder never named the shape, "
+                    f"so recurrence of this defect kind cannot be counted")
             bad = validate(row)
             if bad:
                 findings.append(

@@ -330,6 +330,25 @@ def scan(root):
         if registered:
             print(f"      check: {registered['command']} "
                   f"(expect {registered.get('expectExit', 0)})")
+    # The blind spot itself, counted: instance keys name a defect's location
+    # or wording and almost never collide (the measured history produced
+    # three keys for one defect), so a classless lesson sits outside this
+    # gate entirely. Latest state per identity — history rows don't inflate
+    # the census.
+    live = {}
+    for r in rows:
+        live[f"{r.get('tag')}|{r.get('dedupeKey')}"] = r
+    by_tag = {}
+    for r in live.values():
+        t = by_tag.setdefault(r.get("tag"), [0, 0])
+        t[1] += 1
+        if not r.get("classKey"):
+            t[0] += 1
+    for tag, (classless, total) in sorted(by_tag.items()):
+        if classless:
+            print(f"  [{_clean(tag, 80)}] {classless} of {total} lesson(s) "
+                  f"carry no class — recurrence across them is invisible at "
+                  f"class grain; only their exact instance keys can recur")
     return 0
 
 

@@ -94,13 +94,24 @@ case("a class on a node that files nothing",
                  ir["nodes"][0]["memory"].update(classBy=["defectClass"])),
      "memory.classBy without memory.emit")
 
+# The absence of a class is a DECISION, not a default. The measured history
+# recurred under three distinct instance keys, so a node that files lessons
+# without deciding on a class is quietly outside the recurrence gate — the
+# same forgot-to-declare shape the gate exists to kill.
+case("a filing node that never decided on a class is refused",
+     lambda ir: ir["nodes"][0]["memory"].pop("classBy"),
+     "classBy decision")
+case("an explicit null declines the class on purpose",
+     lambda ir: ir["nodes"][0]["memory"].update(classBy=None),
+     None)
+
 js = cg.emit(copy.deepcopy(IR), CONTRACTS, {})
 report("the compiled sink files the class with the row",
        "classKey:" in js and 'it["defectClass"]' in js.replace("'", '"'),
        "classKey emitted" if "classKey:" in js else "absent")
 noclass = copy.deepcopy(IR)
-noclass["nodes"][0]["memory"].pop("classBy")
-report("and a node that declares none files none",
+noclass["nodes"][0]["memory"]["classBy"] = None
+report("and a node that declined one files none",
        "classKey:" not in cg.emit(noclass, CONTRACTS, {}), "clean")
 
 
@@ -214,6 +225,20 @@ with tempfile.TemporaryDirectory() as root:
     report("two classes are not merged into one",
            rows_of(root)[-1].get("classArrivals") == 1,
            f"classArrivals={rows_of(root)[-1].get('classArrivals')}")
+
+with tempfile.TemporaryDirectory() as root:
+    # The sink emits classKey: '' when the finder left the declared field
+    # empty. Dropping that silently would re-open the gap one layer down:
+    # class declared, never filled, recurrence invisible, nobody told.
+    row = lesson("a.py|1|x", "a claim long enough to be actionable")
+    row["classKey"] = ""
+    r = file_run(root, "wf-1", [row])
+    report("a declared class left empty is loud at file time",
+           "declared class" in r.stderr and "empty" in r.stderr,
+           r.stderr.strip().splitlines()[0][:60] if r.stderr.strip() else "silent")
+    filed = rows_of(root)
+    report("but the lesson still files, classless",
+           len(filed) == 1 and "classKey" not in filed[0], "filed without class")
 
 with tempfile.TemporaryDirectory() as root:
     # An arrival is a RUN for the class counter too: one run filing two
@@ -410,6 +435,31 @@ with tempfile.TemporaryDirectory() as root:
     r = guard(root, "--for-session")
     report("a corrupt store still cannot wedge a session start",
            r.returncode == 0, f"rc={r.returncode}: {r.stderr.strip()[:40]}")
+
+with tempfile.TemporaryDirectory() as root:
+    # The blind spot itself must be visible: instance keys almost never
+    # collide (the measured history produced three distinct keys for one
+    # defect), so classless lessons sit outside this gate entirely — and
+    # --scan is where a human learns how much of the store that is.
+    file_run(root, "wf-1", [
+        lesson("a.py|1|x", "a claim long enough to be actionable"),
+        lesson("b.py|2|y", "a second claim, long enough to act on"),
+        lesson("c.py|3|z", "a third claim, also long enough to act on",
+               "some-shape")])
+    r = guard(root, "--scan")
+    report("scan names the classless population and what it means",
+           "2 of 3" in r.stdout and "no class" in r.stdout
+           and "invisible" in r.stdout,
+           next((ln for ln in r.stdout.splitlines() if "no class" in ln),
+                "absent")[:70])
+
+with tempfile.TemporaryDirectory() as root:
+    file_run(root, "wf-1", [lesson("a.py|1|x",
+                                   "a claim long enough to be actionable",
+                                   "some-shape")])
+    r = guard(root, "--scan")
+    report("and stays silent when every lesson carries a class",
+           "no class" not in r.stdout, "silent")
 
 with tempfile.TemporaryDirectory() as root:
     # The store is a local jsonl anyone can write, and the session line is

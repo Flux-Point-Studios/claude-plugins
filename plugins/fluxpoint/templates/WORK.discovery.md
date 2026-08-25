@@ -87,6 +87,10 @@ Copy over `WORK.md`'s Campaign section to use it.
   stops being answerable by another lesson and demands a command whose exit
   code is its verdict. Keep classes few and reused; a class per finding
   counts nothing, and a class covering everything fires on everything.
+  The decision is not optional: a node that emits lessons must either
+  declare `classBy` or decline it with `"classBy": null` — the compiler
+  refuses silence, because an undeclared class is the forgot-to-extend-
+  the-list shape the recurrence gate exists to kill.
 
 ## Failure policy
 - Dry rule: 2 consecutive rounds with nothing new ends the sweep. This is
