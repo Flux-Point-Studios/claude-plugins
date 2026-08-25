@@ -46,6 +46,20 @@ def sh(cwd, *args):
     subprocess.run(args, cwd=cwd, check=True, capture_output=True)
 
 
+def rmtree(path):
+    # Windows stamps .git/objects files read-only, and shutil.rmtree refuses
+    # read-only files there — so cleaning up a scratch git repo aborts the
+    # whole suite mid-run. Clear the bit and retry. onexc is 3.12+; the
+    # 3.11 spelling is onerror with an exc_info third argument.
+    def clear(fn, p, _exc):
+        os.chmod(p, 0o700)
+        fn(p)
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=clear)
+    else:
+        shutil.rmtree(path, onerror=clear)
+
+
 def scratch(rows, runs=None, files=None, cex=None):
     root = tempfile.mkdtemp(prefix="fpl-recall-")
     sh(root, "git", "init", "-q", ".")
@@ -150,7 +164,7 @@ try:
 except SystemExit as e:
     report("malformed memory.jsonl line is fatal", "not valid JSON" in str(e),
            str(e)[:70])
-shutil.rmtree(bad)
+rmtree(bad)
 
 badrun = scratch(ROWS, RUNS, FILES)
 with open(os.path.join(badrun, ".claude", "fluxpoint", "runs",
@@ -162,7 +176,7 @@ try:
 except SystemExit as e:
     report("malformed run artifact is fatal", "not readable JSON" in str(e),
            str(e)[:70])
-shutil.rmtree(badrun)
+rmtree(badrun)
 
 # ==================== graph shape ==========================================
 nid_killed = "lesson:audit|src/missing.ts|fill budget"
@@ -266,7 +280,7 @@ report("a primitive shares file nodes with the lessons that touch it",
 report("primitives surface from a topical query",
        any(r["id"] == "prim:plutus-cbor-codec" for r in precs),
        [r["id"] for r in precs][:2] if precs else "no results")
-shutil.rmtree(proot)
+rmtree(proot)
 
 # A hostile or typo'd manifest must degrade, never crash or escape: wrong
 # container types are dropped, and a path pointing outside the repo (or an
@@ -293,7 +307,7 @@ report("wrong container types in a manifest degrade instead of crashing",
 report("a manifest path cannot edge the graph outside the repo",
        not any(n.startswith("file:") for n in hg["nodes"]),
        "no file nodes from absolute or ..-paths")
-shutil.rmtree(hroot)
+rmtree(hroot)
 
 # Claims are agent-authored text landing in model-visible context: a
 # control character in one must not survive into a rendered line.
@@ -309,7 +323,7 @@ report("rendered lines strip control characters from claims",
        crecs and chr(1) not in ctext and chr(0x2028) not in ctext
        and "forge lines" in ctext,
        "control chars stripped, text intact")
-shutil.rmtree(croot)
+rmtree(croot)
 
 # ==================== retrieval invariants =================================
 (recs, diags), _, _ = quiet(recall.search, root,
@@ -349,7 +363,7 @@ empty = scratch([], {}, {})
 report("empty store yields valid empty seedmap, not an error",
        recall.render_seedmap(empty, r0, ["audit"]) ==
        {"audit": {"keys": [], "killed": []}}, "cold start is a state")
-shutil.rmtree(empty)
+rmtree(empty)
 
 # ==================== temporal =============================================
 super_rows = [
@@ -390,7 +404,7 @@ gone = not any(r["id"] == "lesson:audit|k2" for r in d1)
 back = any(r["id"] == "lesson:audit|k2" for r in d2)
 report("superseded rows are filtered by default, reachable on request",
        gone and back, f"default hides it={gone}, opted-in shows it={back}")
-shutil.rmtree(droot)
+rmtree(droot)
 
 # ==================== stale kills ==========================================
 sroot = scratch(
@@ -413,7 +427,7 @@ report("a kill whose file changed since is marked stale, not dropped",
        snode.get("stale") == "src/hot.ts" and sstats["staleKills"] == 1
        and skill is not None and skill.get("stale") == "src/hot.ts",
        "annotated and still retrieved")
-shutil.rmtree(sroot)
+rmtree(sroot)
 
 # ==================== episode-mentions boost ===============================
 one = scratch([lesson("audit", "k3", "The planner emits a wrong redeemer "
@@ -433,8 +447,8 @@ report("re-established lessons outrank one-off equals",
        o1 and o2 and o2[0]["score"] > o1[0]["score"],
        f"{o2[0]['score']:.5f} > {o1[0]['score']:.5f}"
        if o1 and o2 else "missing results")
-shutil.rmtree(one)
-shutil.rmtree(two)
+rmtree(one)
+rmtree(two)
 
 # ==================== freshness policy =====================================
 with open(os.path.join(root, ".claude", "fluxpoint", "memory.jsonl"),
@@ -489,7 +503,7 @@ report("for-session emits capped factual lines and exits 0",
        r.returncode == 0 and "advisory" in r.stdout
        and len(r.stdout.splitlines()) <= 8,
        f"{len(r.stdout.splitlines())} line(s)")
-shutil.rmtree(os.path.join(root, recall.INDEX_DIR))
+rmtree(os.path.join(root, recall.INDEX_DIR))
 r = run_cli(root, "--for-session")
 report("for-session with no index falls back, named",
        r.returncode == 0 and "not built yet" in r.stdout
@@ -499,20 +513,46 @@ os.remove(os.path.join(noroot, ".claude", "fluxpoint", "memory.jsonl"))
 r = run_cli(noroot, "--for-session")
 report("for-session with no memory at all stays silent",
        r.returncode == 0 and r.stdout.strip() == "", "no store, no lines")
-shutil.rmtree(noroot)
+rmtree(noroot)
 
 # ==================== per-prompt hook (dark launch) ========================
 quiet(recall.build, root)  # the for-session cases above removed the index
-PROMPT_SH = os.path.join(SCRIPTS, "prompt-recall.sh")
+# Forward slashes to match the runtime's command template, whose appended
+# /scripts/ separator is what the hook's ${0%/*} dirname strips against — a
+# fully backslashed $0 leaves lib.sh unsourced and the hook silently empty.
+PROMPT_SH = os.path.join(SCRIPTS, "prompt-recall.sh").replace(os.sep, "/")
 hook_json = json.dumps({"prompt": "why do two-way beacon names misread in "
                                   "the decoder?", "cwd": root})
+
+
+def bash_exe():
+    # A bash that RUNS, resolved by an explicit path rather than by name:
+    # subprocess resolves a bare "bash" through CreateProcess, which searches
+    # System32 first and finds the WSL launcher — present on stock Windows
+    # with no distribution installed, exiting non-zero for every argument.
+    # Same probe as doc-claims-test.py and secret-handling-test.py.
+    for c in (os.environ.get("SHELL"), shutil.which("bash"),
+              r"C:\Program Files\Git\bin\bash.exe", "/bin/bash"):
+        if not c:
+            continue
+        try:
+            r = subprocess.run([c, "-c", "echo FPLOK"], capture_output=True,
+                               text=True, timeout=60)
+        except OSError:
+            continue
+        if r.returncode == 0 and "FPLOK" in r.stdout:
+            return c
+    return "bash"
+
+
+BASH = bash_exe()
 
 
 def run_hook(env_extra, stdin):
     env = {k: v for k, v in os.environ.items() if k != "FPL_MEM_PROMPT"}
     env.update(env_extra)
     env["CLAUDE_PROJECT_DIR"] = root
-    return subprocess.run(["bash", PROMPT_SH], input=stdin, env=env,
+    return subprocess.run([BASH, PROMPT_SH], input=stdin, env=env,
                           capture_output=True, text=True, timeout=60)
 
 r = run_hook({}, hook_json)
@@ -549,8 +589,8 @@ text = recall.render_lines(recs, diags, budget_bytes=120)
 report("budget overflow is elided by name",
        "[elided:" in text and len(text) <= 220, f"{len(text)} byte(s)")
 
-shutil.rmtree(root)
-shutil.rmtree(troot)
+rmtree(root)
+rmtree(troot)
 
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

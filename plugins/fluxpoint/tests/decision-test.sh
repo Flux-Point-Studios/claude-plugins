@@ -1,18 +1,11 @@
 #!/usr/bin/env bash
 # Decisions that outlive the context that made them.
 #
-# Two mechanisms, one purpose. `decision.py` gives loop mode the bus that
-# only graph campaigns had, with the DecisionV1 floors enforced rather than
-# described — a decision worth surviving context death names the
-# alternatives it beat and the best case against each, including against the
-# one that won. And the PreCompact hook records, at the moment of the largest
-# memory-loss event a session has, whether anything had been written down at
-# all — so the context that exists afterwards is told the reasoning is gone
-# instead of assuming the diff explains itself.
-#
-# The hook is deliberately NOT tested for stdout-into-summary behavior:
-# whether a PreCompact hook's stdout reaches the summarizer is undocumented,
-# so nothing here depends on it. What is tested is the durable side effect.
+# `decision.py` gives loop mode the bus that only graph campaigns had, with
+# the DecisionV1 floors enforced rather than described — a decision worth
+# surviving context death names the alternatives it beat and the best case
+# against each, including against the one that won. The compaction-time
+# counterpart lives in precompact-test.sh.
 set -uo pipefail
 
 if [ -z "${FPL_PY:-}" ]; then
@@ -38,7 +31,6 @@ export PYTHONIOENCODING=utf-8
 PLUGIN="$(cd "$(dirname "$0")/.." && pwd)"
 export CLAUDE_PLUGIN_ROOT="$PLUGIN"
 DEC="$PLUGIN/scripts/decision.py"
-PRE="$PLUGIN/scripts/precompact.sh"
 INJECT="$PLUGIN/scripts/inject-state.sh"
 GATE="$PLUGIN/scripts/dod-gate.sh"
 ROOT="$(mktemp -d)"
@@ -159,52 +151,7 @@ printf '# nothing here\n' >"$R/BARE.md"
 printf '%s' "$GOOD" | dec --record --graph BARE.md >/dev/null 2>&1
 check "a file with no Decisions table is reported, not written" 3 "$?"
 
-# ================= 4. PreCompact records what was durable ================
-precompact() { printf '{"session_id":"s","cwd":"%s","compact_reason":"%s"}' \
-  "$R" "${1:-auto}" | bash "$PRE"; }
-
-mkrepo
-printf 'y = 2\n' >>src/app.py                 # code changed, nothing written
-precompact auto >/dev/null 2>&1
-check "the hook never blocks compaction" 0 "$?"
-"$FPL_PY" -c '
-import json,sys
-d = json.load(open(sys.argv[1]))
-print(d["codeChanged"], d["flushed"])' "$R/.claude/fluxpoint/s.compacted" \
-  | grep -q "yes no" \
-  && ok "it records that work happened with nothing written down" "yes/no" \
-  || bad "it records that work happened with nothing written down" \
-         "$(cat "$R/.claude/fluxpoint/s.compacted")"
-
-# The next context is told, and told by the mechanism this plugin already
-# depends on rather than by an undocumented one.
-out="$(printf '{"session_id":"s","cwd":"%s"}' "$R" | bash "$INJECT" 2>&1)"
-case "$out" in *"CONTEXT WAS COMPACTED"*)
-  ok "the fresh context is told the reasoning is gone" "injected" ;;
-  *) bad "the fresh context is told the reasoning is gone" "silent" ;; esac
-case "$out" in *"re-derive from the code"*)
-  ok "and told what to do about it" "actionable" ;;
-  *) bad "and told what to do about it" "vague" ;; esac
-
-# Having written the decision down is the whole point: no warning then.
-mkrepo
-printf 'y = 2\n' >>src/app.py
-printf '%s' "$GOOD" | dec --record --id vault-window >/dev/null 2>&1
-precompact auto >/dev/null 2>&1
-out="$(printf '{"session_id":"s","cwd":"%s"}' "$R" | bash "$INJECT" 2>&1)"
-case "$out" in *"CONTEXT WAS COMPACTED"*)
-  bad "a session that wrote things down is not nagged" "warned anyway" ;;
-  *) ok "a session that wrote things down is not nagged" "quiet" ;; esac
-
-# A read-only session has nothing to lose and must not be warned either.
-mkrepo
-precompact manual >/dev/null 2>&1
-out="$(printf '{"session_id":"s","cwd":"%s"}' "$R" | bash "$INJECT" 2>&1)"
-case "$out" in *"CONTEXT WAS COMPACTED"*)
-  bad "a session that changed no code is not warned" "warned" ;;
-  *) ok "a session that changed no code is not warned" "quiet" ;; esac
-
-# ================= 5. the distill check is opt-in ========================
+# ================= 4. the distill check is opt-in ========================
 mkrepo 0
 printf 'y = 2\n' >>src/app.py
 gate() { printf '{"session_id":"s","cwd":"%s"}' "$R" | bash "$GATE" 2>/dev/null; }

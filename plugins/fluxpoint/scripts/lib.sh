@@ -132,6 +132,46 @@ print(hashlib.sha256("".join(keep).encode("utf-8", "replace")).hexdigest()[:12])
 PY
 }
 
+# fpl_aux_sha <session_id> — a hash of the durable surfaces that live
+# OUTSIDE the repo: the project's auto-memory store and the session's task
+# board. Together with fpl_memory_sha these are where a session's learning
+# survives; a compaction window in which none of the three changed is a
+# window whose reasoning exists only in the transcript being summarized.
+#
+# Paths follow Claude Code's own conventions — projects/<munged-path>/memory
+# and tasks/<session-id> under ~/.claude — with the home directory passed as
+# an argument rather than read from the environment inside python, because
+# on Windows the MSYS layer converts POSIX paths in argv but not in exported
+# variables. FPL_AUX_HOME exists so tests can fake the whole surface.
+# Prints "noaux" when neither directory exists, which compares equal to
+# itself and so never blocks anything on its own.
+fpl_aux_sha() {
+  "$FPL_PY" - "${CLAUDE_PROJECT_DIR:-$PWD}" "${1:-nosession}" \
+    "${FPL_AUX_HOME:-${HOME:-}}" <<'PY' 2>/dev/null || printf 'noaux'
+import hashlib, os, sys
+proj, sid, home = sys.argv[1], sys.argv[2], sys.argv[3]
+munged = "".join(c if c.isalnum() else "-" for c in proj)
+h = hashlib.sha256()
+found = False
+for d in (os.path.join(home, ".claude", "projects", munged, "memory"),
+          os.path.join(home, ".claude", "tasks", sid)):
+    if not os.path.isdir(d):
+        continue
+    found = True
+    for root, dirs, files in os.walk(d):
+        dirs.sort()
+        for f in sorted(files):
+            p = os.path.join(root, f)
+            try:
+                st = os.stat(p)
+            except OSError:
+                continue
+            h.update(("%s|%d|%d\n" % (os.path.relpath(p, d).replace(os.sep, "/"),
+                                      st.st_size, st.st_mtime_ns)).encode())
+print(h.hexdigest()[:12] if found else "noaux")
+PY
+}
+
 _fpl_skip_path() {
   case "$1" in
     *.md|*.svg|*.min.js|*.lock|package-lock.json|pnpm-lock.yaml|yarn.lock) return 0 ;;
