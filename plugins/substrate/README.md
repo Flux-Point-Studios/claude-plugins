@@ -108,14 +108,45 @@ under the root — with or without a `substrate.json` — may carry a
 }
 ```
 
-Every entry with a `builtAt` and no `sentAt` is an open obligation:
+Every entry with a `builtAt` and no recorded ending is an open obligation:
 `--check` prints `ALARM: UNSENT deliverable: <repo>/<id> for <recipient> —
 built <age> ago (<artifact>)` at session start, every session, until someone
-records the send by setting `sentAt`. Create the entry when the build
-**starts**, not when it finishes — the half-built state is exactly what a
-compaction orphans. Malformed ledgers and undated entries surface as
-problems, never alarms and never crashes; all fields are sanitized and
-hard-capped before they reach the injected session context.
+records how it ended. Create the entry when the build **starts**, not when it
+finishes — the half-built state is exactly what a compaction orphans.
+Malformed ledgers and undated entries surface as problems, never alarms and
+never crashes; all fields are sanitized and hard-capped before they reach the
+injected session context.
+
+### How an obligation ends
+
+`sentAt` means one thing: an email left. An obligation that ended any other
+way closes on three fields together — `closedAt`, a `closedReason` of
+`superseded` / `withdrawn` / `answered-elsewhere`, and a `closedBecause`
+sentence a future reader can audit:
+
+```json
+{
+  "id": "billing-preview",
+  "recipient": "Mackenzie",
+  "builtAt": "2026-08-15T15:06:19Z",
+  "sentAt": null,
+  "closedAt": "2026-08-20T00:00:00Z",
+  "closedReason": "superseded",
+  "closedBecause": "reshaped 8/20 into a mailbox lane she tests through; the preview-HTML send no longer exists"
+}
+```
+
+Without this, the only way to quiet a superseded or withdrawn item was to
+write a send that never happened — a register that had to lie to stay quiet,
+whose alarms then read as noise and got skimmed. A closure missing its reason
+or its explanation keeps alarming and says what it needs, because going quiet
+on a typo is the failure the field exists to end; an entry carrying both
+`sentAt` and `closedAt` is a problem, since a send and a non-send closure
+cannot both be true.
+
+An entry may also carry a `warning`. It rides the alarm line as
+`⚠ DO NOT SEND COLD: <warning>` — for the artifact that is built and still
+owed, but whose claims have gone stale underneath it.
 
 ## The import-scan lint
 

@@ -92,6 +92,72 @@ test("ledger strings are sanitized and capped — the output is injected session
   has(res.stdout, "…"); // the 500-char id was capped
 });
 
+test("an obligation that ended without a send closes on its reason, not on a fake sentAt", () => {
+  const ws = makeWorkspace();
+  writeLedger(ws, "repoC", {
+    deliverables: [
+      { id: "reshaped-preview", recipient: "Mackenzie", artifact: "preview.html",
+        builtAt: new Date(Date.now() - 10 * 24 * HOUR).toISOString(),
+        sentAt: null,
+        closedAt: "2026-08-20T00:00:00Z",
+        closedReason: "superseded",
+        closedBecause: "reshaped into a mailbox lane she tests through; the preview send no longer exists" },
+    ],
+  });
+  const res = run(["--check", "--root", ws]);
+  assert.equal(res.status, 0);
+  assert.ok(!res.stdout.includes("reshaped-preview"), `a reasoned closure is quiet:\n${res.stdout}`);
+  assert.ok(!res.stdout.includes("PROBLEM"), `a well-formed closure is not a problem:\n${res.stdout}`);
+});
+
+test("a closure with no reason or no explanation keeps alarming and says what it needs", () => {
+  const ws = makeWorkspace();
+  writeLedger(ws, "repoD", {
+    deliverables: [
+      { id: "no-reason", recipient: "Andrew", builtAt: new Date(Date.now() - 30 * HOUR).toISOString(),
+        closedAt: "2026-08-20T00:00:00Z" },
+      { id: "no-because", recipient: "Andrew", builtAt: new Date(Date.now() - 30 * HOUR).toISOString(),
+        closedAt: "2026-08-20T00:00:00Z", closedReason: "withdrawn" },
+      { id: "made-up-reason", recipient: "Andrew", builtAt: new Date(Date.now() - 30 * HOUR).toISOString(),
+        closedAt: "2026-08-20T00:00:00Z", closedReason: "vibes", closedBecause: "felt done" },
+    ],
+  });
+  const res = run(["--check", "--root", ws]);
+  assert.equal(res.status, 0);
+  for (const id of ["no-reason", "no-because", "made-up-reason"]) {
+    has(res.stdout, `PROBLEM: deliverable ${id} in repoD: "closedAt" needs a "closedReason" of superseded/withdrawn/answered-elsewhere and a "closedBecause" saying why`);
+    has(res.stdout, `ALARM: UNSENT deliverable: repoD/${id}`);
+  }
+});
+
+test("an entry cannot be both sent and closed-without-a-send", () => {
+  const ws = makeWorkspace();
+  writeLedger(ws, "repoE", {
+    deliverables: [
+      { id: "both", recipient: "Joe", builtAt: new Date(Date.now() - 30 * HOUR).toISOString(),
+        sentAt: "2026-08-18T15:00:00Z", closedAt: "2026-08-18T15:00:00Z",
+        closedReason: "answered-elsewhere", closedBecause: "delivered in the 1:1" },
+    ],
+  });
+  const res = run(["--check", "--root", ws]);
+  assert.equal(res.status, 0);
+  has(res.stdout, 'PROBLEM: deliverable both in repoE: has both "sentAt" and "closedAt" — a send and a non-send closure cannot both be true');
+});
+
+test("a warning rides the alarm so a stale artifact is never sent cold", () => {
+  const ws = makeWorkspace();
+  writeLedger(ws, "repoF", {
+    deliverables: [
+      { id: "stale-memo", recipient: "Andrew", artifact: "memo.md",
+        builtAt: new Date(Date.now() - 30 * HOUR).toISOString(),
+        warning: "the carrier paragraph was refuted 8/15 — rewrite before sending" },
+    ],
+  });
+  const res = run(["--check", "--root", ws]);
+  assert.equal(res.status, 0);
+  has(res.stdout, "ALARM: UNSENT deliverable: repoF/stale-memo for Andrew — built 30h ago (memo.md) ⚠ DO NOT SEND COLD: the carrier paragraph was refuted 8/15 — rewrite before sending");
+});
+
 test("emit writes unsent deliverables into SUBSTRATE.md's alarm section", () => {
   const ws = makeWorkspace();
   writeManifest(ws, "repoB", { repo: "repoB", primitives: [prim("b-core")] });
