@@ -88,8 +88,17 @@ def current(root, tag=None):
 
 
 def norm_class(v):
-    """One spelling per class. Case and punctuation only — never meaning."""
-    return re.sub(r"[^a-z0-9]+", "-", str(v or "").lower()).strip("-")
+    """One spelling per class. Case and punctuation only — never meaning.
+
+    Multi-key classes arrive with their components '|'-joined by the sink,
+    and the component boundary IS meaning: ('x','y-z') and ('x-y','z') are
+    different classes. Each component normalizes alone and the boundary
+    survives as '.', which component normalization can never produce.
+    '.' in raw input is treated as the same boundary, keeping the function
+    idempotent — its own output round-trips unchanged."""
+    parts = re.split(r"[|.]", str(v or "").lower())
+    segs = [re.sub(r"[^a-z0-9]+", "-", p).strip("-") for p in parts]
+    return ".".join(segs).strip(".")
 
 
 def absorb(inst, cls, row):

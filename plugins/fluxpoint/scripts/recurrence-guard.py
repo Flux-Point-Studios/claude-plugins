@@ -57,6 +57,9 @@ which is the mutation this gate has no way to perform on an arbitrary repo.
 import argparse
 import json
 import os
+import re
+import shlex
+import shutil
 import subprocess
 import sys
 
@@ -69,6 +72,21 @@ THRESHOLD = 2
 TIMEOUT = 900
 TAIL_LINES = 6
 TAIL_CHARS = 800
+
+# The store is a local jsonl anyone can write and --for-session speaks into
+# an agent's context, so store text gets the same hostile-input discipline
+# recall applies: control and separator characters flattened, lengths capped.
+CTRL_RE = re.compile("[\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]")
+
+# Shell words the PATH probe cannot resolve but the shell can. A closed,
+# stable set — not an enumeration that grows.
+SHELL_BUILTINS = frozenset(
+    {"cd", "echo", "true", "false", "test", "[", "exit", "set", "!", "(",
+     "{", "if", "for", "while", "until", "case"})
+
+
+def _clean(v, cap=500):
+    return CTRL_RE.sub(" ", str(v))[:cap]
 
 
 def read_tolerant(path):
@@ -165,8 +183,28 @@ def run_check(root, check):
     Executed here rather than reported, because HarnessCheckV1 is three
     fields with no proof the command ever ran — the schema is satisfied
     perfectly by a fabricated triple.
+
+    The executable is resolved BEFORE the shell gets the command. Under
+    shell=True a nonexistent program is absorbed into an ordinary exit code
+    (1 on cmd.exe, 127 on sh), so a command that never existed would read
+    exactly like a command that ran and failed — and would satisfy any
+    matching expectExit forever. Not-found is its own verdict: exit null,
+    never comparable to a declared code. The command runs through the
+    platform shell (cmd.exe on Windows), so cross-platform manifests should
+    lead with a real executable, not shell syntax.
     """
     cmd = check["command"]
+    try:
+        first = (shlex.split(cmd, posix=(os.name != "nt")) or [""])[0]
+    except ValueError:
+        first = cmd.split()[0] if cmd.split() else ""
+    first = first.strip('"')
+    if first not in SHELL_BUILTINS and not shutil.which(first) \
+            and not os.path.exists(os.path.join(root, first)):
+        return {"exit": None, "command": cmd,
+                "tail": f"could not be spawned: {first!r} is not a known "
+                        f"executable — a check that cannot start has no "
+                        f"verdict to report"}
     try:
         p = subprocess.run(cmd, shell=True, cwd=root, capture_output=True,
                            text=True, timeout=TIMEOUT)
@@ -175,25 +213,31 @@ def run_check(root, check):
     except subprocess.TimeoutExpired:
         out, code = f"did not finish in {TIMEOUT}s", 124
     except OSError as exc:
-        out, code = f"could not be started: {exc}", 127
+        out, code = f"could not be started: {exc}", None
     tail = "\n".join(out.splitlines()[-TAIL_LINES:])[-TAIL_CHARS:]
     return {"exit": code, "command": cmd, "tail": tail}
 
 
 def describe(item, check, indent="  "):
-    """The demand, in the words that make restating it obviously insufficient."""
+    """The demand, in the words that make restating it obviously insufficient.
+
+    Every store-sourced string is flattened and capped before it can start a
+    line: this output lands in agent context at session start, and a crafted
+    row must not get to speak in the session's voice.
+    """
     lines = [
-        f"{indent}[{item['identity']}] arrived {len(item['runs'])} time(s) "
-        f"across runs {', '.join(item['runs'])}"
+        f"{indent}[{_clean(item['identity'], 120)}] arrived "
+        f"{len(item['runs'])} time(s) across runs "
+        f"{_clean(', '.join(item['runs']), 200)}"
     ]
     if item["grain"] == "class":
-        shown = item["members"][:4]
+        shown = [_clean(m, 120) for m in item["members"][:4]]
         more = f" (+{len(item['members']) - len(shown)} more)" \
             if len(item["members"]) > len(shown) else ""
         lines.append(f"{indent}    as {len(item['members'])} separate "
                      f"finding(s): {', '.join(shown)}{more}")
     if item.get("claim"):
-        lines.append(f"{indent}    latest claim: {str(item['claim'])[:110]}")
+        lines.append(f"{indent}    latest claim: {_clean(item['claim'], 110)}")
     if check is None:
         stub = json.dumps({"identity": item["identity"],
                            "command": "<the command that would have caught this>",
@@ -317,8 +361,10 @@ def for_session(root):
     except (Exception, SystemExit) as exc:  # noqa: BLE001 - a hook may never raise
         # SystemExit is named because it is the likely one: the manifest is
         # hand-written, load_manifest refuses a malformed one, and refusing
-        # is correct for the gate and wrong for a session-start line.
-        print(f"- Recurrence check unavailable: {exc}")
+        # is correct for the gate and wrong for a session-start line. The
+        # message can carry manifest bytes, so it gets the same flattening
+        # as store text before it reaches session context.
+        print(f"- Recurrence check unavailable: {_clean(exc, 200)}")
     return 0
 
 
