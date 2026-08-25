@@ -214,10 +214,11 @@ MEM_BASE["nodes"][N].update(
     repeat={"untilDryRounds": 2, "maxRounds": 6, "dedupeBy": ["file"]},
 )
 probe("node", "memory", MEM_BASE,
-      lambda ir: ir["nodes"][N].update(memory={"emit": "audit"}))
+      lambda ir: ir["nodes"][N].update(memory={"emit": "audit",
+                                               "classBy": None}))
 
 MEMF_BASE = copy.deepcopy(MEM_BASE)
-MEMF_BASE["nodes"][N]["memory"] = {"emit": "audit"}
+MEMF_BASE["nodes"][N]["memory"] = {"emit": "audit", "classBy": None}
 probe("memory", "emit", MEMF_BASE,
       lambda ir: ir["nodes"][N]["memory"].update(emit="a-different-tag"))
 probe("memory", "seed", MEMF_BASE,

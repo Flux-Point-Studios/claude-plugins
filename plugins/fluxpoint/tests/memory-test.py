@@ -52,7 +52,7 @@ IR = {
         "prompt": "find bugs; already surfaced: {{seen}}",
         "verify": "panel:3", "verifyOver": "findings",
         "repeat": {"untilDryRounds": 2, "maxRounds": 4, "dedupeBy": ["file", "claim"]},
-        "memory": {"seed": "audit", "emit": "audit"},
+        "memory": {"seed": "audit", "emit": "audit", "classBy": None},
     }],
 }
 
@@ -113,7 +113,7 @@ case("priors with no panel to tell",
 ONESHOT = copy.deepcopy(IR)
 ONESHOT["nodes"][0].pop("repeat")
 ONESHOT["nodes"][0]["prompt"] = "find bugs"
-ONESHOT["nodes"][0]["memory"] = {"emit": "audit"}
+ONESHOT["nodes"][0]["memory"] = {"emit": "audit", "classBy": None}
 errs = cg.validate(copy.deepcopy(ONESHOT), CONTRACTS)
 report("a one-shot emitter needs an explicit key",
        any("cannot be implicit" in e for e in errs), (errs or ["none"])[0][:56])

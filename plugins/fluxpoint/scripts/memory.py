@@ -87,6 +87,16 @@ def current(root, tag=None):
     return list(state.values())
 
 
+def class_components(v):
+    """Normalized components of a class key, empties PRESERVED.
+
+    The write path needs the empties: a half-filled multi-key class is an
+    unnamed shape, and eating the empty component would truncate 'x|' into
+    'x' — a collision with a genuine class, manufacturing recurrence."""
+    parts = re.split(r"[|.]", str(v or "").lower())
+    return [re.sub(r"[^a-z0-9]+", "-", p).strip("-") for p in parts]
+
+
 def norm_class(v):
     """One spelling per class. Case and punctuation only — never meaning.
 
@@ -95,10 +105,9 @@ def norm_class(v):
     different classes. Each component normalizes alone and the boundary
     survives as '.', which component normalization can never produce.
     '.' in raw input is treated as the same boundary, keeping the function
-    idempotent — its own output round-trips unchanged."""
-    parts = re.split(r"[|.]", str(v or "").lower())
-    segs = [re.sub(r"[^a-z0-9]+", "-", p).strip("-") for p in parts]
-    return ".".join(segs).strip(".")
+    idempotent — its own output round-trips unchanged. This READ-side form
+    tolerates stray boundaries; the write path refuses them instead."""
+    return ".".join(class_components(v)).strip(".")
 
 
 def absorb(inst, cls, row):
@@ -203,9 +212,23 @@ def append_from_summary(root, summary, run_id, state_dir=None):
                 "provenance": {"runId": run_id},
                 "establishedWhen": when,
             }
-            ck = norm_class(r.get("classKey"))
-            if ck:
-                row["classKey"] = ck
+            if "classKey" in r:
+                # The sink only emits the field when the node DECLARED a
+                # class. ANY empty component means the finder never named
+                # the full shape: filing the truncated remainder would
+                # collide with a genuine class ('x|' is not 'x'), and
+                # dropping it silently would re-open the recurrence blind
+                # spot one layer down. The row still files — a lesson is
+                # not hostage to its class — but classless, and loudly.
+                segs = class_components(r.get("classKey"))
+                if segs and all(segs):
+                    row["classKey"] = ".".join(segs)
+                else:
+                    findings.append(
+                        f"lesson from node '{r.get('node')}' carries a "
+                        f"declared class left empty or half-empty — the "
+                        f"finder never named the full shape, so recurrence "
+                        f"of this defect kind cannot be counted")
             bad = validate(row)
             if bad:
                 findings.append(

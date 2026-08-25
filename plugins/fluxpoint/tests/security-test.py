@@ -266,7 +266,8 @@ def priors_payload_stays_data():
             "verify": "panel:1", "verifyOver": "findings",
             "repeat": {"untilDryRounds": 1, "maxRounds": 2,
                        "dedupeBy": ["file", "claim"]},
-            "memory": {"seed": "audit", "emit": "audit", "priors": True},
+            "memory": {"seed": "audit", "emit": "audit", "priors": True,
+                       "classBy": None},
         }],
     }
     errs = cg.validate(ir, CONTRACTS)

@@ -870,8 +870,30 @@ def validate(ir, contracts, gates=None, agents=None):
                 # declared rather than inferred: a class guessed from claim
                 # similarity would collapse unrelated lessons, and a gate that
                 # fires on everything is one people learn to skim.
+                # The absence of a class is a DECISION, not a default. Every
+                # field the instance key can be built from names a defect's
+                # location or its wording, so one shape recurring in three
+                # places files as three unrelated lessons — the measured
+                # history did exactly that. A node that files lessons either
+                # declares its class or declares, with `null`, that its
+                # lessons have none; silence is the forgot-to-declare hole
+                # this same gate exists to kill.
                 cls = mem.get("classBy")
-                if cls is not None:
+                if "classBy" not in mem:
+                    if mem.get("emit"):
+                        f.append(
+                            f"{where}: memory.emit without a classBy decision "
+                            f"— an instance key names a defect's location, so "
+                            f"a shape recurring in three places files as three "
+                            f"unrelated lessons. Declare classBy (the item "
+                            f"field naming the SHAPE) or classBy: null to "
+                            f"state these lessons have no class")
+                elif cls is None:
+                    if not mem.get("emit"):
+                        f.append(
+                            f"{where}: memory.classBy without memory.emit — a "
+                            f"class on a node that files nothing groups nothing")
+                else:
                     if not isinstance(cls, list) or not cls or not all(
                             isinstance(k, str) and k for k in cls):
                         f.append(
