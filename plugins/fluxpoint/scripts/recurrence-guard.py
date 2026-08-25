@@ -340,6 +340,11 @@ def scan(root):
         live[f"{r.get('tag')}|{r.get('dedupeKey')}"] = r
     by_tag = {}
     for r in live.values():
+        # promoted() excludes killed identities from the gate entirely, so
+        # a killed classless row is not part of the blind spot — counting
+        # it would overstate what the gate cannot see.
+        if r.get("status") == "killed":
+            continue
         t = by_tag.setdefault(r.get("tag"), [0, 0])
         t[1] += 1
         if not r.get("classKey"):

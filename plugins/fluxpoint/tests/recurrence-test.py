@@ -241,6 +241,27 @@ with tempfile.TemporaryDirectory() as root:
            len(filed) == 1 and "classKey" not in filed[0], "filed without class")
 
 with tempfile.TemporaryDirectory() as root:
+    # The half-empty case is worse than the all-empty one: 'x|' would
+    # otherwise normalize to 'x' and COLLIDE with a genuine class named x,
+    # manufacturing recurrence across unrelated lessons. A partially named
+    # shape is an unnamed shape — loud, and filed classless, never truncated.
+    half = lesson("a.py|1|x", "a claim long enough to be actionable")
+    half["classKey"] = "x|"
+    genuine = lesson("b.py|2|y", "a second claim, long enough to act on", "x")
+    r = file_run(root, "wf-1", [half, genuine])
+    report("a half-filled multi-key class is loud at file time",
+           "declared class" in r.stderr and "empty" in r.stderr,
+           r.stderr.strip().splitlines()[0][:60] if r.stderr.strip() else "silent")
+    filed = rows_of(root)
+    half_row = next(f for f in filed if f["dedupeKey"].startswith("a.py"))
+    gen_row = next(f for f in filed if f["dedupeKey"].startswith("b.py"))
+    report("and files classless — never truncated into a colliding class",
+           "classKey" not in half_row and gen_row.get("classKey") == "x"
+           and gen_row.get("classArrivals") == 1,
+           f"half={half_row.get('classKey')!r} genuine "
+           f"classArrivals={gen_row.get('classArrivals')}")
+
+with tempfile.TemporaryDirectory() as root:
     # An arrival is a RUN for the class counter too: one run filing two
     # findings of the same class learned the class once, not twice.
     file_run(root, "wf-1", [
@@ -460,6 +481,23 @@ with tempfile.TemporaryDirectory() as root:
     r = guard(root, "--scan")
     report("and stays silent when every lesson carries a class",
            "no class" not in r.stdout, "silent")
+
+with tempfile.TemporaryDirectory() as root:
+    # A killed lesson is outside the gate whether or not it has a class, so
+    # counting it as class-blind would overstate the blind spot with rows
+    # the gate ignores anyway. The census mirrors promoted()'s filter.
+    killed = lesson("a.py|1|x", "a claim long enough to be actionable")
+    killed["status"] = "killed"
+    killed["kills"] = 3
+    file_run(root, "wf-1", [killed,
+                            lesson("b.py|2|y",
+                                   "a second claim, long enough to act on",
+                                   "some-shape")])
+    r = guard(root, "--scan")
+    report("a killed classless lesson does not inflate the census",
+           "no class" not in r.stdout,
+           next((ln for ln in r.stdout.splitlines() if "no class" in ln),
+                "silent")[:60])
 
 with tempfile.TemporaryDirectory() as root:
     # The store is a local jsonl anyone can write, and the session line is
