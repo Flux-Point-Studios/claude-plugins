@@ -192,6 +192,51 @@ else
 fi
 cd "$ROOT/r" 2>/dev/null || true
 
+# THE INVERSE SHAPES: the payload's cwd must NOT win when the project dir is
+# itself inside a git work tree. Both of these worked before fpl_cd_project
+# existed and are the gate's ordinary jurisdiction; a cwd-first rule with an
+# unbounded toplevel climb turned each into "scripts/harness.sh is absent",
+# deleted the arming marker, and waved the stop through.
+stop_input() { # $1 = cwd, $2 = session id
+  printf '{"session_id":"%s","cwd":"%s"}' "$2" "$1"
+}
+# A project scoped to a SUBDIRECTORY of a larger repo: cwd and project dir
+# agree, and the climb is what walks out of the project.
+mono="$ROOT/mono"; rm -rf "$mono"; mkdir -p "$mono/tools/svc/scripts"
+( cd "$mono" && git init -q -b main \
+  && printf '#!/usr/bin/env bash\nexit 1\n' >tools/svc/scripts/harness.sh \
+  && chmod +x tools/svc/scripts/harness.sh && printf 'x = 1\n' >tools/svc/app.py \
+  && git add -A && git -c user.email=t@t -c user.name=t commit -qm base )
+mkdir -p "$mono/tools/svc/.claude/fluxpoint"; : >"$mono/tools/svc/.claude/fluxpoint/sub.dirty"
+out="$(stop_input "$mono/tools/svc" sub \
+  | CLAUDE_PROJECT_DIR="$mono/tools/svc" eval "$(hook_cmd Stop)" 2>/dev/null)"
+if [ -f "$mono/tools/svc/.claude/fluxpoint/sub.dirty" ] \
+   && case "$out" in *'"decision":"block"'*) true ;; *) false ;; esac; then
+  ok "dod-gate: a project below a monorepo toplevel keeps jurisdiction" "red harness blocks"
+else
+  bad "dod-gate: a project below a monorepo toplevel keeps jurisdiction" "climbed out: ${out:0:60}"
+fi
+# A stop issued while the session shell sits in some OTHER git checkout: the
+# gate is the project's, wherever the shell wandered.
+proj="$ROOT/proj"; rm -rf "$proj" "$ROOT/foreign"
+mkdir -p "$proj/scripts" "$ROOT/foreign"
+( cd "$proj" && git init -q -b main \
+  && printf '#!/usr/bin/env bash\nexit 1\n' >scripts/harness.sh && chmod +x scripts/harness.sh \
+  && printf 'x = 1\n' >app.py \
+  && git add -A && git -c user.email=t@t -c user.name=t commit -qm base )
+( cd "$ROOT/foreign" && git init -q -b main && printf 'y\n' >f \
+  && git add -A && git -c user.email=t@t -c user.name=t commit -qm base )
+mkdir -p "$proj/.claude/fluxpoint"; : >"$proj/.claude/fluxpoint/away.dirty"
+out="$(stop_input "$ROOT/foreign" away \
+  | CLAUDE_PROJECT_DIR="$proj" eval "$(hook_cmd Stop)" 2>/dev/null)"
+if [ -f "$proj/.claude/fluxpoint/away.dirty" ] \
+   && case "$out" in *'"decision":"block"'*) true ;; *) false ;; esac; then
+  ok "dod-gate: a stop from a foreign checkout still judges the project" "red harness blocks"
+else
+  bad "dod-gate: a stop from a foreign checkout still judges the project" "gate skipped: ${out:0:60}"
+fi
+cd "$ROOT/r" 2>/dev/null || true
+
 # --- 4. verify-changed.sh: the previously untested hook ---
 newrepo 0
 printf 'y = 2\n' >>src/app.py
