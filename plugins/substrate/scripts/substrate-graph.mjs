@@ -341,12 +341,18 @@ function scanImports(absFile, raw) {
     const rel = /^[ \t]*from[ \t]+(\.*)([A-Za-z_][\w.]*)?[ \t]+import[ \t]+([^\n]*)/gm;
     for (let m; (m = rel.exec(src)); ) {
       const [, dots, mod, names] = m;
+      // An INDENTED import is a different claim than a module-level one:
+      // deferring an import inside a function is the standard way to BREAK a
+      // dependency cycle, so counting it as a hard edge asks the author to
+      // declare the very cycle the deferral exists to avoid. It is still real
+      // coupling worth surfacing — as a note, never as a fatal edge.
+      const deferred = /^[ \t]/.test(m[0]);
       let base = dir;
       for (let k = 1; k < dots.length; k++) base = path.dirname(base);
       const searchRoots = dots ? [base] : [dir, path.dirname(dir)];
       const parts = mod ? mod.split(".") : [];
       const hit = resolvePyModule(searchRoots, parts);
-      if (hit) found.push({ line: lineOf(m.index), spec: dots + (mod || ""), target: hit });
+      if (hit) found.push({ line: lineOf(m.index), spec: dots + (mod || ""), target: hit, deferred });
       // `from pkg import mod` and `from . import mod`: the imported names may
       // themselves be modules, and those are the real targets.
       const submoduleRoot = hit && path.basename(hit) === "__init__.py" ? path.dirname(hit) : parts.length ? null : dots ? base : null;
@@ -355,16 +361,17 @@ function scanImports(absFile, raw) {
           const name = n.trim().replace(/[()]/g, "").split(/\s+as\s+/)[0].trim();
           if (!/^[A-Za-z_]\w*$/.test(name)) continue;
           const sub = resolvePyModule([submoduleRoot], [name]);
-          if (sub) found.push({ line: lineOf(m.index), spec: dots + (mod ? mod + "." : "") + name, target: sub });
+          if (sub) found.push({ line: lineOf(m.index), spec: dots + (mod ? mod + "." : "") + name, target: sub, deferred });
         }
       }
     }
     const abs = /^[ \t]*import[ \t]+([A-Za-z_][\w.]*(?:[ \t]*,[ \t]*[A-Za-z_][\w.]*)*)/gm;
     for (let m; (m = abs.exec(src)); ) {
+      const deferred = /^[ \t]/.test(m[0]);
       for (const mod of m[1].split(",")) {
         const parts = mod.trim().split(".");
         const hit = resolvePyModule([dir, path.dirname(dir)], parts);
-        if (hit) found.push({ line: lineOf(m.index), spec: mod.trim(), target: hit });
+        if (hit) found.push({ line: lineOf(m.index), spec: mod.trim(), target: hit, deferred });
       }
     }
     // absolute dotted specs are also resolved from the repo root by the caller's
@@ -410,6 +417,7 @@ function collectSourceFiles(repoDir, rel, excludeDirs) {
 
 function importLint(root, repos, excludeDirs) {
   const misses = new Map(); // "from->to" -> message, first site wins
+  const deferredNotes = new Map(); // same key — coupling to know about, never fatal
   for (const r of repos) {
     const repoDir = path.join(root, r.dir);
     // resolve() normalizes the separators a suffix-joined resolution introduces,
@@ -455,7 +463,19 @@ function importLint(root, repos, excludeDirs) {
           if (to.includes(owner)) continue;
           if (to.some((t) => consumesOf.get(owner).has(t))) continue;
           const pair = `${owner}->${to.join("|")}`;
+          if (imp.deferred) {
+            // A function-local import is how a cycle is deliberately broken;
+            // making it a fatal edge would demand the manifest declare the
+            // cycle the code does not have. Surfaced, not enforced.
+            if (!misses.has(pair) && !deferredNotes.has(pair))
+              deferredNotes.set(
+                pair,
+                `deferred import: ${owner} uses ${to.join("|")} inside a function (${clean(r.dir, 120)}/${clean(relFile, 300)}:${imp.line} imports ${clean(imp.spec, 200)}) — real coupling, not declared and not required to be`,
+              );
+            continue;
+          }
           if (misses.has(pair)) continue;
+          deferredNotes.delete(pair); // a top-level site outranks a deferred one
           misses.set(
             pair,
             `import lint: ${owner} -> ${to.join("|")} undeclared (${clean(r.dir, 120)}/${clean(relFile, 300)}:${imp.line} imports ${clean(imp.spec, 200)})`,
@@ -464,7 +484,7 @@ function importLint(root, repos, excludeDirs) {
       }
     }
   }
-  return [...misses.values()].sort();
+  return { problems: [...misses.values()].sort(), notes: [...deferredNotes.values()].sort() };
 }
 
 function buildGraph(repos, problems) {
@@ -690,8 +710,10 @@ function main() {
   const config = loadConfig(root, problems);
   const repos = loadManifests(root, config.excludeDirs, problems);
   const graph = buildGraph(repos, problems);
-  problems.push(...importLint(root, repos, config.excludeDirs));
+  const lint = importLint(root, repos, config.excludeDirs);
+  problems.push(...lint.problems);
   const { alarms, notes } = stalenessAlarms(repos, root, config);
+  notes.push(...lint.notes);
   alarms.push(...deliverableAlarms(root, config.excludeDirs, problems));
   if (mode === "emit") {
     writeSubstrateMd(out, emitMarkdown(repos, graph, alarms, notes, problems));
