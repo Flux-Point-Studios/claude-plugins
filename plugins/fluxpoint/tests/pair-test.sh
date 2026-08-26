@@ -211,6 +211,42 @@ check "a committed change is invisible to a working-tree diff" 0 "$?"
 $PG --check --against main >/dev/null 2>&1
 check "--against finds it across the branch" 1 "$?"
 
+# ================= 9. untracked files exist under every base =============
+# The Stop gate routes through --against, and the untracked listing lived
+# only in the HEAD branch — so at Stop time a mirror sitting as a new
+# untracked file false-REDded the co-change rule over work that was present
+# and correct, and a source change existing only untracked was invisible.
+# Both directions of the docstring's own contract, on exactly the path the
+# Stop gate takes.
+mkrepo
+manifest <<'EOF'
+[{"id":"policy-window","source":"contracts/**/policy*.ak","mirror":["api/policies.py"]}]
+EOF
+mkdir -p api; printf 'W = 1\n' >api/policies.py
+git add -A; git -c user.email=t@t -c user.name=t commit -qm base
+base="$(git rev-parse HEAD)"
+printf 'fn window() { 42 }\n' >contracts/policy/policy_window.ak
+git add contracts; git -c user.email=t@t -c user.name=t commit -qm "source committed"
+# The mirror satisfied as a NEW UNTRACKED file: must be green, not a false red.
+git rm -q api/policies.py && git -c user.email=t@t -c user.name=t commit -qm "mirror moves"
+mkdir -p api                          # git rm pruned the emptied directory
+printf 'W = 2\n' >api/policies.py     # untracked now
+$PG --check --against "$base" >/dev/null 2>&1
+check "--against: an untracked mirror satisfies the co-change" 0 "$?"
+# A source change that exists ONLY untracked: must be seen, not fail open.
+mkrepo
+manifest <<'EOF'
+[{"id":"policy-window","source":"contracts/**/policy*.ak","mirror":["api/policies.py"]}]
+EOF
+git add -A; git -c user.email=t@t -c user.name=t commit -qm base
+base="$(git rev-parse HEAD)"
+# A NEW file matching the source glob — mkrepo's policy_window.ak is tracked,
+# and modifying a tracked file is visible to `git diff HEAD` on any code;
+# only a genuinely untracked file exercises the listing this pins.
+printf 'fn bounds() { 7 }\n' >contracts/policy/policy_bounds.ak    # untracked
+$PG --check --against "$base" >/dev/null 2>&1
+check "--against: an untracked source change is not invisible" 1 "$?"
+
 cd /; rm -rf "$ROOT"
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -217,6 +217,18 @@ def record(root, payload):
     if not gate:
         return None, []
     resp = payload.get("tool_response")
+    # A backgrounded launch returns IMMEDIATELY with a success-shaped payload
+    # — stdout/stderr/interrupted and no exit code — before the gate has done
+    # anything, and completion later arrives as a task notification, never as
+    # another Bash PostToolUse. Reading that shape through exit_of would mint
+    # exit 0 for a run that has not happened, which is the one direction this
+    # file must never fail in: a gate that reports green before running is
+    # worse than one that reports nothing. Covers both the deliberate
+    # run_in_background and the auto-background-on-timeout path, which comes
+    # back carrying backgroundTaskId in the response.
+    if (payload.get("tool_input") or {}).get("run_in_background") \
+       or (isinstance(resp, dict) and resp.get("backgroundTaskId")):
+        return None, []
     code = exit_of(resp)
     if code is None:
         # The gate ran and its verdict was unreadable. Silence here would be

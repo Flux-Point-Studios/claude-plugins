@@ -141,6 +141,7 @@ def load_manifest(root):
     if not isinstance(guards, list):
         _die(f"{MANIFEST} must contain a 'guards' list")
     seen = set()
+    real_root = os.path.normcase(os.path.realpath(root))
     for g in guards:
         for field in ("id", "protects", "guard", "proof", "mutation", "expect"):
             if field not in g:
@@ -148,6 +149,21 @@ def load_manifest(root):
         if g["id"] in seen:
             _die(f"duplicate guard id {g['id']!r}")
         seen.add(g["id"])
+        # The verifier WRITES the mutation to the guard path and reads the
+        # proof path, and os.path.join hands an absolute or ../-escaping
+        # entry the whole filesystem: a manifest arriving by PR is reviewed
+        # as data, and a reviewer scanning a "file" field is not primed to
+        # read it as "this path gets overwritten". Refuse anything that
+        # resolves outside the repo, here where the other shape checks live.
+        for kind in ("guard", "proof"):
+            rel = str((g.get(kind) or {}).get("file", ""))
+            real = _resolve(root, rel)
+            try:
+                inside = os.path.commonpath([real, real_root]) == real_root
+            except ValueError:
+                inside = False
+            if not inside:
+                _die(f"guard {g['id']!r} names a file outside the repo: {rel}")
     return guards
 
 

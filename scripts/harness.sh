@@ -55,6 +55,23 @@ step() { # name, then command
 
 check_json() { "$FPL_PY" -m json.tool "$1" >/dev/null; }
 check_sh()   { bash -n "$1"; }
+
+# The validator exits 0 on a warning, and a warning nothing fails on is not a
+# gate: the plugin.json/marketplace.json version skew rode a validator warning
+# through five releases while this step read green over it. Fail on the
+# warning marks themselves so every FUTURE validator warning is a gate too,
+# not just the one that already bit.
+validate_manifests() {
+  local out
+  out="$(claude plugin validate . 2>&1)" || { printf '%s\n' "$out"; return 1; }
+  printf '%s\n' "$out"
+  case "$out" in
+    *"⚠"* | *"with warnings"*)
+      echo "validator emitted warnings; a warning nothing fails on is not a gate" >&2
+      return 1 ;;
+  esac
+  return 0
+}
 check_py()   { "$FPL_PY" -m py_compile "$1"; }
 
 compile_templates() {
@@ -152,7 +169,7 @@ case "${1:---full}" in
     for f in "$PLUGIN"/scripts/*.py; do
       [ -f "$f" ] && step "py_compile: $(basename "$f")" check_py "$f"
     done
-    step "manifests validate" claude plugin validate .
+    step "manifests validate" validate_manifests
     step "portable interpreter invocations" portable_invocations
     step "templates compile + emit valid JS" compile_templates
     step "compiler invariants" "$FPL_PY" "$PLUGIN/tests/compile-test.py"

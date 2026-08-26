@@ -280,6 +280,18 @@ full() {
   if need_gate mutation-guard.py .fluxpoint-mutation.json .fluxpoint-proof-baseline.json; then
     "$FPL_PY" "$FPL_GATE" --check
   fi
+  # Guard ratchet. Everything above judges proofs and tests; this judges the
+  # GUARDS — the lines that stop money moving wrongly — structurally: the
+  # guard is still in the code and its proof still names it. The expensive
+  # --verify (prove the guard bites by disabling it) belongs off-session.
+  # Gated on the manifest existing because guard-guard is deliberately loud
+  # when invoked without one — "register your guards or state you have none"
+  # is the right answer to a person, and the wrong one to every repo that
+  # never declared any.
+  if [ -f .fluxpoint-guards.json ] \
+     && need_gate guard-guard.py .fluxpoint-guards.json; then
+    "$FPL_PY" "$FPL_GATE" --check
+  fi
   # Relation gate. Every check above measures one artifact; the defects that
   # cost the most are relationships between two, and a suite stays green
   # because each half is individually correct. Dormant without a manifest.

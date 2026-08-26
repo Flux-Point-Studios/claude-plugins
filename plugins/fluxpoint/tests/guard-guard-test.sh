@@ -230,5 +230,63 @@ case "$out" in
   *) bad "and that refusal says why" "$(printf '%s' "$out" | tr '\n' ' ' | cut -c1-60)" ;;
 esac
 
+# ============ containment: the manifest cannot reach outside the repo =====
+# verify_one WRITES the mutation to the guard path, and os.path.join hands an
+# absolute or ../-escaping entry the whole filesystem. A manifest arrives by
+# PR and is reviewed as data — a "file" field is not read as "this path gets
+# overwritten" — and a kill mid-verify leaves the mutated file wherever it
+# landed, with the restore sentinel written inside the repo where nobody is
+# looking for a casualty outside it.
+mkrepo escape
+"$FPL_PY" - "$WORK/escape/.fluxpoint-guards.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["guards"][0]["guard"]["file"] = "../outside.py"
+json.dump(d, open(sys.argv[1], "w"))
+PY
+printf 'x = 1\n' >"$WORK/outside.py"
+out="$("$FPL_PY" "$GG" --root "$WORK/escape" --check 2>&1)"; rc=$?
+check "a ../-escaping guard path is refused" 2 "$rc"
+case "$out" in *"outside the repo"*) ok "and the refusal says why" "named" ;;
+  *) bad "and the refusal says why" "${out:0:60}" ;; esac
+
+mkrepo escape2
+"$FPL_PY" - "$WORK/escape2/.fluxpoint-guards.json" "$WORK/outside.py" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["guards"][0]["proof"]["file"] = sys.argv[2]
+json.dump(d, open(sys.argv[1], "w"))
+PY
+"$FPL_PY" "$GG" --root "$WORK/escape2" --check >/dev/null 2>&1
+check "an absolute proof path is refused too" 2 "$?"
+
+# ============ the SCAFFOLDED harness runs --check once armed ==============
+# guard-guard shipped in v1.27.0 wired to nothing: the README described it,
+# its suite was green, and no onboarded repo would ever invoke it — a gate
+# nothing runs, reading as coverage. The template block is gated on the
+# manifest existing, because guard-guard is deliberately loud without one.
+mkrepo wired
+( cd "$WORK/wired" && git init -q -b main && mkdir -p scripts \
+  && cp "$PLUGIN/templates/harness.sh" scripts/harness.sh \
+  && git add -A && git -c user.email=t@t -c user.name=t commit -qm base )
+out="$(cd "$WORK/wired" && env -u CLAUDE_PLUGIN_ROOT FPL_PLUGIN_ROOT="$PLUGIN" \
+  bash scripts/harness.sh --full 2>&1)"; rc=$?
+check "scaffolded harness: an intact guard is green" 0 "$rc"
+"$FPL_PY" - "$WORK/wired/server.py" <<'PY'
+import sys
+open(sys.argv[1], "w").write("def fee_ok(amount):\n    return True\n")
+PY
+out="$(cd "$WORK/wired" && env -u CLAUDE_PLUGIN_ROOT FPL_PLUGIN_ROOT="$PLUGIN" \
+  bash scripts/harness.sh --full 2>&1)"; rc=$?
+if [ "$rc" -ne 0 ] && case "$out" in *"no longer contains the guard"*) true ;; *) false ;; esac; then
+  ok "scaffolded harness: a deleted guard is RED end to end" "check bites"
+else
+  bad "scaffolded harness: a deleted guard is RED end to end" "rc=$rc ${out//$'\n'/ }"
+fi
+rm -rf "$WORK/wired/.fluxpoint-guards.json"
+( cd "$WORK/wired" && env -u CLAUDE_PLUGIN_ROOT FPL_PLUGIN_ROOT="$PLUGIN" \
+  bash scripts/harness.sh --full >/dev/null 2>&1 )
+check "scaffolded harness: no manifest stays dormant, not loud" 0 "$?"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

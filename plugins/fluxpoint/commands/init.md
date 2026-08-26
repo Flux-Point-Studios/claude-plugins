@@ -102,7 +102,32 @@ step; do not stop at copying files.
    That file and `.fluxpoint-cex/` are committed artifacts like the
    baselines — a ratchet only anyone else can see is one that lives in the
    tree, so do not add them to `.gitignore`.
-9. Declare this repo's gates so their exit codes stop being self-reported.
+9. If this repo has guards — the specific lines that stop money moving
+   wrongly, an auth check, a spend limit, a signature verification — name
+   them in `.fluxpoint-guards.json` so the guard ratchet can hold each one
+   down. An entry names the guard and the test that fails without it:
+   ```json
+   {"guards": [{
+     "id": "spend-cap",
+     "protects": "no single tx may exceed the treasury cap",
+     "guard":    {"file": "api/spend.py",        "contains": "if amount > CAP:"},
+     "proof":    {"file": "tests/test_spend.py", "test": "test_over_cap_refused"},
+     "mutation": {"find": "if amount > CAP:", "replace": "if False:"},
+     "expect":   "exceeds the treasury cap",
+     "run":      "{py} -m pytest -q {file}::{test}"
+   }]}
+   ```
+   `protects` is prose for the next reader; `expect` is a substring the
+   failing proof must print, so a proof that fails for the wrong reason
+   does not count as the guard biting.
+   The scaffolded harness runs the cheap structural `--check` on every
+   `--full` once the manifest exists; `guard-guard.py --verify` is the
+   expensive mode — it runs the proof intact, then disables the guard and
+   requires the same proof to break — and belongs off-session, on a
+   Routine, not in the gate. Commit the manifest. A repo with nothing
+   worth naming here should say so in review rather than leave the file's
+   absence read as coverage.
+10. Declare this repo's gates so their exit codes stop being self-reported.
    Write `.fluxpoint-gates.json` naming each command whose verdict decides
    something — at minimum the harness — exactly as it is invoked:
    ```json
@@ -116,11 +141,11 @@ step; do not stop at copying files.
    and is deliberately not attested, so it shows up as UNATTESTED rather
    than being credited to the gate. Commit the manifest; it is part of the
    trust base.
-10. Fill in the Merge policy block, asking the user once: may green + SHIP
+11. Fill in the Merge policy block, asking the user once: may green + SHIP
    PRs merge autonomously in this repo, and does merging trigger a deploy?
    If auto-merge is on, verify `gh` is authenticated and record the
    required CI check names the merge will wait on.
-11. Finish with a short report: files created, harness verdict, MODE, merge
+12. Finish with a short report: files created, harness verdict, MODE, merge
    policy, and the one command that starts an outer loop
    (`scripts/loop.sh`) or a campaign (`/fluxpoint:graph-design`, which flips
    the work file to READY, then `/fluxpoint:graph-run`).

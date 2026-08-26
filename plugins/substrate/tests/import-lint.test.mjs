@@ -147,14 +147,43 @@ test("python relative, sibling and dotted-package imports resolve", () => {
     "pkg/core.py": "X = 1\n",
     "pkg/app.py": "from .core import X\n",
     "etl/sibling.py": "Y = 2\n",
-    "etl/main.py": "def f():\n    import sibling\n    return sibling.Y\n",
+    "etl/main.py": "import sibling\n\ndef f():\n    return sibling.Y\n",
     "tool.py": "from pkg.core import X\n",
   });
   const res = run(["--emit", "--root", ws]);
   assert.equal(res.status, 1);
   has(res.stderr, "import lint: pkg-app -> pkg-core undeclared (py/pkg/app.py:1 imports .core)");
-  has(res.stderr, "import lint: etl-main -> sibling undeclared (py/etl/main.py:2 imports sibling)");
+  has(res.stderr, "import lint: etl-main -> sibling undeclared (py/etl/main.py:1 imports sibling)");
   has(res.stderr, "import lint: root-tool -> pkg-core undeclared (py/tool.py:1 imports pkg.core)");
+});
+
+test("a function-local import is a note, never a fatal dependency edge", () => {
+  // Deferring an import inside a function is the standard way to BREAK a
+  // dependency cycle. The real direction here is one-way (oracle -> chain,
+  // declared); counting chain's deferred read-back as an edge would demand
+  // the manifest declare the very cycle the deferral exists to avoid.
+  const ws = makeWorkspace();
+  writeManifest(ws, "py", {
+    repo: "py",
+    primitives: [
+      prim("chain-access", { paths: ["api/chain.py"] }),
+      prim("oracle-read", { paths: ["oracles/aegis_self.py"], consumes: ["chain-access"] }),
+    ],
+  });
+  writeSources(ws, "py", {
+    "api/chain.py":
+      "def price():\n" +
+      "    # `oracles` imports `chain`, so the import is deferred here to keep\n" +
+      "    # that one way round.\n" +
+      "    from oracles.aegis_self import POLICY\n" +
+      "    return POLICY\n",
+    "oracles/aegis_self.py": "from api.chain import price\nPOLICY = 1\n",
+  });
+  const res = run(["--emit", "--root", ws]);
+  assert.equal(res.status, 0, `deferred import must not fail the emit:\n${res.stderr}`);
+  assert.ok(!res.stderr.includes("import lint"), `no fatal lint expected:\n${res.stderr}`);
+  const md = fs.readFileSync(path.join(ws, "SUBSTRATE.md"), "utf8");
+  has(md, "deferred import: chain-access uses oracle-read");
 });
 
 test("a directory path owns everything under it, and the most specific declaration wins", () => {

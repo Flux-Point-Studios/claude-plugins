@@ -52,6 +52,16 @@ case "$out" in *"cannot report green"*)
     ok "and says why green is unavailable" "reported" ;;
   *) bad "and says why green is unavailable" "${out:0:60}" ;; esac
 
+# The guard ratchet's manifest carries the same weight: a repo that declared
+# its money-moving guards must go red when nothing can check them.
+mkrepo guarded
+printf '{"guards": []}\n' > "$WORK/guarded/.fluxpoint-guards.json"
+out="$(run_full guarded)"; rc=$?
+check "a declared guards manifest with no plugin is RED" 1 "$rc"
+case "$out" in *"guard-guard.py is not installed"*)
+    ok "and names guard-guard and its manifest" "reported" ;;
+  *) bad "and names guard-guard and its manifest" "${out:0:60}" ;; esac
+
 # ============ 2. the gap is acceptable only on purpose ===================
 out="$(run_full declared FPL_ALLOW_MISSING_GATES=1)"; rc=$?
 check "an explicit opt-out lets the run continue" 0 "$rc"

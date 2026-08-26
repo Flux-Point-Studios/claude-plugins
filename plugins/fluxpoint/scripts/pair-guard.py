@@ -137,10 +137,17 @@ def changed_files(root, against):
 
     if against == "HEAD":
         files = git("diff", "HEAD", "--name-only", "--diff-filter=ACMR")
-        files += git("ls-files", "--others", "--exclude-standard")
     else:
         files = git("diff", f"{against}...HEAD", "--name-only", "--diff-filter=ACMR")
         files += git("diff", "HEAD", "--name-only", "--diff-filter=ACMR")
+    # Untracked files are changed relative to EVERY base, so this sits outside
+    # the branch above. Listing them only under HEAD meant the Stop gate's
+    # --against path could not see them at all: a mirror written as a new file
+    # false-REDded the co-change rule over work sitting right there, and a
+    # source change existing only untracked was invisible — both directions of
+    # the docstring's own contract, broken on exactly the path the Stop gate
+    # takes.
+    files += git("ls-files", "--others", "--exclude-standard")
     return sorted(set(files))
 
 
