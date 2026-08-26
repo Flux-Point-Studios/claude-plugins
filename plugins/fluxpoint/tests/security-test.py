@@ -291,6 +291,8 @@ def priors_payload_stays_data():
                 "import {writeFileSync} from 'node:fs';",
                 "const PROMPTS=[]; let round=0;",
                 "const agent=async(p,o)=>{PROMPTS.push(p);",
+                "  if(String(o.label||'').includes('tree-check'))",
+                "    return {head:'abc123', porcelain:''};",
                 "  if(String(o.label||'').includes('refute'))",
                 "    return {refuted:false, reason:'no'};",
                 f"  return {{findings: round++ ? [] : [{json.dumps(finding)}]}}}};",

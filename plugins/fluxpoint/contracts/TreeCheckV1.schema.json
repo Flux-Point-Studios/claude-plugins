@@ -1,0 +1,9 @@
+{
+  "$id": "TreeCheckV1",
+  "type": "object",
+  "required": ["head", "porcelain"],
+  "properties": {
+    "head": { "type": "string", "minLength": 1 },
+    "porcelain": { "type": "string" }
+  }
+}

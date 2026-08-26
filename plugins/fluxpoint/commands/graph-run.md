@@ -22,6 +22,17 @@ Workflow tool requires.
    The output is generated code. Never hand-edit it; edit the IR and
    recompile, or the spec and the executor start lying to each other.
 4. Load whatever state the graph refuses to start without.
+   If any node declares `isolation` — or `mutates: true`, which implies a
+   worktree — record the campaign base; the compiled graph refuses to
+   start without it:
+   ```
+   args._base = {"sha": "$(git rev-parse HEAD)", "branch": "$(git branch --show-current)"}
+   ```
+   Isolated nodes are handed this base in their prompts and told to assert
+   it before trusting the tree they were given: a worktree's base is the
+   runtime's choice, and it has been observed cut from the default branch
+   rather than the campaign's, where a file an earlier node committed is
+   simply absent and nothing inside says so.
    If any node has `actor: human` or `actor: third-party`:
    ```
    bash "$ROOT/scripts/py.sh" release.py --load --campaign "<the IR's campaign line>"
