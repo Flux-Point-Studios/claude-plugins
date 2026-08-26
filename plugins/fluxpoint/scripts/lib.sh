@@ -94,6 +94,51 @@ print(d if isinstance(d, str) else json.dumps(d))' "$1" 2>/dev/null
   fi
 }
 
+# Move to the directory a hook should act in. Returns non-zero only if it cannot
+# reach one at all.
+#
+# THE PROJECT DIR KEEPS JURISDICTION WHENEVER IT IS ITSELF INSIDE A GIT WORK
+# TREE: single-repo sessions, and projects scoped to a subdirectory of a larger
+# repo. These hooks are the gate for ONE project, and a session's cwd is
+# wherever its shell last cd'd — a dependency checkout, a sibling repo, a
+# scratch git init. A Stop gate that followed the cwd there would conclude
+# "harness absent" about a repo it was never the gate for, delete the real
+# project's arming marker, and wave the stop through — a plain cd would disarm
+# the gate, which is the one thing it must never do.
+#
+# THE PAYLOAD'S OWN cwd WINS only when the project dir cannot be the repo. In a
+# MULTI-REPO WORKSPACE the project dir is the workspace root, deliberately not a
+# git repo, while the command ran inside one of the repos beneath it — and that
+# repo is where the manifests, the harness and the state directory live.
+# Resolving the project dir first landed outside every repo and exited before
+# reading anything, so attestation, the DoD gate and the per-edit harness were
+# all silently dormant for the whole workspace. (secret-guard resolves cwd
+# first unconditionally, and rightly: it judges the COMMAND, and the command
+# ran in the cwd. These hooks judge a PROJECT.)
+#
+# Then climb to the git toplevel, because a gate is often run from a
+# subdirectory while the artifacts it is judged against sit at the repo root.
+# The climb only happens on the workspace path, so it can never walk out of a
+# project that sits below a bigger repo's toplevel. Outside a repo, stay put
+# and let the caller decide what that means.
+fpl_cd_project() { # $1 = raw hook payload
+  if [ -n "${CLAUDE_PROJECT_DIR:-}" ] \
+     && git -C "$CLAUDE_PROJECT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    cd "$CLAUDE_PROJECT_DIR" 2>/dev/null || return 1
+    return 0
+  fi
+  _fpl_p="$(printf '%s' "${1:-}" | fpl_json_get cwd)"
+  { [ -n "$_fpl_p" ] && [ -d "$_fpl_p" ]; } || _fpl_p="${CLAUDE_PROJECT_DIR:-.}"
+  cd "$_fpl_p" 2>/dev/null || return 1
+  _fpl_r="$(git rev-parse --show-toplevel 2>/dev/null)"
+  # A toplevel that cannot be entered must fail the hook, not leave it running
+  # in a subdirectory where "scripts/harness.sh is absent" reads as true.
+  if [ -n "$_fpl_r" ]; then
+    cd "$_fpl_r" 2>/dev/null || return 1
+  fi
+  return 0
+}
+
 # fpl_json_obj key value [key value ...]  — emits a flat JSON object with
 # string values, safely escaped.
 fpl_json_obj() {

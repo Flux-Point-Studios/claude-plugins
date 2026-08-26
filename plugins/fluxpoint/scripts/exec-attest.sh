@@ -11,8 +11,7 @@ here="${0%/*}"; [ "$here" = "$0" ] && here=.
 . "$here/lib.sh"
 
 input="$(cat)"
-proj="${CLAUDE_PROJECT_DIR:-$(printf '%s' "$input" | fpl_json_get cwd)}"
-cd "${proj:-.}" 2>/dev/null || exit 0
+fpl_cd_project "$input" || exit 0
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || exit 0
 
 # Dormant in a repo that declared no gates, exactly like the DoD gate in a
