@@ -76,20 +76,22 @@ step; do not stop at copying files.
    verification, cross-zone ownership). If the Campaign section stays,
    verify it compiles:
    `bash "${CLAUDE_PLUGIN_ROOT}/scripts/py.sh" compile-graph.py WORK.md --check`
-8. If the repo tracks proof-language files (`.ak`, `.dfy`, `.lean`, `.v`,
-   `.thy`, `.tla`, or verified Rust), arm both ratchets:
+8. Arm the ratchets that share `.fluxpoint-proof-baseline.json`. In ANY
+   repo with tests — proof languages or not — arm the seam ratchet:
+   ```
+   bash "${CLAUDE_PLUGIN_ROOT}/scripts/py.sh" seam-guard.py --baseline
+   ```
+   If the repo also tracks proof-language files (`.ak`, `.dfy`, `.lean`,
+   `.v`, `.thy`, `.tla`, or verified Rust), arm both proof ratchets:
    ```
    bash "${CLAUDE_PLUGIN_ROOT}/scripts/py.sh" proof-guard.py --baseline
    bash "${CLAUDE_PLUGIN_ROOT}/scripts/py.sh" spec-guard.py --baseline
    ```
-   Arm the seam ratchet in ANY repo with tests, proof languages or not:
-   ```
-   bash "${CLAUDE_PLUGIN_ROOT}/scripts/py.sh" seam-guard.py --baseline
-   ```
-   They share `.fluxpoint-proof-baseline.json` and each preserves the
-   other's section. Commit it — it belongs in review, because a rise in the
-   counts is someone making a proof obligation disappear, and a change in
-   the statements is someone making a theorem claim less. Read
+   Each preserves the others' sections of the shared file. Commit it — it
+   belongs in review, because a rise in the seam counts is someone walling
+   a module off behind a mock, a rise in the hatch counts is someone
+   making a proof obligation disappear, and a change in the statements is
+   someone making a theorem claim less. Read
    `spec-guard.py --scan` before arming: it lists exactly what is being
    treated as an obligation, and names any tracked proof language it does
    not parse yet, so an unarmed corner never reads as a covered one.

@@ -364,6 +364,27 @@ mkdir -p build; printf 'fn x() { todo }\n' >build/generated.ak   # untracked
 $PG "$ROOT/r" --check >/dev/null 2>&1
 check "untracked build output is ignored" 0 "$?"
 
+# ========= 8. the baseline file is shared; a sibling's section is not arming =
+# seam-guard writes a `seams` section into this same file, and init.md tells
+# EVERY repo with tests to do so. Reading a file that lacks `counts` as an
+# armed all-zero baseline turned the first `--no-verify` in a tracked
+# workflow file into a proof-guard RED — in a JS repo with zero proof files.
+mkrepo
+mkdir -p .github/workflows
+printf 'run: git push --no-verify\n' >.github/workflows/x.yml
+printf '{"seams": {"first_party": 0, "third_party": 0}}\n' >.fluxpoint-proof-baseline.json
+commit base
+$PG "$ROOT/r" --check >/dev/null 2>&1
+check "a seams-only baseline does not arm the hatch ratchet" 0 "$?"
+# ...and in a proof repo the same file still demands a deliberate arming.
+mkrepo; write_aiken
+printf '{"seams": {"first_party": 0, "third_party": 0}}\n' >.fluxpoint-proof-baseline.json
+commit base
+err="$($PG "$ROOT/r" --check 2>&1 >/dev/null)"; rc=$?
+check "with proof files it is unarmed, not silently green" 0 "$rc"
+case "$err" in *"NOT armed"*) ok "and says the ratchet is not armed" "reported" ;;
+  *) bad "and says the ratchet is not armed" "${err:0:60}" ;; esac
+
 cd /; rm -rf "$ROOT"
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

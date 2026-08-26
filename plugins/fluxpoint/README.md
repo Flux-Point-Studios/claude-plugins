@@ -36,6 +36,11 @@ does.
   ledger: a prover's shrunk failing input, pinned to a regression);
   `mutation-guard.py` (mutation score — whether the tests can fail, not
   just whether they pass);
+  `seam-guard.py` (seam ratchet — whether the tests reach the code at
+  all: a mock of a module you own walls it off and asserts a contract
+  nothing verifies, so the count of module mocks may fall but never
+  rise; process-boundary stubs and partial mocks are deliberately not
+  counted);
   `guard-guard.py` (guard ratchet: the guards that stop money moving
   wrongly, and whether each is still held down by a test that fails
   without it — `--verify` runs the proof intact, then disables the guard
@@ -72,7 +77,9 @@ does.
   (the statement ratchet and its false-positive boundary), `cex-test.sh`
   (the counterexample ledger and every way of appearing to pin without
   pinning, executed), `mutation-test.sh` (the score ratchet in both
-  directions, and staleness staying loud rather than fatal), `budget-test.sh`
+  directions, and staleness staying loud rather than fatal),
+  `seam-guard-test.sh` (the seam ratchet end to end, including that the
+  scaffolded harness enforces it), `budget-test.sh`
   (on-chain limits), `ledger-test.py` (the once-only guard, executed
   rather than grepped), `attest-test.sh` (execution attestation and its
   laundering cases, executed), `memory-test.py` (lessons across runs,

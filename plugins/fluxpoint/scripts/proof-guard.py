@@ -363,7 +363,23 @@ def main():
         return 0  # bootstrapping must not block; arming is a deliberate step
 
     with open(bpath, encoding="utf-8") as fh:
-        base = json.load(fh).get("counts", {})
+        doc = json.load(fh)
+    if "counts" not in doc:
+        # The file is shared with spec-guard and seam-guard, so its presence
+        # proves SOME ratchet armed — not this one. Reading an absent section
+        # as an armed all-zero baseline made `seam-guard.py --baseline` in a
+        # plain JS repo turn the first `--no-verify` in a tracked workflow
+        # file into a proof-guard RED, in a repo with zero proof files.
+        # An absent section is the absent-file case.
+        if not applicable(counts, root):
+            return 0
+        print(
+            f"proof-guard: proof files are tracked but {BASELINE} has no hatch "
+            f"counts, so the ratchet is NOT armed. Run: proof-guard.py --baseline",
+            file=sys.stderr,
+        )
+        return 0
+    base = doc.get("counts", {})
 
     risen = [
         (cat, base.get(cat, 0), counts[cat])

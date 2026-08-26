@@ -45,8 +45,17 @@ Deliberately NOT counted, because each is a real boundary rather than a
 contract you could have verified:
 
   * `stubGlobal('fetch')`, `window.*`, `globalThis.*` — the process edge.
-  * a mock inside a file that also imports the real module under test,
-    which is the shape of a partial mock via importActual.
+  * a partial mock — a factory that reaches back through importActual,
+    requireActual, or vitest's importOriginal helper keeps the real module
+    in the graph, so the contract is still exercised. Judged PER CALL:
+    one partial mock in a file must not exempt a wall-off mock of a
+    different module sitting beside it, or a single importActual would
+    buy unlimited uncounted walls for the rest of that file's life.
+
+Comments are stripped before matching, the same discipline as
+proof-guard: `// we deliberately do not vi.mock('@/wallet') here` is the
+opposite of a mock, and counting it fails the ratchet on exactly the diff
+that explains a fix.
 """
 
 import argparse
@@ -59,22 +68,40 @@ import sys
 BASELINE = ".fluxpoint-proof-baseline.json"
 SECTION = "seams"
 
-TEST_SUFFIXES = (".test.ts", ".test.tsx", ".test.js", ".test.jsx", ".test.mjs",
-                 ".spec.ts", ".spec.tsx", ".spec.js", ".spec.jsx", ".spec.mjs")
+TEST_SUFFIXES = tuple(".%s.%s" % (kind, ext)
+                      for kind in ("test", "spec")
+                      for ext in ("ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts"))
 
 # vi.mock('x') / jest.mock("x") / vi.doMock(`x`) — the specifier is what matters.
 MOCK = re.compile(r"""\b(?:vi|jest)\s*\.\s*(?:do)?[Mm]ock\s*\(\s*(['"`])([^'"`]+)\1""")
 
-# importActual means the real module is still in play; that is a partial mock,
-# not a wall, and it does not hide the contract.
-ACTUAL = re.compile(r"\bimportActual\b|\brequireActual\b")
+# importActual / requireActual / vitest's importOriginal factory helper mean
+# the real module is still in play; that is a partial mock, not a wall, and it
+# does not hide the contract.
+PARTIAL = re.compile(r"\bimportActual\b|\brequireActual\b|\bimportOriginal\b")
+
+BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.S)
+LINE_COMMENT = re.compile(r"^\s*//.*$", re.M)
+
+
+def strip_comments(text):
+    """Full-line // comments and /* */ blocks, with newlines kept so the
+    reported line numbers stay true to the file."""
+    text = BLOCK_COMMENT.sub(lambda m: "\n" * m.group(0).count("\n"), text)
+    return LINE_COMMENT.sub("", text)
 
 
 def tracked_files(root):
-    """Test files git knows about. Falls back to a walk outside a repo."""
+    """Test files git knows about, PLUS untracked ones — mirroring
+    fpl_code_dirty, and for the same reason: a mock added in a file not yet
+    committed must count before the commit, or --check flips from green to
+    red the moment the work lands. Falls back to a walk outside a repo."""
     try:
         out = subprocess.run(["git", "-C", root, "ls-files", "-z"],
                              capture_output=True, text=True, check=True).stdout
+        out += subprocess.run(["git", "-C", root, "ls-files", "-z",
+                               "--others", "--exclude-standard"],
+                              capture_output=True, text=True, check=True).stdout
         names = [n for n in out.split("\0") if n]
     except Exception:
         names = []
@@ -91,32 +118,35 @@ def is_first_party(spec):
     return spec.startswith((".", "/", "@/", "~/", "#"))
 
 
-def scan(root):
+def scan(root, files):
     counts = {"first_party": 0, "third_party": 0}
     where = {"first_party": [], "third_party": []}
-    for rel in tracked_files(root):
+    for rel in files:
         path = os.path.join(root, rel)
         try:
             with open(path, encoding="utf-8", errors="replace") as fh:
                 text = fh.read()
         except OSError:
             continue
-        if ACTUAL.search(text):
-            # A partial mock keeps the real module in the graph; the contract is
-            # still exercised, so walling it off is not what happened here.
-            continue
-        for m in MOCK.finditer(text):
+        text = strip_comments(text)
+        matches = list(MOCK.finditer(text))
+        for i, m in enumerate(matches):
+            # Each call is judged over its own stretch of the file — from this
+            # mock to the next one — which in practice is its factory body. A
+            # whole-file skip was a bypass: one importActual anywhere exempted
+            # every wall-off mock that shared the file, forever.
+            end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+            if PARTIAL.search(text, m.start(), end):
+                # A partial mock keeps the real module in the graph; the
+                # contract is still exercised, so walling it off is not what
+                # happened here.
+                continue
             spec = m.group(2)
             key = "first_party" if is_first_party(spec) else "third_party"
             counts[key] += 1
             line = text.count("\n", 0, m.start()) + 1
             where[key].append("%s:%d  %s" % (rel, line, spec))
     return counts, where
-
-
-def applicable(root):
-    """A repo with no test files at all has nothing to say here."""
-    return bool(tracked_files(root))
 
 
 def main():
@@ -132,12 +162,17 @@ def main():
     root = os.path.abspath(args.root)
     bpath = os.path.join(root, BASELINE)
 
-    if not applicable(root):
-        if args.scan:
-            print("seam-guard: no test files; dormant")
+    files = tracked_files(root)
+    if not files:
+        # Said in every mode, not only --scan: init.md tells ANY repo with
+        # tests to arm this, and a --baseline that exits 0 in silence leaves
+        # the operator unable to tell "armed" from "silently inapplicable".
+        print("seam-guard: no JS/TS test files; dormant — nothing %s"
+              % ("recorded" if args.baseline else
+                 "checked" if args.check else "to scan"))
         return 0
 
-    counts, where = scan(root)
+    counts, where = scan(root, files)
 
     if args.scan:
         for key in ("first_party", "third_party"):
@@ -151,8 +186,18 @@ def main():
         try:
             with open(bpath, encoding="utf-8") as fh:
                 doc = json.load(fh)
-        except Exception:
-            doc = {}
+        except (OSError, json.JSONDecodeError) as e:
+            # The file is shared with proof-guard and spec-guard. Reading a
+            # corrupt one as absent would silently disarm this ratchet on
+            # --check and destroy the siblings' sections on --baseline — a
+            # baseline that parses to nothing while looking configured is the
+            # failure mode this plugin exists to refuse.
+            print("seam-guard: %s is not readable JSON (%s)" % (bpath, e),
+                  file=sys.stderr)
+            return 1
+        if not isinstance(doc, dict):
+            print("seam-guard: %s must be a JSON object" % bpath, file=sys.stderr)
+            return 1
 
     if args.baseline:
         doc[SECTION] = counts
@@ -167,6 +212,13 @@ def main():
     if base is None:
         print("seam-guard: no baseline recorded; run --baseline to arm", file=sys.stderr)
         return 0
+    if not isinstance(base, dict) \
+       or any(not isinstance(base.get(k, 0), int) for k in counts):
+        # A section someone hand-edited into the wrong shape must fail loudly,
+        # not crash with a traceback and not read as unarmed.
+        print("seam-guard: the '%s' section of %s is not usable; re-arm with "
+              "--baseline" % (SECTION, BASELINE), file=sys.stderr)
+        return 1
 
     risen = [(k, base.get(k, 0), counts[k]) for k in counts if counts[k] > base.get(k, 0)]
     if not risen:
