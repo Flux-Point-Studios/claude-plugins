@@ -150,6 +150,48 @@ case "$out1" in *DISARMED*) ok "exec-attest: a broken manifest is announced" "an
 [ -z "$out2" ] && ok "exec-attest: announced once per session, not per command" "quiet after" \
   || bad "exec-attest: announced once per session, not per command" "repeated"
 
+# A MULTI-REPO WORKSPACE: the project dir is the workspace root and is NOT a git
+# repo, and the gates manifest lives in a repo one level down, where the command
+# actually ran. This is the shape the substrate registry is built around — many
+# repos under one root — and in it every hook that resolves CLAUDE_PROJECT_DIR
+# ahead of the payload's own cwd lands outside the repo and exits before it can
+# find anything. secret-guard already settled this ("the payload's own cwd beats
+# CLAUDE_PROJECT_DIR"); the shell hooks had not been brought along.
+ws="$ROOT/ws"; rm -rf "$ws"; mkdir -p "$ws/repo/scripts"
+( cd "$ws/repo" && git init -q -b main \
+  && printf '#!/usr/bin/env bash\nexit 0\n' >scripts/harness.sh && chmod +x scripts/harness.sh \
+  && printf '{"version":1,"gates":{"harness":"scripts/harness.sh --full"}}' >.fluxpoint-gates.json \
+  && git add -A && git -c user.email=t@t -c user.name=t commit -qm base )
+ws_input() { # $1 = cwd the command ran in, $2 = command, $3 = exit code
+  "$FPL_PY" - "$1" "$2" "$3" <<'WSPY'
+import json, sys
+code = int(sys.argv[3])
+resp = ({"stdout": "", "stderr": "", "interrupted": False}
+        if code == 0 else "Error: Exit code %d\n" % code)
+print(json.dumps({"session_id": "ws", "cwd": sys.argv[1], "tool_name": "Bash",
+                  "tool_use_id": "toolu_ws",
+                  "tool_input": {"command": sys.argv[2]},
+                  "tool_response": resp}))
+WSPY
+}
+( cd "$ws/repo" && ws_input "$ws/repo" "scripts/harness.sh --full" 0 \
+  | CLAUDE_PROJECT_DIR="$ws" eval "$(hook_cmd PostToolUse 1)" >/dev/null 2>&1 )
+if [ -f "$ws/repo/.claude/fluxpoint/attest.jsonl" ]; then
+  ok "exec-attest: attests in a repo BELOW a non-git project dir" "recorded"
+else
+  bad "exec-attest: attests in a repo BELOW a non-git project dir" "no log — resolved the workspace root"
+fi
+# ...and from a SUBDIRECTORY of that repo, since a gate is often run from one.
+rm -rf "$ws/repo/.claude"; mkdir -p "$ws/repo/sub"
+( cd "$ws/repo/sub" && ws_input "$ws/repo/sub" "scripts/harness.sh --full" 0 \
+  | CLAUDE_PROJECT_DIR="$ws" eval "$(hook_cmd PostToolUse 1)" >/dev/null 2>&1 )
+if [ -f "$ws/repo/.claude/fluxpoint/attest.jsonl" ]; then
+  ok "exec-attest: attests from a subdirectory of the repo" "recorded"
+else
+  bad "exec-attest: attests from a subdirectory of the repo" "no log"
+fi
+cd "$ROOT/r" 2>/dev/null || true
+
 # --- 4. verify-changed.sh: the previously untested hook ---
 newrepo 0
 printf 'y = 2\n' >>src/app.py

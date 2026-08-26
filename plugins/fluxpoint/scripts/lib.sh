@@ -96,6 +96,30 @@ print(d if isinstance(d, str) else json.dumps(d))' "$1" 2>/dev/null
 
 # fpl_json_obj key value [key value ...]  — emits a flat JSON object with
 # string values, safely escaped.
+# Move to the directory a hook should act in. Returns non-zero only if it cannot
+# reach one at all.
+#
+# THE PAYLOAD'S OWN cwd WINS over CLAUDE_PROJECT_DIR. In a single-repo session the
+# two agree and nothing changes. In a MULTI-REPO WORKSPACE they do not: the project
+# dir is the workspace root, which may not be a git repo at all, while the command
+# ran inside one of the repos beneath it — and that repo is where the manifests,
+# the harness and the state directory live. Resolving the project dir first landed
+# outside every repo and exited before reading anything, so attestation, the DoD
+# gate and the per-edit harness were all silently dormant for the whole workspace.
+# secret-guard already settled this precedence; these hooks now follow it.
+#
+# Then climb to the git toplevel, because a gate is often run from a subdirectory
+# while the artifacts it is judged against sit at the repo root. Outside a repo,
+# stay put and let the caller decide what that means.
+fpl_cd_project() { # $1 = raw hook payload
+  _fpl_p="$(printf '%s' "${1:-}" | fpl_json_get cwd)"
+  { [ -n "$_fpl_p" ] && [ -d "$_fpl_p" ]; } || _fpl_p="${CLAUDE_PROJECT_DIR:-.}"
+  cd "$_fpl_p" 2>/dev/null || return 1
+  _fpl_r="$(git rev-parse --show-toplevel 2>/dev/null)"
+  [ -n "$_fpl_r" ] && cd "$_fpl_r" 2>/dev/null
+  return 0
+}
+
 fpl_json_obj() {
   if command -v jq >/dev/null 2>&1; then
     local args=() filter='{' i=0
