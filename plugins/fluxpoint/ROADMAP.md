@@ -335,16 +335,23 @@ plugin removed from its own compiler.
 
 So the hook's value rests on a mechanism this plugin already depends on. It
 answers one deterministic question at compaction time — had anything this
-session learned reached the disk? — by hashing the work file's Decisions and
-Notes sections against a snapshot SessionStart took at the session's real
-start, and writes the answer to `<session>.compacted`. SessionStart then
-reads that marker and tells the post-compaction context, in the same
-injection that already carries branch state and the harness verdict, that
-the reasoning behind the current diff is gone and to re-derive rather than
-assume. The stdout line is still emitted: a bonus if the summarizer sees it,
-costing nothing if it does not. The hook never blocks compaction — wedging a
-session by refusing to free context is a worse failure than the memory it
-was protecting.
+window learned reached the disk? — by hashing the durable surfaces (the
+work file's Decisions/Notes, the project's memory store, the session's task
+board) against a per-window snapshot, and writes the answer to
+`<session>.compacted`. SessionStart then reads that marker and tells the
+post-compaction context, in the same injection that already carries branch
+state and the harness verdict, that the reasoning behind the current diff
+is gone and to re-derive rather than assume. The stdout line is still
+emitted: a bonus if the summarizer sees it, costing nothing if it does not.
+
+v1.29 hardened this from a warning into a gate. An unflushed window now
+blocks compaction ONCE (exit 2, reason on stderr) so the flush happens
+before the transcript is discarded; the block is bounded per window — the
+retry always proceeds and re-seeds the window — so two consecutive attempts
+can never both block and the wedge the original design feared is
+structurally impossible. Non-git roots are in scope (the old git-guard exit
+made the hook inert in exactly the long non-repo sessions where compaction
+hurts most), and `FPL_COMPACT_BLOCK=0` demotes it back to warn-only.
 
 `FPL_DISTILL=1` arms the Stop-gate check, and it is off by default for the
 reason the slice-6 review made explicit: a check that starts by blocking

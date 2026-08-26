@@ -97,7 +97,7 @@ json.dump({"outcomes": o,
            "caught": caught, "missed": missed, "timeout": timeout,
            "unviable": unviable, "success": 0,
            "cargo_mutants_version": "27.1.0"},
-          open("/dev/stdout", "w"))
+          sys.stdout)
 PY
 }
 

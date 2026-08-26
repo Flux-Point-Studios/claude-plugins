@@ -38,11 +38,46 @@ here="${0%/*}"; [ "$here" = "$0" ] && here=.
 input="$(cat)"
 proj="${CLAUDE_PROJECT_DIR:-$(printf '%s' "$input" | fpl_json_get cwd)}"
 cd "${proj:-.}" 2>/dev/null || exit 0
-git rev-parse --is-inside-work-tree >/dev/null 2>&1 || exit 0
 
 sd="$(fpl_state_dir)"
+sid="$(fpl_sid "$(printf '%s' "$input" | fpl_json_get session_id)")"
+
+# Everything up to the git guard also runs in non-git roots: the compaction
+# gate is scoped to durable surfaces (work file, memory store, task board)
+# that exist with or without a repo, and the long non-repo session is where
+# compaction losses hurt most.
+mkdir -p "$sd" 2>/dev/null
+# The state dir must never be committable, including in repos that skipped
+# /fluxpoint:init — its markers carry session ids and disarm flags.
+[ -f "$sd/.gitignore" ] || printf '*\n' >"$sd/.gitignore" 2>/dev/null
 find "$sd" -maxdepth 1 \( -name '*.dirty' -o -name '*.blocks' -o -name '*.base' \
-  -o -name '*.attest-warned' \) -mtime +3 -delete 2>/dev/null
+  -o -name '*.attest-warned' -o -name '*.cwin' -o -name '*.cblock' \
+  -o -name '*.nodecision' \) -mtime +3 -delete 2>/dev/null
+# The compaction-window snapshot, seeded only when absent — each allowed
+# compaction re-seeds it, so every window is measured from its own start.
+[ -f "$sd/$sid.cwin" ] \
+  || printf '%s\n%s\n' "$(fpl_memory_sha)" "$(fpl_aux_sha "$sid")" \
+       >"$sd/$sid.cwin" 2>/dev/null
+
+# This context may be the one that exists after a compaction. The PreCompact
+# hook recorded whether anything had been written down at that moment; if
+# nothing had, the reasoning behind whatever is in the tree did not survive,
+# and a fresh context should know that rather than assume the diff explains
+# itself.
+compacted="$sd/$sid.compacted"
+if [ -f "$compacted" ]; then
+  cflushed="$(fpl_json_get flushed <"$compacted")"
+  cworked="$(fpl_json_get codeChanged <"$compacted")"
+  cblocked="$(fpl_json_get blocked <"$compacted")"
+  cwhen="$(fpl_json_get when <"$compacted")"
+  if [ "$cflushed" = "no" ] && [ "$cblocked" = "yes" ]; then
+    echo "- CONTEXT WAS COMPACTED at ${cwhen}. The compaction gate blocked once and was overridden with still nothing flushed: no decision, memory, or task update marks what that window learned. The reasoning behind the current state was in the transcript that got summarized. Treat it as lost: re-derive from the code and the tests rather than assuming a prior decision still holds, and write down what you conclude."
+  elif [ "$cflushed" = "no" ] && [ "$cworked" != "no" ]; then
+    echo "- CONTEXT WAS COMPACTED at ${cwhen} with nothing written to Decisions or Notes, while code had changed. The reasoning behind the current diff — what was tried, what was ruled out, why this approach — was in the transcript that got summarized. Treat it as lost: re-derive from the code and the tests rather than assuming a prior decision still holds, and write down what you conclude."
+  fi
+fi
+
+git rev-parse --is-inside-work-tree >/dev/null 2>&1 || exit 0
 
 # The commit this session starts from, so the Stop gate can tell work done
 # this session from history it inherited — including work that was committed
@@ -51,8 +86,6 @@ find "$sd" -maxdepth 1 \( -name '*.dirty' -o -name '*.blocks' -o -name '*.base' 
 # Written only when absent: this hook also fires on resume, /clear and
 # post-compaction, and refreshing the baseline there would forgive every
 # commit made before that point. The gate refreshes it itself, on green.
-sid="$(printf '%s' "$input" | fpl_json_get session_id)"
-sid="${sid:-nosession}"
 [ -f "$(fpl_base_file "$sid")" ] || fpl_set_base "$sid"
 # The same rule for the memory snapshot: taken once, at the session's real
 # start, so a later compaction cannot reset the mark it is measured against.
@@ -88,21 +121,6 @@ if [ -f "$inbox_py" ]; then
   open_items="$("$FPL_PY" "$inbox_py" --count 2>/dev/null || echo 0)"
   if [ "${open_items:-0}" -gt 0 ] 2>/dev/null; then
     echo "- BLOCKED ON YOU: ${open_items} item(s) waiting on a person. Run /fluxpoint:status for the list, /fluxpoint:release <node> to clear one."
-  fi
-fi
-
-# This context may be the one that exists after a compaction. The PreCompact
-# hook recorded whether anything had been written down at that moment; if
-# nothing had, the reasoning behind whatever is in the tree did not survive,
-# and a fresh context should know that rather than assume the diff explains
-# itself.
-compacted="$sd/$sid.compacted"
-if [ -f "$compacted" ]; then
-  cflushed="$(fpl_json_get flushed <"$compacted")"
-  cworked="$(fpl_json_get codeChanged <"$compacted")"
-  cwhen="$(fpl_json_get when <"$compacted")"
-  if [ "$cflushed" = "no" ] && [ "$cworked" = "yes" ]; then
-    echo "- CONTEXT WAS COMPACTED at ${cwhen} with nothing written to Decisions or Notes, while code had changed. The reasoning behind the current diff — what was tried, what was ruled out, why this approach — was in the transcript that got summarized. Treat it as lost: re-derive from the code and the tests rather than assuming a prior decision still holds, and write down what you conclude."
   fi
 fi
 

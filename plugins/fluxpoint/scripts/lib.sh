@@ -34,6 +34,14 @@ fpl_state_dir() {
   printf '%s/.claude/fluxpoint' "${CLAUDE_PROJECT_DIR:-$PWD}"
 }
 
+# fpl_sid <raw> — a session id safe to concatenate into file paths. The
+# runtime mints UUIDs today, but every consumer here builds paths from the
+# value, and an id carrying separators would write outside the state dir.
+# Same munge the runtime applies to its own task ids.
+fpl_sid() {
+  printf '%s' "${1:-nosession}" | tr -c 'A-Za-z0-9_-' '-'
+}
+
 # fpl_state_file — the repo's work-state file. WORK.md is current; LOOP.md is
 # still honored so repos that have not run /fluxpoint:migrate keep working.
 # Prints nothing when neither exists.
@@ -129,6 +137,50 @@ for name in ("Decisions", "Notes"):
                          text, re.S | re.M | re.I):
         keep.append(m.group(1))
 print(hashlib.sha256("".join(keep).encode("utf-8", "replace")).hexdigest()[:12])
+PY
+}
+
+# fpl_aux_sha <session_id> — a hash of the durable surfaces that live
+# OUTSIDE the repo: the project's auto-memory store and the session's task
+# board. Together with fpl_memory_sha these are where a session's learning
+# survives; a compaction window in which none of the three changed is a
+# window whose reasoning exists only in the transcript being summarized.
+#
+# Paths follow Claude Code's own conventions — projects/<munged-path>/memory
+# and tasks/<session-id> under the config dir (CLAUDE_CONFIG_DIR when the
+# user relocated it, ~/.claude otherwise) — with the directory passed as an
+# argument rather than read from the environment inside python, because on
+# Windows the MSYS layer converts POSIX paths in argv but not in exported
+# variables. FPL_AUX_HOME exists so tests can fake the whole surface.
+# Prints "noaux" when neither directory exists, which compares equal to
+# itself and so never blocks anything on its own.
+fpl_aux_sha() {
+  local cfg
+  if [ -n "${FPL_AUX_HOME:-}" ]; then cfg="$FPL_AUX_HOME/.claude"
+  else cfg="${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}"; fi
+  "$FPL_PY" - "${CLAUDE_PROJECT_DIR:-$PWD}" "$(fpl_sid "${1:-}")" \
+    "$cfg" <<'PY' 2>/dev/null || printf 'noaux'
+import hashlib, os, sys
+proj, sid, cfg = sys.argv[1], sys.argv[2], sys.argv[3]
+munged = "".join(c if c.isalnum() else "-" for c in proj)
+h = hashlib.sha256()
+found = False
+for d in (os.path.join(cfg, "projects", munged, "memory"),
+          os.path.join(cfg, "tasks", sid)):
+    if not os.path.isdir(d):
+        continue
+    found = True
+    for root, dirs, files in os.walk(d):
+        dirs.sort()
+        for f in sorted(files):
+            p = os.path.join(root, f)
+            try:
+                st = os.stat(p)
+            except OSError:
+                continue
+            h.update(("%s|%d|%d\n" % (os.path.relpath(p, d).replace(os.sep, "/"),
+                                      st.st_size, st.st_mtime_ns)).encode())
+print(h.hexdigest()[:12] if found else "noaux")
 PY
 }
 

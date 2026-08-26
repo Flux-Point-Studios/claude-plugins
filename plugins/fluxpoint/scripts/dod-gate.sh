@@ -14,8 +14,7 @@ proj="${CLAUDE_PROJECT_DIR:-$(printf '%s' "$input" | fpl_json_get cwd)}"
 cd "${proj:-.}" 2>/dev/null || exit 0
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || exit 0
 
-sid="$(printf '%s' "$input" | fpl_json_get session_id)"
-sid="${sid:-nosession}"
+sid="$(fpl_sid "$(printf '%s' "$input" | fpl_json_get session_id)")"
 sd="$(fpl_state_dir)"
 dirty="$sd/$sid.dirty"
 counter="$sd/$sid.blocks"
