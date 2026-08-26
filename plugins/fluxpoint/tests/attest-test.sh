@@ -354,6 +354,41 @@ payload_interrupted "scripts/harness.sh --full" \
   | "$FPL_PY" "$ATTEST" --root "$ROOT/r" --record >/dev/null 2>&1
 check "an interrupted command attests nothing, never a pass" 0 "$(rows)"
 
+# A backgrounded launch returns IMMEDIATELY with a success-shaped payload —
+# stdout/stderr/interrupted, no exit code — before the gate has run at all,
+# and completion arrives later as a task notification, never as another Bash
+# PostToolUse. Reading that shape as exit 0 mints a pass that has not
+# happened, and record-run trusts what it finds here.
+payload_background() { # $1 = command  (deliberate run_in_background: true)
+  "$FPL_PY" - "$1" <<'PY'
+import json, sys
+print(json.dumps({
+    "session_id": "s1", "tool_name": "Bash", "tool_use_id": "toolu_x",
+    "tool_input": {"command": sys.argv[1], "run_in_background": True},
+    "tool_response": {"stdout": "", "stderr": "", "interrupted": False},
+}))
+PY
+}
+payload_autobackground() { # $1 = command  (auto-background: id in the response)
+  "$FPL_PY" - "$1" <<'PY'
+import json, sys
+print(json.dumps({
+    "session_id": "s1", "tool_name": "Bash", "tool_use_id": "toolu_x",
+    "tool_input": {"command": sys.argv[1]},
+    "tool_response": {"stdout": "", "stderr": "", "interrupted": False,
+                      "backgroundTaskId": "bg_123"},
+}))
+PY
+}
+newrepo; gates
+payload_background "scripts/harness.sh --full" \
+  | "$FPL_PY" "$ATTEST" --root "$ROOT/r" --record >/dev/null 2>&1
+check "a backgrounded gate attests nothing — it has not run yet" 0 "$(rows)"
+newrepo; gates
+payload_autobackground "scripts/harness.sh --full" \
+  | "$FPL_PY" "$ATTEST" --root "$ROOT/r" --record >/dev/null 2>&1
+check "auto-backgrounded (backgroundTaskId) attests nothing" 0 "$(rows)"
+
 cd /; rm -rf "$ROOT"
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
