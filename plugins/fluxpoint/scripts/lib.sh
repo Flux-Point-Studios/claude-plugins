@@ -30,8 +30,13 @@ fi
 # 0x97 and every consumer that greps for the UTF-8 bytes silently misses it.
 export PYTHONIOENCODING=utf-8
 
+# $PWD, not CLAUDE_PROJECT_DIR. Every hook calls fpl_cd_project first, which has already
+# resolved the repo — the payload's own cwd, climbed to the git toplevel — so the working
+# directory IS the right answer by the time anyone asks. Preferring the project dir here
+# undoes that one line later, and in a multi-repo workspace it points at a root that holds
+# no state directory at all: the hooks would cd correctly and then read the wrong place.
 fpl_state_dir() {
-  printf '%s/.claude/fluxpoint' "${CLAUDE_PROJECT_DIR:-$PWD}"
+  printf '%s/.claude/fluxpoint' "$PWD"
 }
 
 # fpl_sid <raw> — a session id safe to concatenate into file paths. The
@@ -54,7 +59,7 @@ fpl_state_file() {
 
 # fpl_legacy_state_dir — pre-1.0 state lived under .claude/fluxpoint-loop.
 fpl_legacy_state_dir() {
-  printf '%s/.claude/fluxpoint-loop' "${CLAUDE_PROJECT_DIR:-$PWD}"
+  printf '%s/.claude/fluxpoint-loop' "$PWD"
 }
 
 # fpl_run_summary <runs/xxx.json> — one line describing a recorded graph run.
@@ -203,6 +208,13 @@ fpl_aux_sha() {
   local cfg
   if [ -n "${FPL_AUX_HOME:-}" ]; then cfg="$FPL_AUX_HOME/.claude"
   else cfg="${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}"; fi
+  # CLAUDE_PROJECT_DIR here, unlike fpl_state_dir: this path is not repo state,
+  # it is a KEY into Claude Code's own projects/<munged-path> naming, and the
+  # runtime munges the directory the session was LAUNCHED from. In a multi-repo
+  # workspace the hooks cd into the repo, but the session's auto-memory store
+  # stays keyed to the workspace root — $PWD here would hash a directory that
+  # does not exist and report the store's flushes as "noaux", blinding the
+  # compaction window to exactly the surface it exists to protect.
   "$FPL_PY" - "${CLAUDE_PROJECT_DIR:-$PWD}" "$(fpl_sid "${1:-}")" \
     "$cfg" <<'PY' 2>/dev/null || printf 'noaux'
 import hashlib, os, sys
