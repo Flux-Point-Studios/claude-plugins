@@ -77,6 +77,15 @@ printf 'marketplace\n' > "$FAKE/.claude/plugins/marketplaces/fluxpoint/plugins/f
 
 resolve() {  # runs plugin_script from the shipped template, nothing else
   ( set -uo pipefail
+    # These cases are about the HOME-based fallback ORDER, so the two overrides that
+    # legitimately short-circuit it have to be out of the way. The runtime exports
+    # CLAUDE_PLUGIN_ROOT whenever the harness runs under a hook, and inheriting it made
+    # both cases silently assert the override instead of the order — reporting the real
+    # installed copy on the developer's machine as if it were the fixture.
+    #
+    # Latent until v1.30.0, because before that the hooks could not fire in a multi-repo
+    # workspace at all, so this suite had only ever run from a bare shell.
+    unset CLAUDE_PLUGIN_ROOT FPL_PLUGIN_ROOT
     eval "$(sed -n '/^plugin_script() {/,/^}/p' "$HARNESS")"
     HOME="$1" plugin_script pair-guard.py )
 }
