@@ -258,6 +258,14 @@ full() {
   if need_gate spec-guard.py .fluxpoint-proof-baseline.json; then
     "$FPL_PY" "$FPL_GATE" --check
   fi
+  # Seam ratchet. The mutation score below asks whether the tests can fail;
+  # this asks whether they reach the code at all — a mock of a module you own
+  # walls it off and asserts a contract nothing verifies, and a mutant behind
+  # that wall reports the same green either way. Dormant until armed with
+  # --baseline.
+  if need_gate seam-guard.py .fluxpoint-proof-baseline.json; then
+    "$FPL_PY" "$FPL_GATE" --check
+  fi
   # Counterexample ledger. A prover's shrunk failing input is the most
   # reusable thing it produces and it lives in a log the next command
   # overwrites. This fails when a pinned counterexample has lost the

@@ -116,6 +116,33 @@ out="$(guard --scan)"
 case "$out" in *"first_party = 1"*) ok "jest.mock counts too" "1" ;;
   *) bad "jest.mock counts too" "${out//$'\n'/ }" ;; esac
 
+# --- the SCAFFOLDED harness enforces it, not just this repo's test suite ---
+# init.md tells every repo with tests to arm this ratchet; the DoD gate runs
+# the repo's scripts/harness.sh, which /fluxpoint:init copies from
+# templates/harness.sh. If that template never invokes seam-guard --check,
+# the ratchet is armed everywhere and enforced nowhere — a witness nothing
+# consults, which is the failure class this plugin exists to refuse.
+newrepo
+mkdir -p scripts && cp "$PLUGIN/templates/harness.sh" scripts/harness.sh
+printf "vi.mock('@/a', () => ({}));\n" >src/__tests__/a.test.ts
+commit; guard --baseline >/dev/null 2>&1
+printf "vi.mock('@/b', () => ({}));\n" >>src/__tests__/a.test.ts
+commit
+out="$(cd "$ROOT/r" && env -u CLAUDE_PLUGIN_ROOT FPL_PLUGIN_ROOT="$PLUGIN" \
+  bash scripts/harness.sh --full 2>&1)"; rc=$?
+if [ "$rc" -ne 0 ] && case "$out" in *"first_party mocks rose"*) true ;; *) false ;; esac; then
+  ok "the scaffolded harness enforces the ratchet" "rise is RED end to end"
+else
+  bad "the scaffolded harness enforces the ratchet" "rc=$rc ${out//$'\n'/ }"
+fi
+# ...and at baseline the same scaffolded run is green, so the gate added
+# above cannot be the thing that reddens an innocent repo.
+guard --baseline >/dev/null 2>&1
+commit
+out="$(cd "$ROOT/r" && env -u CLAUDE_PLUGIN_ROOT FPL_PLUGIN_ROOT="$PLUGIN" \
+  bash scripts/harness.sh --full 2>&1)"; rc=$?
+check "the scaffolded harness at baseline stays green" 0 "$rc"
+
 cd /; rm -rf "$ROOT"
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

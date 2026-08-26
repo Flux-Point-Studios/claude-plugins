@@ -156,7 +156,7 @@ def main():
 
     if args.baseline:
         doc[SECTION] = counts
-        with open(bpath, "w", encoding="utf-8") as fh:
+        with open(bpath, "w", encoding="utf-8", newline="\n") as fh:
             json.dump(doc, fh, indent=2, sort_keys=True)
             fh.write("\n")
         print("seam-guard: baseline armed at first_party=%d third_party=%d"
