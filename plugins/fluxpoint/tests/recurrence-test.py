@@ -601,7 +601,9 @@ def run_graph(ir, findings):
             fh.write(
                 "import {writeFileSync} from 'node:fs';\n"
                 f"const ROUNDS={json.dumps(findings)};let round=0;\n"
-                "const agent=async(p,o)=>String(o.label||'').includes('refute')\n"
+                "const agent=async(p,o)=>String(o.label||'').includes('tree-check')\n"
+                "  ? {head:'abc123', porcelain:''}\n"
+                "  : String(o.label||'').includes('refute')\n"
                 "  ? {refuted:false, reason:'could not find a reason it is wrong'}\n"
                 "  : {findings: ROUNDS[round++] || []};\n"
                 "const parallel=async(t)=>Promise.all(t.map(f=>f()));\n"

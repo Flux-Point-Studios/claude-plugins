@@ -605,12 +605,96 @@ for needle, why in [
 import re as _re
 for name, src in [("fan-out+panel", js), ("discovery", disc_js), ("single", single_js)]:
     bypass = [l for l in src.splitlines()
-              if _re.search(r'(?<![a-zA-Z])agent\(', l) and 'return agent(prompt, opts)' not in l]
+              if _re.search(r'(?<![a-zA-Z])agent\(', l) and 'return agent(prompt, opts)' not in l
+              # Comments are not calls.
+              and not l.strip().startswith('//')
+              # The tree sentinel is a guard rail, not a node: it must not
+              # spend the node budget and must still run after the ceiling is
+              # reached, so its direct agent() call is exempt BY DESIGN — and
+              # asserted separately below, so the exemption cannot widen into
+              # a loophole.
+              and 'tree-check' not in l]
     ok = not bypass
     print(f"{'PASS' if ok else 'FAIL'}  ceiling: {name+' routes every agent via spawn':<44} -> "
           f"{'yes' if ok else bypass[0].strip()[:50]}")
     passed, failed = (passed + ok, failed + (not ok))
 
+
+# ---------------------------------------------------------------------------
+# Tree integrity: the tree a node acts on is declared, injected, and checked.
+# Three filed failures, one theme — a worktree cut from the wrong base read as
+# a true report (#16), a fan-out measuring a shared tree corrupted its own
+# numbers silently (#20), and a node's leftover dirt let a green gate describe
+# a tree that no longer existed (#21).
+# ---------------------------------------------------------------------------
+case("isolation is a closed registry",
+     lambda ir: ir["nodes"][0].update(isolation="worktreee"),
+     "isolation must be one of")
+case("isolation: 'measure' is accepted",
+     lambda ir: ir["nodes"][0].update(isolation="measure"), None)
+
+
+def measure_mutator(ir):
+    add_verified_mutator(ir)
+    ir["nodes"][1]["isolation"] = "measure"
+
+
+case("a mutator cannot be a throwaway measurement",
+     measure_mutator, "cannot combine with isolation:'measure'")
+case("treeGuard must be boolean",
+     lambda ir: ir.update(treeGuard="yes"), "treeGuard must be a boolean")
+
+tree_ir = copy.deepcopy(BASE)
+tree_ir["nodes"][0]["isolation"] = "measure"
+add_verified_mutator(tree_ir)
+tree_js = cg.emit(tree_ir, CONTRACTS)
+off_js = cg.emit({**copy.deepcopy(tree_ir), "treeGuard": False}, CONTRACTS)
+plain_js = cg.emit(BASE, CONTRACTS)
+for name, ok in [
+    # #20: a measure node makes its own frozen snapshot instead of taking the
+    # runtime's worktree — only the mutator gets `isolation: 'worktree'`.
+    ("measure node self-snapshots, no runtime worktree",
+     tree_js.count("isolation: 'worktree'") == 1),
+    ("the snapshot command reaches the prompt, executable not prose",
+     "git archive HEAD" in tree_js and "measurePreamble() +" in tree_js),
+    # #16: the campaign base is loaded at launch, refused if absent, and the
+    # worktree node's first act is asserting it.
+    ("isolated nodes refuse to start without args._base",
+     "A._base" in tree_js and "no base was passed" in tree_js),
+    ("the worktree preamble asserts the base, with the sha supplied",
+     "basePreamble() +" in tree_js and "merge-base --is-ancestor" in tree_js
+     and "${BASE.sha}" in tree_js),
+    ("a graph with no isolated nodes demands no base",
+     "A._base" not in plain_js),
+    # #21: the sentinel brackets the campaign and guards every verdict-minting
+    # node; drift halts rather than advancing.
+    ("sentinel at start, before the verdict node, and at end",
+     "treeCheck('campaign-start'" in tree_js
+     and "treeCheck(\"before gate\"" in tree_js
+     and "treeCheck('campaign-end'" in tree_js),
+    ("tree drift is a halt, not a log line",
+     "return summary('TREE-MOVED')" in tree_js),
+    ("the sentinel record rides out in the summary",
+     "tree: TREE" in tree_js),
+    ("the sentinel is schema-forced",
+     "TreeCheckV1" in tree_js),
+    ("the sentinel bypasses the node budget by design",
+     "tree-check:${point}" in tree_js),
+    ("treeGuard: false removes the sentinel, on the record",
+     "treeCheck" not in off_js and "TreeCheckV1" not in off_js),
+]:
+    print(f"{'PASS' if ok else 'FAIL'}  tree: {name:<50} -> {'yes' if ok else 'MISSING'}")
+    passed, failed = (passed + ok, failed + (not ok))
+
+warn_case("fan-out that measures a shared tree",
+          lambda ir: ir["nodes"][0].update(
+              prompt="measure the byte size of {{item.brief}}"),
+          "share ONE working tree")
+warn_case("measuring fan-out with isolation stays silent",
+          lambda ir: ir["nodes"][0].update(
+              prompt="measure the byte size of {{item.brief}}",
+              isolation="measure"),
+          None)
 
 # ---------------------------------------------------------------------------
 # Emission is BYTES, not just content. An open(path, "w") without encoding and
@@ -701,6 +785,76 @@ def emission_bytes_case():
 
 
 emission_bytes_case()
+
+
+def tree_sentinel_executed_case():
+    """Executed, not grepped: a sentinel that observes drift HALTS the run.
+
+    The emitted `if (!await treeCheck(...)) return summary('TREE-MOVED')` is
+    exactly the kind of line a substring assertion proves present and never
+    proves live. Run the compiled graph under stubs twice — a steady tree and
+    a drifting one — and read what actually came back: the verdict node must
+    never have spawned after the drift, because a gate that runs anyway is
+    the whole bug (#21).
+    """
+    global passed, failed
+    import subprocess
+    import tempfile
+
+    ir = copy.deepcopy(BASE)
+    add_verified_mutator(ir)
+    js = cg.emit(ir, CONTRACTS)
+
+    def run(drift):
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "o.json")
+            w = os.path.join(d, "w.mjs")
+            with open(w, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write("\n".join([
+                    "import {writeFileSync} from 'node:fs';",
+                    "const PROMPTS=[]; let checks=0;",
+                    "const agent=async(p,o)=>{PROMPTS.push(String(p));",
+                    "  if(String(o.label||'').includes('tree-check'))",
+                    f"    return {{head:'abc123', porcelain: (++checks > 1 && {json.dumps(drift)}) ? ' M src/app.py' : ''}};",
+                    "  if(String(o.label||'').includes('refute'))",
+                    "    return {refuted:false, reason:'no'};",
+                    "  if(String(o.label||'').includes('gate'))",
+                    "    return {exit:0, command:'scripts/harness.sh --full', tail:''};",
+                    "  if(String(o.label||'').includes('build'))",
+                    "    return {summary:'done', plan:'p', files:[], risks:[]};",
+                    "  return {findings:[]}};",
+                    "const parallel=async(t)=>Promise.all(t.map(f=>f()));",
+                    "const pipeline=async()=>[],log=()=>{},phase=()=>{};",
+                    "const args={_base:{sha:'abc123',branch:'main'}};",
+                    "const budget={total:null,spent:()=>0,remaining:()=>1e9};",
+                    "const workflow=0;",
+                    "(async () => {",
+                    js.replace("export const meta", "const meta"),
+                    "})().then(r=>writeFileSync(" + json.dumps(out)
+                    + ",JSON.stringify({r, gateRan: PROMPTS.some(p=>p.includes('re-run the harness'))})))",
+                    ".catch(e=>writeFileSync(" + json.dumps(out)
+                    + ",JSON.stringify({err:String(e&&e.message||e)})))",
+                ]))
+            subprocess.run(["node", w], capture_output=True, timeout=90)
+            return json.load(open(out)) if os.path.exists(out) else {"err": "no output"}
+
+    steady = run(drift=False)
+    moved = run(drift=True)
+    for name, ok in [
+        ("steady tree: campaign completes with the checks on record",
+         (steady.get("r") or {}).get("outcome") in ("COMPLETE", "INCOMPLETE")
+         and len(((steady.get("r") or {}).get("tree") or {}).get("checks", [])) == 3),
+        ("drifting tree: the run halts as TREE-MOVED",
+         (moved.get("r") or {}).get("outcome") == "TREE-MOVED"),
+        ("and the verdict node never spawned after the drift",
+         moved.get("gateRan") is False),
+    ]:
+        detail = "yes" if ok else f"got steady={steady} moved={moved}"
+        print(f"{'PASS' if ok else 'FAIL'}  tree-executed: {name:<48} -> {detail[:90]}")
+        passed, failed = (passed + ok, failed + (not ok))
+
+
+tree_sentinel_executed_case()
 
 
 print(f"\n{passed} passed, {failed} failed")

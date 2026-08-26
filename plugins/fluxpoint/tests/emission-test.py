@@ -358,6 +358,7 @@ probe("IR", "nodes", NODE_BASE,
       lambda ir: ir["nodes"].append({"id": "extra", "phase": "P2",
                                      "prompt": "another", "contract": "DesignV1"}))
 probe("IR", "requiredArgs", NODE_BASE, lambda ir: ir.update(requiredArgs=["target"]))
+probe("IR", "treeGuard", NODE_BASE, lambda ir: ir.update(treeGuard=False))
 probe("IR", "argDefaults", NODE_BASE, lambda ir: ir.update(argDefaults={"target": "HEAD"}))
 
 # ------------------------------------------------------------ completeness
@@ -378,7 +379,7 @@ probed = {
     "budget": {"maxNodes", "verifyFloorTokens", "nodeFloorTokens"},
     "IR": {
         "version", "name", "campaign", "budget", "defaults", "roles", "lists",
-        "nodes", "requiredArgs", "argDefaults", "imports",
+        "nodes", "requiredArgs", "argDefaults", "imports", "treeGuard",
     },
 }
 for level, registry in [

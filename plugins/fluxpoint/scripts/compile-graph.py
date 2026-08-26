@@ -42,7 +42,7 @@ IDENT = re.compile(r"^[a-z][a-z0-9-]*$")
 # must demonstrably change what the compiler produces.
 IR_FIELDS = {
     "version", "name", "campaign", "budget", "defaults", "roles", "lists",
-    "nodes", "requiredArgs", "argDefaults", "imports",
+    "nodes", "requiredArgs", "argDefaults", "imports", "treeGuard",
 }
 NODE_FIELDS = {
     "id", "phase", "prompt", "contract", "role", "effort", "model", "agentType",
@@ -55,6 +55,13 @@ NODE_FIELDS = {
 # silently — a misspelled 'Halt' weakened the declared policy in the
 # permissive direction, which is the exact failure closed registries kill.
 ON_RED = {"halt", "drop+log"}
+# isolation modes. True and 'worktree' are the runtime's worktree (the
+# compiler emits the literal and the runtime picks the base — see the
+# graph-engineering skill for what that does NOT promise). 'measure' is a
+# frozen `git archive HEAD` snapshot the node creates itself in the shared
+# cwd, so a fan-out of measuring nodes stops being a function of what every
+# sibling is doing — and the base is the campaign's by construction.
+ISOLATION = {True, "worktree", "measure"}
 ACTORS = {"agent", "human", "third-party"}
 RELEASE_FIELDS = {"instructions", "proofContract", "whyNotAgent"}
 WAKE_FIELDS = {"check", "everyMinutes", "deadline"}
@@ -470,6 +477,10 @@ def validate(ir, contracts, gates=None, agents=None):
     f = []
     if ir.get("version") != 1:
         f.append("IR version must be 1")
+    if "treeGuard" in ir and not isinstance(ir["treeGuard"], bool):
+        f.append("treeGuard must be a boolean — it disables the shared-tree "
+                 "sentinel, and a truthy non-bool would read as a policy "
+                 "while setting none")
     if not ir.get("campaign"):
         f.append("campaign: required, one line naming the goal")
 
@@ -536,6 +547,24 @@ def validate(ir, contracts, gates=None, agents=None):
                 f"'{n['onRed']}' would silently fall back to a default, which "
                 f"weakens the declared failure policy in the permissive "
                 f"direction")
+
+        # Isolation is a closed registry for the same reason onRed is: a
+        # misspelled mode used to be truthy, compile to a worktree, and read
+        # as the isolation the author asked for while providing a different
+        # one. 'measure' is a frozen `git archive HEAD` snapshot the node
+        # makes itself — the shape for anything that builds, compiles, or
+        # measures without meaning to keep the result.
+        if "isolation" in n and n["isolation"] not in ISOLATION:
+            f.append(
+                f"{where}: isolation must be one of "
+                f"{', '.join(repr(i) for i in sorted(ISOLATION, key=str))} — "
+                f"'{n['isolation']}' is not a mode, and guessing one would "
+                f"hand the node a different tree than the author declared")
+        if n.get("mutates") and n.get("isolation") == "measure":
+            f.append(
+                f"{where}: mutates:true cannot combine with isolation:'measure' "
+                f"— a mutator's writes are meant to land, and a measure "
+                f"snapshot is thrown away by construction. Pick one.")
 
         # Contract layer: a node without a contract does not run.
         c = n.get("contract")
@@ -1166,6 +1195,21 @@ def warnings(ir, agents=None):
                 f"is, the graph dies at this node's spawn after everything "
                 f"upstream has run. Confirm it is registered in this session."
             )
+        # A fan-out that builds or measures against a SHARED working tree makes
+        # every number a function of what the siblings are doing, and the
+        # failure is silent: each node exits 0 with a confident figure. The
+        # compiler cannot know what a prompt really does, so this names the
+        # risk on the words that usually mean it, without refusing the IR.
+        if n.get("foreach") and not n.get("isolation") and not n.get("mutates"):
+            if re.search(r"\b(build|compile|measure|benchmark|bytes?|size|price)\b",
+                         str(n.get("prompt", "")), re.I):
+                w.append(
+                    f"node '{nid}': this fan-out looks like it builds or measures, "
+                    f"and its workers share ONE working tree — each measurement "
+                    f"becomes a function of what every sibling is doing, silently. "
+                    f"Declare isolation: 'measure' (a frozen `git archive HEAD` "
+                    f"snapshot, base guaranteed) or isolation: 'worktree'."
+                )
         rep = n.get("repeat") or {}
         dry, mx = rep.get("untilDryRounds"), rep.get("maxRounds")
         if isinstance(dry, int) and isinstance(mx, int):
@@ -1373,7 +1417,13 @@ def opts(n, ir, phase, label):
     model = n.get("model") or role.get("model")
     if model:
         parts.append(f"model: {js_str(model)}")
-    if n.get("isolation") or n.get("mutates"):
+    if n.get("isolation") == "measure":
+        # No runtime worktree: the node snapshots `git archive HEAD` itself
+        # in the shared cwd (see measurePreamble), which both freezes the
+        # tree and guarantees the base is the campaign's — the runtime's
+        # worktree promises neither.
+        pass
+    elif n.get("isolation") or n.get("mutates"):
         parts.append("isolation: 'worktree'")
     return "{ " + ", ".join(parts) + " }"
 
@@ -1423,11 +1473,18 @@ def emit(ir, contracts, imports_resolved=None):
     nodes = ir["nodes"]
     lists = ir.get("lists") or {}
     nodes_by_id = {x.get("id"): x for x in nodes}
+    tree_guard = ir.get("treeGuard", True)
+    measure_nodes = [n for n in nodes if n.get("isolation") == "measure"]
+    worktree_nodes = [n for n in nodes
+                      if n.get("isolation") in (True, "worktree") or n.get("mutates")]
     used = sorted({n["contract"] for n in nodes if not is_reduce(n)}
                   # The advisor emits DecisionV1 whether or not a node
                   # declares it, so its schema has to be in scope.
                   | ({"DecisionV1"} if any(
-                      x.get("actor", "agent") != "agent" for x in nodes) else set()))
+                      x.get("actor", "agent") != "agent" for x in nodes) else set())
+                  # The tree sentinel is not a node, but its schema still has
+                  # to be in scope for the agent call to be schema-forced.
+                  | ({"TreeCheckV1"} if tree_guard else set()))
     phases, seen_phase = [], set()
     for n in nodes:
         p = n.get("phase", "Run")
@@ -1666,6 +1723,8 @@ def emit(ir, contracts, imports_resolved=None):
         extra += ", memory: MEMORY, memorySeeded: MEMORY_SEEDED"
     if prove_nodes:
         extra += ", prove: PROVE"
+    if tree_guard:
+        extra += ", tree: TREE"
     reducers = [n["id"] for n in nodes if is_reduce(n)]
     if reducers:
         # Named so a consumer counting produced items can tell a reducer's
@@ -1787,9 +1846,99 @@ def emit(ir, contracts, imports_resolved=None):
         a("}")
         a("")
 
+    isolated = measure_nodes or worktree_nodes
+    if isolated:
+        a("// --- campaign base: what tree the isolated nodes think they are on ---")
+        a("// A worktree's base is the runtime's choice, not this script's, and it")
+        a("// has been observed cut from the default branch: files the campaign")
+        a("// committed are simply ABSENT there, and nothing inside the worktree")
+        a("// says so. Every isolated node is told the campaign's base and told to")
+        a("// assert it before trusting what it sees.")
+        a("if (!A._base || !A._base.sha)")
+        a("  throw new Error('this graph has isolated nodes but no base was passed "
+          "— launch it with /fluxpoint:graph-run, which loads `git rev-parse HEAD` "
+          "and the branch name into args._base')")
+        a("const BASE = A._base")
+        a("")
+    if worktree_nodes:
+        a("// Injected ahead of every worktree-isolated node's own prompt. The")
+        a("// wrong-base failure is silent from inside — git status is clean and a")
+        a("// missing file looks like a missing file — so the assertion has to be")
+        a("// the node's first act, with the expected base supplied, not recalled.")
+        a("function basePreamble() {")
+        a("  return `WORKTREE BASE CHECK — before anything else.\\n` +")
+        a("    `You are in an isolated worktree, and the runtime chose its base; it has been observed cut from the default branch rather than the campaign's.\\n` +")
+        a("    `The campaign's base is commit ${BASE.sha}` + (BASE.branch ? ` on branch ${BASE.branch}` : '') + `.\\n` +")
+        a("    `1. Run: git rev-parse HEAD\\n` +")
+        a("    `2. If it is not ${BASE.sha}, run: git merge-base --is-ancestor ${BASE.sha} HEAD\\n` +")
+        a("    `3. If that fails, this tree is MISSING work the campaign committed. Do not report absent files or failed checks as findings — they describe the wrong tree. Make the observed commit and the mismatch the substance of your result, and stop.\\n` +")
+        a("    `Name the commit you actually examined in your result.\\n\\n`")
+        a("}")
+        a("")
+    if measure_nodes:
+        a("// Injected ahead of every measuring node's own prompt. A measurement")
+        a("// taken in the shared tree is a function of what every sibling is")
+        a("// doing, and the failure is silent: every node exits 0 with a")
+        a("// confident number. The snapshot also fixes the base by construction —")
+        a("// it is cut from the campaign's own HEAD, not a runtime default.")
+        a("function measurePreamble() {")
+        a("  return `MEASUREMENT ISOLATION — do this first, exactly.\\n` +")
+        a("    `This node runs beside siblings sharing one working tree; measure a frozen snapshot, never the shared tree.\\n` +")
+        a("    `1. Run: SNAP=\"$(mktemp -d)\" && git archive HEAD | tar -x -C \"$SNAP\"\\n` +")
+        a("    `2. Do ALL work inside $SNAP. Never write to the repository checkout.\\n` +")
+        a("    `3. Run: git rev-parse HEAD — expect ${BASE.sha}; anything else means the tree moved under the campaign: report the mismatch instead of a number.\\n` +")
+        a("    `If the snapshot cannot be created, say so and stop rather than measuring the shared tree. Name the commit you measured in your result.\\n\\n`")
+        a("}")
+        a("")
+    if tree_guard:
+        a("// --- tree integrity: the shared tree must not move under the campaign ---")
+        a("// A node that dirties the shared tree invalidates every verdict minted")
+        a("// before it: the gate that already passed was judging a tree that no")
+        a("// longer exists. Non-mutating nodes run in the shared cwd, mutators run")
+        a("// in worktrees and measurers in snapshots, so the shared tree's state")
+        a("// must be IDENTICAL at every checkpoint — any drift is an undeclared")
+        a("// mutation, and the campaign halts on it rather than advancing.")
+        a("// treeGuard: false in the IR turns this off, on the record.")
+        a("const TREE = { baseline: null, checks: [] }")
+        a("async function treeCheck(point, phase) {")
+        a("  // agent(), not spawn(): a guard rail must not spend the node budget")
+        a("  // and must still run after the ceiling is reached.")
+        a("  const r = await agent('Run exactly two commands in the repository at "
+          "the current working directory and return their output verbatim in the "
+          "schema, nothing else: `git rev-parse HEAD` as head, and `git status "
+          "--porcelain` as porcelain (empty string when clean). Do not fix, clean, "
+          "or explain anything.', "
+          "{ label: `tree-check:${point}`, phase, schema: C['TreeCheckV1'], effort: 'low' })")
+        a("  if (!r) {")
+        a("    note('tree-check', 'DEAD', `${point}: sentinel died — tree state unknown`)")
+        a("    INCOMPLETE = true")
+        a("    return true")
+        a("  }")
+        a("  const norm = s => String(s || '').split('\\n').map(x => x.trim()).filter(Boolean).sort().join('\\n')")
+        a("  const rec = { point, head: String(r.head || '').trim(), porcelain: norm(r.porcelain) }")
+        a("  TREE.checks.push(rec)")
+        a("  if (!TREE.baseline) { TREE.baseline = rec; return true }")
+        a("  if (rec.head === TREE.baseline.head && rec.porcelain === TREE.baseline.porcelain) return true")
+        a("  note('tree-check', 'TREE-MOVED', `${point}: HEAD ${TREE.baseline.head} -> ${rec.head}${rec.porcelain ? `; dirt: ${rec.porcelain}` : ''}`)")
+        a("  log(`TREE-MOVED at ${point}: the shared tree changed under the campaign — verdicts minted before this describe a tree that no longer exists. ${rec.porcelain || '(clean tree, but HEAD moved)'}`)")
+        a("  return false")
+        a("}")
+        a("")
+    first_phase = nodes[0].get("phase", "Run") if nodes else "Run"
+    last_phase = nodes[-1].get("phase", "Run") if nodes else "Run"
+    if tree_guard:
+        a(f"await treeCheck('campaign-start', {js_str(first_phase)})")
+        a("")
     for n in nodes:
+        if tree_guard and (prove_gate(n) or n.get("independent")):
+            a("// The gate is about to mint a verdict about the tree; assert it is")
+            a("// still the tree every earlier verdict described.")
+            a(f"if (!await treeCheck({js_str('before ' + n['id'])}, "
+              f"{js_str(n.get('phase', 'Run'))})) return summary('TREE-MOVED')")
         a(emit_node(n, ir))
         a("")
+    if tree_guard:
+        a(f"if (!await treeCheck('campaign-end', {js_str(last_phase)})) return summary('TREE-MOVED')")
     a("return summary('COMPLETE')")
     return "\n".join(L) + "\n"
 
@@ -1935,7 +2084,15 @@ def emit_node(n, ir):
     is_panel = m and m.group(3)
     over = n.get("verifyOver")
     mapping = subst_mapping(n, var)
-    prompt = js_template(n["prompt"], mapping) if not is_reduce(n) else None
+    # Isolated nodes carry their preamble as a runtime concatenation, so the
+    # campaign base (known only at launch, via args._base) reaches the prompt
+    # without the compiler pretending to know a sha it cannot.
+    pre = ""
+    if n.get("isolation") == "measure":
+        pre = "measurePreamble() + "
+    elif n.get("isolation") in (True, "worktree") or n.get("mutates"):
+        pre = "basePreamble() + "
+    prompt = (pre + js_template(n["prompt"], mapping)) if not is_reduce(n) else None
     L = []
     a = L.append
     kind = "reduce" if is_reduce(n) else tier

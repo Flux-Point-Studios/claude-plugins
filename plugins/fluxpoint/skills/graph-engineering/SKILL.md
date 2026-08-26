@@ -204,35 +204,46 @@ had yet; build it when one does, not before.
 are worth knowing before you depend on it, because each has cost a real
 campaign a wrong answer rather than an error:
 
-- **You do not choose the base.** The compiler emits the literal string and
-  the runtime cuts the worktree; nothing in this plugin selects the commit.
-  A node given isolation has been observed reading a tree cut from the
-  default branch rather than the campaign's, which makes a file an earlier
-  node committed simply ABSENT. Nothing inside says so: `git status` is
-  clean and a missing file looks like a missing file, so the node returns a
-  confident, well-evidenced, wrong report. **Have any node that measures or
-  verifies the tree state its base** — `git rev-parse HEAD` and
-  `git log --oneline -1` in its evidence — so a wrong-base finding can be
-  told apart from a true one. A downstream node that must read what an
-  upstream node committed should fetch or check out that branch by name
-  rather than assuming it is there.
+- **You do not choose the base — so every isolated node is told it and
+  asserts it.** The compiler emits the literal string and the runtime cuts
+  the worktree; nothing in this plugin selects the commit. A node given
+  isolation has been observed reading a tree cut from the default branch
+  rather than the campaign's, which makes a file an earlier node committed
+  simply ABSENT — and nothing inside says so: `git status` is clean and a
+  missing file looks like a missing file, so the node returns a confident,
+  well-evidenced, wrong report. The graph therefore refuses to start
+  without `args._base` (graph-run loads `git rev-parse HEAD` at launch),
+  and the compiler injects a preamble ahead of every worktree-isolated
+  node's own prompt: run `git rev-parse HEAD` first, check the campaign
+  base is an ancestor, and on a mismatch make the mismatch the result
+  rather than reporting absent files as findings. A downstream node that
+  must read what an upstream node committed should still fetch or check
+  out that branch by name rather than assuming it is there.
 
-- **Isolation is opt-in, and a fan-out that measures needs it.**
+- **A fan-out that measures declares `isolation: 'measure'`.**
   `parallel()` and `pipeline()` read as isolated units and, for pure
   reasoning, effectively are. The moment a node's output is a *measurement*
   of the tree — a build size, a byte delta, a benchmark — a shared working
   tree makes that number a function of what every sibling is doing, and the
-  failure is silent: every node exits 0 with a confident figure. Declare
-  isolation on anything that builds, compiles, or measures, not only on
-  things that write.
+  failure is silent: every node exits 0 with a confident figure. `measure`
+  is not the runtime's worktree: the node's injected preamble has it cut a
+  frozen `git archive HEAD` snapshot into a temp dir and work only there —
+  cheaper than a worktree, immune to the sibling problem, and based on the
+  campaign's own HEAD by construction. The compiler warns on a fan-out
+  whose prompt looks like it builds or measures with no isolation declared.
 
-- **A node that dirties the shared tree invalidates what ran before it.**
-  "Throw the branch away" in a prompt is prose to a model, not a cleanup
-  contract; nothing evaluates it. A gate that already passed was judging a
-  tree that no longer exists. Until the runtime offers a scratch mode, a
-  measuring node should either declare isolation or restore what it touched
-  as part of its own contract, and a gate should re-assert the tree it is
-  judging rather than trusting a green from before the mutation.
+- **The shared tree is guarded, not trusted.** "Throw the branch away" in a
+  prompt is prose to a model, not a cleanup contract; nothing evaluates it,
+  and a gate that already passed was judging a tree that no longer exists.
+  Every compiled graph brackets the run with a tree sentinel — a tiny
+  schema-forced agent recording `git rev-parse HEAD` and
+  `git status --porcelain` at campaign start, before every
+  verdict-minting node (`independent` verifiers and `prove:` gates), and at
+  campaign end. Mutators run in worktrees and measurers in snapshots, so
+  the shared tree must be IDENTICAL at every checkpoint: any drift halts
+  the campaign as `TREE-MOVED` with the dirt named, instead of advancing
+  verdicts about a tree that is gone. The record rides out in the summary
+  as `tree`. `treeGuard: false` in the IR turns it off, on the record.
 
 **Prove the harness in a worktree before you trust a `mutates` node.** Green
 in the primary checkout is not green under the isolation the campaign

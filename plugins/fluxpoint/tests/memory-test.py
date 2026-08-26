@@ -152,6 +152,8 @@ def run(ir, args, findings):
                 f"const ROUNDS={json.dumps(findings)};\n"
                 "let round=0;\n"
                 "const agent=async(p,o)=>{PROMPTS.push(p);\n"
+                "  if(String(o.label||'').includes('tree-check'))\n"
+                "    return {head:'abc123', porcelain:''};\n"
                 "  if(String(o.label||'').includes('refute'))\n"
                 "    return {refuted: p.includes('killme.ak'),\n"
                 "            reason: p.includes('killme.ak')\n"
