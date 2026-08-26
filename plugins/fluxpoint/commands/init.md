@@ -82,6 +82,10 @@ step; do not stop at copying files.
    bash "${CLAUDE_PLUGIN_ROOT}/scripts/py.sh" proof-guard.py --baseline
    bash "${CLAUDE_PLUGIN_ROOT}/scripts/py.sh" spec-guard.py --baseline
    ```
+   Arm the seam ratchet in ANY repo with tests, proof languages or not:
+   ```
+   bash "${CLAUDE_PLUGIN_ROOT}/scripts/py.sh" seam-guard.py --baseline
+   ```
    They share `.fluxpoint-proof-baseline.json` and each preserves the
    other's section. Commit it — it belongs in review, because a rise in the
    counts is someone making a proof obligation disappear, and a change in
