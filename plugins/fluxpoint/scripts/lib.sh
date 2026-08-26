@@ -208,7 +208,14 @@ fpl_aux_sha() {
   local cfg
   if [ -n "${FPL_AUX_HOME:-}" ]; then cfg="$FPL_AUX_HOME/.claude"
   else cfg="${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}"; fi
-  "$FPL_PY" - "$PWD" "$(fpl_sid "${1:-}")" \
+  # CLAUDE_PROJECT_DIR here, unlike fpl_state_dir: this path is not repo state,
+  # it is a KEY into Claude Code's own projects/<munged-path> naming, and the
+  # runtime munges the directory the session was LAUNCHED from. In a multi-repo
+  # workspace the hooks cd into the repo, but the session's auto-memory store
+  # stays keyed to the workspace root — $PWD here would hash a directory that
+  # does not exist and report the store's flushes as "noaux", blinding the
+  # compaction window to exactly the surface it exists to protect.
+  "$FPL_PY" - "${CLAUDE_PROJECT_DIR:-$PWD}" "$(fpl_sid "${1:-}")" \
     "$cfg" <<'PY' 2>/dev/null || printf 'noaux'
 import hashlib, os, sys
 proj, sid, cfg = sys.argv[1], sys.argv[2], sys.argv[3]

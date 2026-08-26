@@ -367,6 +367,26 @@ a="$(cd "$R" && FPL_AUX_HOME= CLAUDE_CONFIG_DIR="$cfg" \
   && ok "CLAUDE_CONFIG_DIR relocates the aux surface" "$a" \
   || bad "CLAUDE_CONFIG_DIR relocates the aux surface" "noaux"
 
+# The aux hash keys into Claude Code's projects/<munged-path> naming, and the
+# runtime munges the LAUNCH directory — CLAUDE_PROJECT_DIR — not wherever the
+# hook has since cd'd. In a multi-repo workspace the hooks cd into the repo
+# while the session's auto-memory store stays keyed to the workspace root;
+# hashing by $PWD reads a directory that does not exist and reports the
+# store's flushes as noaux, blinding the compaction window to the one surface
+# it exists to protect. This suite otherwise unsets CLAUDE_PROJECT_DIR (line
+# 59), which is the same blind spot that let v1.30.0 ship believing it was
+# done — so this case sets it on purpose.
+wsroot="$ROOT/wsroot"; mkdir -p "$wsroot/repo"
+( cd "$wsroot/repo" && git init -q -b main )
+rm -rf "$ROOT/home"
+mkdir -p "$ROOT/home/.claude/projects/$(munge "$wsroot")/memory"
+printf 'lesson\n' >"$ROOT/home/.claude/projects/$(munge "$wsroot")/memory/MEMORY.md"
+a="$(cd "$wsroot/repo" && CLAUDE_PROJECT_DIR="$wsroot" \
+     bash -c '. "'"$PLUGIN"'/scripts/lib.sh"; fpl_aux_sha s')"
+[ "$a" != "noaux" ] && [ -n "$a" ] \
+  && ok "aux hash keys by the launch dir, not the hook's cwd" "$a" \
+  || bad "aux hash keys by the launch dir, not the hook's cwd" "noaux — hashed the repo instead"
+
 cd /; rm -rf "$ROOT"
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
