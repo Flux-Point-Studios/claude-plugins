@@ -78,7 +78,7 @@ import sys
 
 BASELINE = ".fluxpoint-proof-baseline.json"
 CONFIG = ".fluxpoint-mutation.json"
-CONFIG_FIELDS = {"version", "tool", "failWhenStale", "maxStaleCommits", "args"}
+CONFIG_FIELDS = {"version", "tool", "failWhenStale", "maxStaleCommits", "args", "workDir"}
 SUPPORTED = {"cargo-mutants", "stryker"}
 # Named so a repo using one of these is told it is not covered, rather than
 # reading a silent exit 0 as a clean bill of health.
@@ -124,6 +124,23 @@ def load_config(root):
                  f"supported: {sorted(SUPPORTED)}")
     elif tool not in SUPPORTED:
         f.append(f"{CONFIG}: tool must be one of {sorted(SUPPORTED)}")
+    wd = doc.get("workDir")
+    if wd is not None:
+        # A monorepo keeps the mutation tool in ONE package, so `npx --no-install
+        # <tool>` from the repo root cannot resolve it — and npx then tries to
+        # FETCH a same-named package from the registry, which is a broken gate and
+        # a supply-chain hazard in one. Relative and inside the repo, because a
+        # config file must not be able to point the runner at another tree.
+        if not isinstance(wd, str) or not wd.strip():
+            f.append(f"{CONFIG}: workDir must be a non-empty string")
+        elif os.path.isabs(wd) or wd.startswith("~"):
+            f.append(f"{CONFIG}: workDir '{wd}' must be RELATIVE to the repo root")
+        elif os.path.normpath(wd).startswith(".."):
+            f.append(f"{CONFIG}: workDir '{wd}' escapes the repo root")
+        elif not os.path.isdir(os.path.join(root, wd)):
+            f.append(f"{CONFIG}: workDir '{wd}' does not exist — a typo here fails "
+                     f"much later, inside the tool, as an error about the tool")
+
     if "args" in doc and not (isinstance(doc["args"], list)
                               and all(isinstance(x, str) for x in doc["args"])):
         f.append(f"{CONFIG}: args must be a list of strings")
@@ -186,28 +203,29 @@ def run_cargo_mutants(root, extra):
     return parse_cargo_mutants(doc)
 
 
-def run_stryker(root, extra):
+def run_stryker(root, extra, work_dir=None):
     """(measurement, findings). Runs Stryker and reads its own JSON report.
 
     `npx` rather than a bare binary: Stryker is a dev dependency in every JS
     project that has it, and a globally installed one would be a different
     version from the one the repo pins.
     """
+    cwd = os.path.join(root, work_dir) if work_dir else root
     cmd = ["npx", "--no-install", "stryker", "run", *extra]
     try:
-        proc = subprocess.run(cmd, cwd=root, capture_output=True, text=True)
+        proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
     except FileNotFoundError:
         return None, ["npx not on PATH — install Node, or add "
                       "@stryker-mutator/core to the project"]
     except Exception as e:  # noqa: BLE001
         return None, [f"stryker could not be run: {e}"]
 
-    p = os.path.join(root, STRYKER_REPORT)
+    p = os.path.join(cwd, STRYKER_REPORT)
     if not os.path.exists(p):
         tail = (proc.stderr or proc.stdout or "")[-600:]
         return None, [
             f"stryker exited {proc.returncode} but wrote no "
-            f"{STRYKER_REPORT} — nothing was measured. The json reporter must "
+            f"{os.path.relpath(p, root)} — nothing was measured. The json reporter must "
             f"be enabled (\"reporters\": [\"json\"]). Tail:\n{tail}"]
     try:
         with open(p, encoding="utf-8") as fh:
@@ -436,7 +454,8 @@ def measure(root, cfg, accept, reason, src=None):
             findings = [f"{src} carries no scored mutants — nothing to record"]
     else:
         extra = list(cfg.get("args") or [])
-        rec, findings = (run_stryker(root, extra) if cfg["tool"] == "stryker"
+        wd = cfg.get("workDir")
+        rec, findings = (run_stryker(root, extra, wd) if cfg["tool"] == "stryker"
                          else run_cargo_mutants(root, extra))
     for f in findings:
         print(f"mutation-guard: {f}", file=sys.stderr)

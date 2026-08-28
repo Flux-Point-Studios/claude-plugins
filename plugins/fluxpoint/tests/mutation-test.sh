@@ -349,5 +349,57 @@ unk="$(probe Killed Rehydrated)"
 case "$unk" in *Rehydrated*) ok "stryker: an unknown status is reported, not silent" "said" ;;
   *) bad "stryker: an unknown status is reported, not silent" "silent" ;; esac
 
+
+# --- workDir: the tool does not always live at the repo root ---------------
+# In a pnpm/turbo monorepo the mutation tool is a devDependency of ONE package,
+# so `npx --no-install <tool>` from the repo root cannot resolve it — and npx
+# then tries to FETCH a same-named package from the registry, which is both a
+# broken gate and a supply-chain hazard. Most of our repos are monorepos, so a
+# ratchet that can only be armed at the root can only be armed in half of them.
+mkrepo; mkdir -p "$R/packages/core"
+printf '{"version":1,"tool":"stryker","workDir":"packages/core"}' >"$R/.fluxpoint-mutation.json"
+commit
+out="$(mg --report 2>&1)"
+case "$out" in *"unknown field"*) bad "workDir is an accepted field" "rejected" ;;
+  *) ok "workDir is an accepted field" "accepted" ;; esac
+
+# It must be a relative path INSIDE the repo. An absolute or escaping path would
+# run the tool somewhere the repo does not control.
+mkrepo; mkdir -p "$ROOT/sibling"
+# The sibling EXISTS, so only the escape rule can refuse it — with a path that is
+# merely absent, the existence check fires and nothing pins this rule at all.
+printf '{"version":1,"tool":"stryker","workDir":"../sibling"}' >"$R/.fluxpoint-mutation.json"
+commit
+err="$(mg --report 2>&1)"
+case "$err" in *escapes*) ok "an escaping workDir is refused AS an escape" "refused" ;;
+  *) bad "an escaping workDir is refused AS an escape" "${err:0:60}" ;; esac
+
+mkrepo
+printf '{"version":1,"tool":"stryker","workDir":"/etc"}' >"$R/.fluxpoint-mutation.json"
+commit
+err="$(mg --report 2>&1)"
+case "$err" in *workDir*) ok "an absolute workDir is refused by name" "refused" ;;
+  *) bad "an absolute workDir is refused by name" "${err:0:60}" ;; esac
+
+# And it must EXIST — a typo'd path would otherwise fail much later, inside npx,
+# with an error about the tool rather than about the config.
+mkrepo
+printf '{"version":1,"tool":"stryker","workDir":"packages/typo"}' >"$R/.fluxpoint-mutation.json"
+commit
+err="$(mg --report 2>&1)"
+case "$err" in *"does not exist"*) ok "a workDir that does not exist is named" "named" ;;
+  *) bad "a workDir that does not exist is named" "${err:0:60}" ;; esac
+
+
+# The validation above is worthless if the runner ignores the field. `--measure`
+# with no tool installed still names the report path it looked for, and that path
+# is the observable proof of which directory it ran in.
+mkrepo; mkdir -p "$R/packages/core"
+printf '{"version":1,"tool":"stryker","workDir":"packages/core"}' >"$R/.fluxpoint-mutation.json"
+commit
+err="$(mg --measure 2>&1)"
+case "$err" in *packages/core*) ok "the runner looks for its report UNDER workDir" "scoped" ;;
+  *) bad "the runner looks for its report UNDER workDir" "${err:0:70}" ;; esac
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
