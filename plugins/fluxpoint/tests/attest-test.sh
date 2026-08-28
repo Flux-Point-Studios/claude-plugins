@@ -161,6 +161,34 @@ for evil in \
 done
 check "no laundered invocation is attested" 0 "$(rows)"
 
+# --- 4b. a leading `cd` is exit-transparent, so it must NOT disarm the witness
+# The trap this closes: `cd /repo && scripts/harness.sh --full` reports the
+# HARNESS's exit, because cd is the first command and the gate is the last.
+# Refusing it means a green gate run goes unwitnessed while looking witnessed,
+# which is the exact failure mode this file exists to prevent — and it cost
+# four real runs before anyone noticed.
+newrepo; gates
+rec "cd /repo && scripts/harness.sh --full" 0 >/dev/null
+check "cd && gate is attested" 1 "$(rows)"
+rec "cd /some/path; scripts/harness.sh --full" 0 >/dev/null
+check "cd ; gate is attested" 2 "$(rows)"
+rec "cd /repo && bash scripts/harness.sh --full" 0 >/dev/null
+check "cd with an interpreter prefix is attested" 3 "$(rows)"
+
+# ...but ONLY a leading cd, and only when the gate is still last. Anything that
+# can change the reported exit stays refused, cd or not.
+newrepo; gates
+for evil in \
+  "cd /repo && scripts/harness.sh --full || true" \
+  "cd /repo && scripts/harness.sh --full | tail -1" \
+  "cd /repo; scripts/harness.sh --full; echo done" \
+  "cd /repo && scripts/harness.sh --full && npm publish" \
+  "rm -rf /tmp/x && scripts/harness.sh --full" \
+  "cd /repo && cd /other && scripts/harness.sh --full"; do
+  rec "$evil" 0 >/dev/null 2>&1
+done
+check "a cd prefix launders nothing else" 0 "$(rows)"
+
 # --- 5. an unreadable exit code is said out loud, never assumed ---------
 newrepo; gates
 err="$("$FPL_PY" - <<'PY' | "$FPL_PY" "$ATTEST" --root "$ROOT/r" --record 2>&1 >/dev/null

@@ -68,12 +68,29 @@ def normalize(cmd):
     `bash scripts/harness.sh  --full` and `./scripts/harness.sh --full` are
     the same declared gate.
 
+    A single leading `cd <dir> &&` or `cd <dir>;` is also dropped. That one is
+    safe for the same reason the others are not: `cd` runs FIRST and the gate
+    runs LAST, so the status the shell reports is still the gate's. Refusing it
+    was not strictness, it was a hole — a green run went unwitnessed while
+    looking witnessed, which is the precise failure this module exists to
+    prevent, and it cost four real runs before anyone noticed. Only one `cd`,
+    and only at the front: `cd a && cd b && gate` is a shape nobody needs and
+    every extra allowance is somewhere for an exit code to hide.
+
     Nothing else is stripped, and that is the load-bearing part. A pipeline,
-    a redirect, or a trailing `|| true` changes the exit code the runtime
-    reports, so it must not be able to borrow a gate's name: it simply does
-    not match, and an unmatched command is attested as nothing at all.
+    a redirect, a trailing `|| true`, or ANY command after the gate changes the
+    exit code the runtime reports, so none of them may borrow a gate's name:
+    they simply do not match, and an unmatched command is attested as nothing
+    at all.
     """
     s = " ".join(str(cmd or "").split())
+    # ONE prefix, never a chain: the match is non-greedy and applied once, so
+    # `cd a && cd b && gate` still fails to match — the remainder is not the
+    # declared command. An explicit multi-cd check would be dead weight AND
+    # wrong, refusing a gate that legitimately starts with `cd` itself.
+    m = re.match(r"cd\s+(?:[^;&|<>]+?)\s*(?:&&|;)\s*(?=\S)", s)
+    if m:
+        s = s[m.end():]
     for prefix in ("bash ", "sh ", "zsh "):
         if s.startswith(prefix):
             s = s[len(prefix):].lstrip()
