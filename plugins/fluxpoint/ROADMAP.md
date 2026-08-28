@@ -406,8 +406,9 @@ value. What shipped in `recall.py` + `embedder.py`:
   unknown value fatal, content-hash cached, unit-normalized, brute-force
   dot product) sanctioned as the single non-deterministic input in the
   memory layer, able only to reorder advisory output;
-- **budgeted injection**: a SessionStart section (offline, never
-  rebuilding, stale-and-absent modes named, `FPL_RECALL_INJECT=0`),
+- **budgeted injection**: a SessionStart section across every indexed
+  document kind (offline, never rebuilding, stale-and-absent modes named,
+  `FPL_RECALL_INJECT=0`),
   relevance-ordered seed maps for `/fluxpoint:graph-run` in
   `memory.py --load`'s exact shape, and `/fluxpoint:recall` for humans.
 

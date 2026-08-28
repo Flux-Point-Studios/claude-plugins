@@ -1,5 +1,5 @@
 ---
-description: Search the memory graph — lessons, kills, counterexamples — by meaning, identifiers, and graph proximity; or build/inspect the index.
+description: Search the recall graph — lessons, decisions, counterexamples, and primitives — by meaning, identifiers, and graph proximity; or build/inspect the index.
 argument-hint: [query text, or "build" / "stats"]
 ---
 
@@ -10,8 +10,10 @@ source of truth.
 
 1. If the argument is `build`, run
    `bash "${CLAUDE_PLUGIN_ROOT}/scripts/py.sh" recall.py --build --embed`
-   and report what it printed: docs indexed, dense provider, pending
-   embeddings, dropped path candidates, stale kills. `--embed` backfills
+   and then run `... recall.py --stats`. Report both lines: aggregate docs,
+   nodes, edges, dense provider, pending embeddings, dropped path candidates,
+   and stale kills from the build; document kinds and recognized source
+   presence from stats. `--embed` backfills
    vectors only when an embedder key is present (`VOYAGE_API_KEY`,
    `OPENAI_API_KEY`, or `GEMINI_API_KEY`, in that order; `FPL_EMBEDDER`
    overrides) — keyless is a supported mode, not a failure, and the
@@ -20,7 +22,8 @@ source of truth.
 2. If the argument is `stats`, run
    `bash "${CLAUDE_PLUGIN_ROOT}/scripts/py.sh" recall.py --stats` and
    `... embedder.py --status`, and report both lines plus whether
-   `--verify` says the index lags its sources.
+   `--verify` says the index lags its sources. Distinguish absent sources
+   from present sources that currently contribute zero documents.
 
 3. Otherwise treat the argument as the query:
    ```

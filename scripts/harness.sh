@@ -150,6 +150,8 @@ case "${1:---full}" in
       "$PLUGIN"/scripts/recall.py | "$PLUGIN"/scripts/embedder.py)
         step "hybrid recall pipeline" "$FPL_PY" "$PLUGIN/tests/recall-test.py"
         step "embedder quarantine" "$FPL_PY" "$PLUGIN/tests/embedder-test.py" ;;
+      "$PLUGIN"/scripts/inject-state.sh | "$PLUGIN"/scripts/prompt-recall.sh)
+        step "hybrid recall pipeline" "$FPL_PY" "$PLUGIN/tests/recall-test.py" ;;
       "$PLUGIN"/scripts/memory.py | "$PLUGIN"/scripts/recurrence-guard.py)
         step "recurrence gate" "$FPL_PY" "$PLUGIN/tests/recurrence-test.py"
         step "lessons across runs" "$FPL_PY" "$PLUGIN/tests/memory-test.py" ;;
