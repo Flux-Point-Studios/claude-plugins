@@ -62,12 +62,22 @@ function isAbsolute(p) {
 // segment exists under root, or an absolute path whose parent dir exists.
 // Everything else (unknown anchors, other machines, repo-relative citations)
 // stays silent rather than guessing.
+// `path/to/file.ts:44` and `:44-58` are the house citation convention — they are
+// what makes a reference clickable — so the line part must come off before the
+// file is looked for. Left on, every cited line number reads as a missing file,
+// and a lint that is wrong more often than right is one people stop reading.
+function stripLineRef(p) {
+  return p.replace(/:\d+(?::\d+)?(?:-\d+)?$/, "");
+}
+
 function missingPath(root, cand) {
-  const norm = cand.replace(/\\/g, "/");
-  if (isAbsolute(cand)) {
-    if (fs.existsSync(cand)) return false;
-    return fs.existsSync(path.dirname(cand));
-  }
+  // A drive-letter path names a filesystem this process cannot see: our cold
+  // keys live on a Windows box by deliberate policy. Checking it here can only
+  // ever produce a false alarm — and worse, POSIX path.dirname cannot parse a
+  // backslashed path, so `C:\a\b\` collapses to "." which always exists and the
+  // "parent exists, file does not" heuristic fires every single session.
+  if (isAbsolute(cand)) return false;
+  const norm = stripLineRef(cand.replace(/\\/g, "/"));
   const first = norm.split("/")[0];
   if (first === "" || first === "." || first === "..") return false;
   const anchor = path.join(root, first);
