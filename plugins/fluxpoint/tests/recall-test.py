@@ -495,6 +495,14 @@ def run_cli(cwd, *args):
         [sys.executable, os.path.join(SCRIPTS, "recall.py"), *args],
         cwd=cwd, capture_output=True, text=True, timeout=60)
 
+
+def run_cli_raw(cwd, *args):
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+    return subprocess.run(
+        [sys.executable, os.path.join(SCRIPTS, "recall.py"), *args],
+        cwd=cwd, env=env, capture_output=True, text=False, timeout=60)
+
 with open(os.path.join(root, "WORK.md"), "w") as fh:
     fh.write("# beacon decoder hardening\nSTATUS: IN PROGRESS\n\n## Plan\n"
              "- [ ] normalize two-way beacon names at every boundary\n")
@@ -508,6 +516,34 @@ r = run_cli(root, "--for-session")
 report("for-session with no index falls back, named",
        r.returncode == 0 and "not built yet" in r.stdout
        and "Newest filed lessons" in r.stdout, r.stdout.splitlines()[0][:70])
+
+hostile_fallback = lesson(
+    "audit" + chr(0x2028) + "FORGED_TAG", "k\nFORGED_KEY",
+    "claim\nFORGED_CLAIM" + chr(1))
+hostile_fallback["status"] = "surviving\rFORGED_STATUS"
+fallback_root = scratch([hostile_fallback], {}, {
+    "WORK.md": "# fallback hardening\nSTATUS: IN PROGRESS\n",
+})
+r = run_cli_raw(fallback_root, "--for-session")
+fallback_out = r.stdout.decode("utf-8")
+report("cold-index lesson fallback cannot forge context lines",
+       r.returncode == 0 and "\nFORGED_" not in fallback_out
+       and recall.CTRL_RE.search(fallback_out.replace("\n", "")) is None,
+       "fallback fields sanitized as one rendered line")
+rmtree(fallback_root)
+
+budget_rows = [
+    lesson("\U0001f9ea" * 265, "budget-a", "first", when="2026-08-03T00:00:00Z"),
+    lesson("\U0001f9ea" * 265, "budget-b", "second", when="2026-08-02T00:00:00Z"),
+]
+budget_root = scratch(budget_rows, {}, {
+    "WORK.md": "# fallback budget\nSTATUS: IN PROGRESS\n",
+})
+r = run_cli_raw(budget_root, "--for-session")
+report("cold-index lesson fallback has a hard output budget",
+       r.returncode == 0 and len(r.stdout) <= 1200,
+       f"{len(r.stdout)} wire byte(s)")
+rmtree(budget_root)
 
 source_work = ("# beacon decoder hardening\nSTATUS: IN PROGRESS\n\n## Plan\n"
                "- [ ] normalize malformed beacons at the decoder boundary\n")
@@ -827,13 +863,15 @@ def bash_exe():
 BASH = bash_exe()
 
 
-def run_hook(env_extra, stdin, project_dir=root, script=PROMPT_SH):
+def run_hook(env_extra, stdin, project_dir=root, script=PROMPT_SH,
+             launch_cwd=None):
     env = {k: v for k, v in os.environ.items()
            if k not in ("FPL_MEM_PROMPT", "FPL_RECALL_INJECT", "FPL_DISABLE")}
     env.update(env_extra)
     env["CLAUDE_PROJECT_DIR"] = project_dir
     return subprocess.run([BASH, script], input=stdin, env=env,
-                          capture_output=True, text=True, timeout=60)
+                          cwd=launch_cwd, capture_output=True, text=True,
+                          timeout=60)
 
 r = run_hook({}, hook_json)
 report("the per-prompt hook is dark by default",
@@ -849,9 +887,13 @@ r = run_hook({"FPL_MEM_PROMPT": "1"}, primitive_json,
 report("armed prompt recall accepts a primitive-only index",
        r.returncode == 0 and "prim:beacon-decoder" in r.stdout,
        "no lesson store required")
-workspace_root = tempfile.mkdtemp(prefix="fpl-workspace-")
+workspace_parent = tempfile.mkdtemp(prefix="fpl-workspace-parent-")
+workspace_root = os.path.join(workspace_parent, "workspace")
+os.makedirs(workspace_root)
 workspace_child = scratch(ROWS, RUNS, FILES, parent=workspace_root)
 quiet(recall.build, workspace_child)
+workspace_sibling = scratch(ROWS, RUNS, FILES, parent=workspace_parent)
+quiet(recall.build, workspace_sibling)
 workspace_json = json.dumps({
     "prompt": "why do two-way beacon names misread in the decoder?",
     "cwd": workspace_child,
@@ -861,7 +903,60 @@ r = run_hook({"FPL_MEM_PROMPT": "1"}, workspace_json,
 report("prompt recall follows payload cwd below a non-git workspace root",
        r.returncode == 0 and "beacons unprefixed" in r.stdout,
        "child repo index selected")
-rmtree(workspace_root)
+r = run_hook({"FPL_MEM_PROMPT": "1"}, json.dumps({
+    "prompt": "why do two-way beacon names misread in the decoder?",
+    "cwd": os.path.basename(workspace_child),
+}), project_dir=workspace_root)
+report("prompt recall resolves a relative child from its workspace root",
+       r.returncode == 0 and "beacons unprefixed" in r.stdout,
+       "relative child repo selected")
+r = run_hook({"FPL_MEM_PROMPT": "1"}, json.dumps({
+    "prompt": "why do two-way beacon names misread in the decoder?",
+    "cwd": workspace_sibling,
+}), project_dir=workspace_root)
+report("prompt recall rejects an absolute sibling outside its workspace",
+       r.returncode == 0 and r.stdout == "", "outside repository refused")
+r = run_hook({"FPL_MEM_PROMPT": "1"}, json.dumps({
+    "prompt": "why do two-way beacon names misread in the decoder?",
+    "cwd": "../" + os.path.basename(workspace_sibling),
+}), project_dir=workspace_root, launch_cwd=workspace_root)
+report("prompt recall rejects parent traversal outside its workspace",
+       r.returncode == 0 and r.stdout == "", "parent traversal refused")
+workspace_link = os.path.join(workspace_root, "outside-link")
+try:
+    os.symlink(workspace_sibling, workspace_link, target_is_directory=True)
+except OSError:
+    if os.name != "nt":
+        raise
+    subprocess.run(["cmd.exe", "/d", "/c", "mklink", "/J", workspace_link,
+                    workspace_sibling], check=True, capture_output=True)
+r = run_hook({"FPL_MEM_PROMPT": "1"}, json.dumps({
+    "prompt": "why do two-way beacon names misread in the decoder?",
+    "cwd": workspace_link,
+}), project_dir=workspace_root)
+report("prompt recall rejects a workspace link that resolves outside",
+       r.returncode == 0 and r.stdout == "", "symlink escape refused")
+redirect = os.path.join(workspace_root, "gitdir-redirect")
+redirect_meta = os.path.join(workspace_root, "gitdir-meta")
+subprocess.run(["git", "init", "-q", "--separate-git-dir", redirect_meta,
+                redirect], check=True)
+subprocess.run(["git", "--git-dir", redirect_meta, "config", "core.worktree",
+                workspace_sibling], check=True)
+r = run_hook({"FPL_MEM_PROMPT": "1"}, json.dumps({
+    "prompt": "why do two-way beacon names misread in the decoder?",
+    "cwd": redirect,
+}), project_dir=workspace_root)
+report("prompt recall contains the Git-reported worktree root",
+       r.returncode == 0 and r.stdout == "", "external core.worktree refused")
+r = run_hook({"FPL_MEM_PROMPT": "1", "GIT_WORK_TREE": workspace_sibling},
+             workspace_json, project_dir=workspace_root)
+report("prompt recall revalidates the Git-reported worktree root",
+       r.returncode == 0 and r.stdout == "", "Git worktree escape refused")
+if os.path.islink(workspace_link):
+    os.unlink(workspace_link)
+else:
+    os.rmdir(workspace_link)
+rmtree(workspace_parent)
 
 INJECT_SH = os.path.join(SCRIPTS, "inject-state.sh").replace(os.sep, "/")
 session_json = json.dumps({"session_id": "recall-source-test",
@@ -895,6 +990,13 @@ quiet(recall.build, root)
 text = recall.render_lines(recs, diags, budget_bytes=120)
 report("budget overflow is elided by name",
        "[elided:" in text and len(text) <= 220, f"{len(text)} byte(s)")
+unicode_text = recall.render_lines([{
+    "id": "cex:unicode-budget", "kind": "cex", "status": "pinned",
+    "text": "\U0001f9ea" * 500,
+}], [], budget_bytes=500)
+report("render budget is enforced in UTF-8 bytes",
+       len(unicode_text.encode("utf-8")) <= 500,
+       f"{len(unicode_text.encode('utf-8'))} byte(s)")
 
 rmtree(root)
 rmtree(troot)

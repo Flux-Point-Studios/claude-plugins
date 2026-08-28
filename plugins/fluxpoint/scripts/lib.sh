@@ -126,19 +126,52 @@ print(d if isinstance(d, str) else json.dumps(d))' "$1" 2>/dev/null
 # The climb only happens on the workspace path, so it can never walk out of a
 # project that sits below a bigger repo's toplevel. Outside a repo, stay put
 # and let the caller decide what that means.
+_fpl_contained_dir() { # $1 = workspace, $2 = candidate
+  "$FPL_PY" - "$1" "$2" <<'PY'
+import os
+import sys
+
+workspace = os.path.realpath(os.path.abspath(sys.argv[1]))
+raw_candidate = sys.argv[2]
+if not os.path.isabs(raw_candidate):
+    raw_candidate = os.path.join(workspace, raw_candidate)
+candidate = os.path.realpath(os.path.abspath(raw_candidate))
+try:
+    inside = (os.path.normcase(os.path.commonpath((workspace, candidate))) ==
+              os.path.normcase(workspace))
+except ValueError:
+    inside = False
+if not inside or not os.path.isdir(candidate):
+    raise SystemExit(1)
+sys.stdout.write(candidate)
+PY
+}
+
+
 fpl_cd_project() { # $1 = raw hook payload
+  local _fpl_p _fpl_r _fpl_workspace=""
   if [ -n "${CLAUDE_PROJECT_DIR:-}" ] \
      && git -C "$CLAUDE_PROJECT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     cd "$CLAUDE_PROJECT_DIR" 2>/dev/null || return 1
     return 0
   fi
   _fpl_p="$(printf '%s' "${1:-}" | fpl_json_get cwd)"
-  { [ -n "$_fpl_p" ] && [ -d "$_fpl_p" ]; } || _fpl_p="${CLAUDE_PROJECT_DIR:-.}"
+  if [ -n "${CLAUDE_PROJECT_DIR:-}" ]; then
+    [ -d "$CLAUDE_PROJECT_DIR" ] || return 1
+    _fpl_workspace="$CLAUDE_PROJECT_DIR"
+    [ -n "$_fpl_p" ] || _fpl_p="$CLAUDE_PROJECT_DIR"
+    _fpl_p="$(_fpl_contained_dir "$_fpl_workspace" "$_fpl_p")" || return 1
+  else
+    { [ -n "$_fpl_p" ] && [ -d "$_fpl_p" ]; } || _fpl_p="."
+  fi
   cd "$_fpl_p" 2>/dev/null || return 1
   _fpl_r="$(git rev-parse --show-toplevel 2>/dev/null)"
   # A toplevel that cannot be entered must fail the hook, not leave it running
   # in a subdirectory where "scripts/harness.sh is absent" reads as true.
   if [ -n "$_fpl_r" ]; then
+    if [ -n "$_fpl_workspace" ]; then
+      _fpl_r="$(_fpl_contained_dir "$_fpl_workspace" "$_fpl_r")" || return 1
+    fi
     cd "$_fpl_r" 2>/dev/null || return 1
   fi
   return 0

@@ -939,7 +939,7 @@ def _decision_as_of(node, as_of_dt):
 def render_lines(records, diagnostics, budget_bytes=4000, header=None):
     out = []
     if header:
-        out.append(header)
+        out.append(_clean(header, 400))
     for r in records:
         status = r.get("status") or r["kind"]
         label = f"{r.get('tag')}/{r.get('dedupeKey')}" \
@@ -963,15 +963,39 @@ def render_lines(records, diagnostics, budget_bytes=4000, header=None):
         # a crafted claim cannot forge additional lines.
         out.append(_clean(line, 400))
     for d in diagnostics:
-        out.append(f"    [{d}]")
-    text = ""
+        out.append(_clean(f"    [{d}]", 400))
+    rendered = []
+    used = 0
     for i, line in enumerate(out):
-        if len(text) + len(line) + 1 > budget_bytes:
-            text += f"    [elided: {len(out) - i} more line(s) — run " \
-                    f"py.sh recall.py directly]\n"
+        separator = 1 if rendered else 0
+        encoded = line.encode("utf-8")
+        if used + separator + len(encoded) > budget_bytes:
+            elision = (f"    [elided: {len(out) - i} more line(s) — run "
+                       "py.sh recall.py directly]")
+            remaining = budget_bytes - used - separator
+            if remaining > 0:
+                clipped = elision.encode("utf-8")[:remaining].decode(
+                    "utf-8", errors="ignore")
+                if clipped:
+                    rendered.append(clipped)
             break
-        text += line + "\n"
-    return text.rstrip("\n")
+        rendered.append(line)
+        used += separator + len(encoded)
+    return "\n".join(rendered)
+
+
+def emit_lines(records, diagnostics, budget_bytes=4000, header=None):
+    """Write one UTF-8 payload, including its final LF, within the budget."""
+    text = render_lines(records, diagnostics,
+                        budget_bytes=max(0, budget_bytes - 1), header=header)
+    if not text:
+        return
+    payload = (text + "\n").encode("utf-8")
+    stream = getattr(sys.stdout, "buffer", None)
+    if stream is None:
+        sys.stdout.write(payload.decode("utf-8"))
+    else:
+        stream.write(payload)
 
 
 def render_seedmap(root, records, tags):
@@ -1054,10 +1078,15 @@ def for_session(root):
             rows.sort(key=lambda r: str(r.get("establishedWhen") or ""),
                       reverse=True)
             note = "; ".join(diagnostics) or "no recall candidates"
-            print(f"- Newest filed lessons ({note}):")
-            for r in rows[:3]:
-                print(f"    ({r.get('status')}) {r.get('tag')}/"
-                      f"{r.get('dedupeKey')} — {str(r.get('claim'))[:120]}")
+            fallback = []
+            for row in rows[:3]:
+                record = dict(row)
+                record["kind"] = "lesson"
+                record["id"] = (f"lesson:{row.get('tag')}|"
+                                f"{row.get('dedupeKey')}")
+                fallback.append(record)
+            emit_lines(fallback, [], budget_bytes=1200,
+                       header=f"- Newest filed lessons ({note}):")
             return 0
         try:
             source_docs = sum(_source_doc_counts(root).values())
@@ -1078,8 +1107,7 @@ def for_session(root):
     header = ("- FluxPoint context recalled for this work, most relevant "
               "first (offline ranking; advisory — a re-found item is "
               "still judged on its merits):")
-    print(render_lines(records[:5], diagnostics, budget_bytes=1200,
-                       header=header))
+    emit_lines(records[:5], diagnostics, budget_bytes=1200, header=header)
     return 0
 
 
@@ -1158,10 +1186,10 @@ def for_prompt(root):
             break
     if not strong:
         return 0
-    print(render_lines(
+    emit_lines(
         strong, [d for d in diagnostics if "index" in d], budget_bytes=1200,
         header="FluxPoint context relevant to this prompt (advisory; a re-found "
-               "item is still judged on its merits):"))
+               "item is still judged on its merits):")
     return 0
 
 
