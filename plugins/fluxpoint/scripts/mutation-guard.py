@@ -79,11 +79,11 @@ import sys
 BASELINE = ".fluxpoint-proof-baseline.json"
 CONFIG = ".fluxpoint-mutation.json"
 CONFIG_FIELDS = {"version", "tool", "failWhenStale", "maxStaleCommits", "args"}
-SUPPORTED = {"cargo-mutants"}
+SUPPORTED = {"cargo-mutants", "stryker"}
 # Named so a repo using one of these is told it is not covered, rather than
 # reading a silent exit 0 as a clean bill of health.
 KNOWN_UNSUPPORTED = {
-    "mutmut": "Python", "stryker": "JS/TS", "pitest": "Java", "aiken": "Aiken",
+    "mutmut": "Python", "pitest": "Java", "aiken": "Aiken",
 }
 
 
@@ -184,6 +184,37 @@ def run_cargo_mutants(root, extra):
     except (OSError, json.JSONDecodeError) as e:
         return None, [f"{p} is not readable JSON ({e})"]
     return parse_cargo_mutants(doc)
+
+
+def run_stryker(root, extra):
+    """(measurement, findings). Runs Stryker and reads its own JSON report.
+
+    `npx` rather than a bare binary: Stryker is a dev dependency in every JS
+    project that has it, and a globally installed one would be a different
+    version from the one the repo pins.
+    """
+    cmd = ["npx", "--no-install", "stryker", "run", *extra]
+    try:
+        proc = subprocess.run(cmd, cwd=root, capture_output=True, text=True)
+    except FileNotFoundError:
+        return None, ["npx not on PATH — install Node, or add "
+                      "@stryker-mutator/core to the project"]
+    except Exception as e:  # noqa: BLE001
+        return None, [f"stryker could not be run: {e}"]
+
+    p = os.path.join(root, STRYKER_REPORT)
+    if not os.path.exists(p):
+        tail = (proc.stderr or proc.stdout or "")[-600:]
+        return None, [
+            f"stryker exited {proc.returncode} but wrote no "
+            f"{STRYKER_REPORT} — nothing was measured. The json reporter must "
+            f"be enabled (\"reporters\": [\"json\"]). Tail:\n{tail}"]
+    try:
+        with open(p, encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except (OSError, json.JSONDecodeError) as e:
+        return None, [f"{p} is not readable JSON ({e})"]
+    return parse_stryker(doc)
 
 
 # The schema this parser was written against and verified on. cargo-mutants
@@ -300,6 +331,93 @@ def parse_cargo_mutants(doc):
     }, findings
 
 
+
+# The report Stryker writes with `"reporters": ["json"]`. Schema version 1.0 is
+# the mutation-testing-elements format, which is also the convention the
+# cargo-mutants scoring above follows — so the two tools land on the same
+# numbers by construction rather than by coincidence.
+STRYKER_REPORT = os.path.join("reports", "mutation", "mutation.json")
+
+# Statuses that say something about the TESTS. CompileError and Ignored say
+# nothing — the mutant never ran — and counting them would report a worse score
+# for a tree the tool itself considers clean, exactly as `unviable` does for
+# cargo-mutants. RuntimeError is excluded for the same reason: the mutant broke
+# before any assertion could have caught it.
+STRYKER_DETECTED = {"Killed", "Timeout"}
+STRYKER_UNDETECTED = {"Survived", "NoCoverage"}
+STRYKER_EXCLUDED = {"CompileError", "Ignored", "RuntimeError", "Pending"}
+
+
+def parse_stryker(doc):
+    """(measurement, findings) from Stryker's mutation.json.
+
+    ⚠️ NoCoverage counts as UNDETECTED, not as excluded. A mutant no test
+    exercises is the single most important thing this measure reports — it is
+    a line the suite cannot possibly have an opinion about — and folding it in
+    with the mutants that failed to compile would let a suite raise its score
+    by testing less.
+    """
+    if not isinstance(doc, dict):
+        return None, ["mutation.json is not an object"]
+    files = doc.get("files")
+    if not isinstance(files, dict):
+        return None, ["mutation.json has no 'files' object — is this a Stryker "
+                      "json report? The html reporter does not produce one."]
+
+    counts = {"detected": 0, "undetected": 0, "excluded": 0, "timeout": 0}
+    survivors, unknown = [], set()
+    for path, entry in sorted(files.items()):
+        for m in (entry or {}).get("mutants") or []:
+            st = m.get("status")
+            if st in STRYKER_DETECTED:
+                counts["detected"] += 1
+                if st == "Timeout":
+                    counts["timeout"] += 1
+            elif st in STRYKER_UNDETECTED:
+                counts["undetected"] += 1
+                if len(survivors) < 50:
+                    loc = (m.get("location") or {}).get("start") or {}
+                    survivors.append({
+                        "file": path,
+                        "line": loc.get("line") or 0,
+                        # `mutatorName` names the operator; the replacement is
+                        # what it became. Together they read like a diff.
+                        "what": f"{m.get('mutatorName') or '?'} -> "
+                                f"{(m.get('replacement') or '?')[:60]}"
+                                + (" (no test covers it)" if st == "NoCoverage" else ""),
+                    })
+            elif st in STRYKER_EXCLUDED:
+                counts["excluded"] += 1
+            else:
+                unknown.add(str(st))
+
+    findings = []
+    if unknown:
+        # Loud, because an unrecognised status is silently dropped from BOTH
+        # halves of the ratio and would move the score without moving the tests.
+        findings.append(
+            f"mutation.json carries mutant status(es) this parser does not know "
+            f"({', '.join(sorted(unknown))}) — they are counted in neither half "
+            f"of the score, so the number below is about fewer mutants than were run")
+    ver = str(doc.get("schemaVersion") or "unknown")
+    valid = counts["detected"] + counts["undetected"]
+    if valid == 0:
+        return None, findings + ["mutation.json scored no mutants — every one "
+                                 "was excluded, so there is no measurement here"]
+
+    return {
+        "tool": "stryker",
+        "toolVersion": f"schema {ver}",
+        "score": round(counts["detected"] / valid, 4),
+        "killed": counts["detected"] - counts["timeout"],
+        "survived": counts["undetected"],
+        "scored": valid,
+        "unviable": counts["excluded"],
+        "timeout": counts["timeout"],
+        "survivors": survivors,
+    }, findings
+
+
 # ------------------------------------------------------------------ commands
 def measure(root, cfg, accept, reason, src=None):
     prior = load_baseline(root).get("mutation") or {}
@@ -309,13 +427,17 @@ def measure(root, cfg, accept, reason, src=None):
         # should not require running it a second time here.
         try:
             with open(src, encoding="utf-8") as fh:
-                rec, findings = parse_cargo_mutants(json.load(fh))
+                doc = json.load(fh)
+            rec, findings = (parse_stryker(doc) if cfg["tool"] == "stryker"
+                             else parse_cargo_mutants(doc))
         except (OSError, json.JSONDecodeError) as e:
             rec, findings = None, [f"{src} is not readable JSON ({e})"]
         if rec is None and not findings:
             findings = [f"{src} carries no scored mutants — nothing to record"]
     else:
-        rec, findings = run_cargo_mutants(root, list(cfg.get("args") or []))
+        extra = list(cfg.get("args") or [])
+        rec, findings = (run_stryker(root, extra) if cfg["tool"] == "stryker"
+                         else run_cargo_mutants(root, extra))
     for f in findings:
         print(f"mutation-guard: {f}", file=sys.stderr)
     if rec is None:

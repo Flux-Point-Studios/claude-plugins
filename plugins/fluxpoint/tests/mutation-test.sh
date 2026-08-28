@@ -314,5 +314,40 @@ case "$out" in *mutants_skip*)
   *) bad "#[mutants::skip] is counted as an escape hatch" "invisible" ;; esac
 
 cd /; rm -rf "$ROOT"
+
+# --- stryker: JS/TS, parsed from the tool's OWN report -------------------
+# The fixture is a REAL Stryker 10 run, captured from a throwaway project with
+# one deliberately weak test — not a shape written here. Every number below was
+# produced by the tool, so if the parser and the tool ever disagree this is what
+# says so. A hand-written fixture would only prove the parser agrees with itself.
+HERE_T="$PLUGIN/tests"
+FIX="$HERE_T/fixtures/stryker-mutation.json"
+probe() { "$FPL_PY" "$HERE_T/stryker-probe.py" "$PLUGIN" "$FIX" "$@"; }
+field() { "$FPL_PY" -c 'import json,sys;d=json.load(sys.stdin);print(d["m"][sys.argv[1]] if d["m"] else "NONE")' "$1"; }
+
+out="$(probe)"
+check "stryker: killed is the tool's own count"    8      "$(field killed  <<<"$out")"
+check "stryker: survived is the tool's own count"  6      "$(field survived <<<"$out")"
+check "stryker: scored excludes nothing here"      14     "$(field scored  <<<"$out")"
+check "stryker: score is detected over valid"      0.5714 "$(field score   <<<"$out")"
+case "$out" in *EqualityOperator*) ok "stryker: a survivor names its mutator" "named" ;;
+  *) bad "stryker: a survivor names its mutator" "${out:0:70}" ;; esac
+
+# NoCoverage is UNDETECTED, never excluded. A mutant no test exercises is the
+# most important thing this measure reports; folding it in with the ones that
+# failed to compile would let a suite raise its score by testing LESS.
+check "stryker: NoCoverage counts as survived" 7 "$(probe Killed NoCoverage | field survived)"
+
+# CompileError says nothing about the tests — that mutant never ran — so it
+# leaves the ratio rather than lowering it, exactly as cargo-mutants' unviable.
+check "stryker: CompileError leaves the ratio"  13 "$(probe Survived CompileError | field scored)"
+check "stryker: CompileError is counted aside"  1  "$(probe Survived CompileError | field unviable)"
+
+# An unrecognised status is dropped from BOTH halves, so it would move the score
+# without moving the tests. That has to be said out loud.
+unk="$(probe Killed Rehydrated)"
+case "$unk" in *Rehydrated*) ok "stryker: an unknown status is reported, not silent" "said" ;;
+  *) bad "stryker: an unknown status is reported, not silent" "silent" ;; esac
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
