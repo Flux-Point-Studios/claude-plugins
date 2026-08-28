@@ -173,6 +173,8 @@ def _read_runs(root):
                 art = json.load(fh)
         except (OSError, json.JSONDecodeError) as e:
             raise SystemExit(f"recall: {p} is not readable JSON: {e}")
+        if not isinstance(art, dict):
+            raise SystemExit(f"recall: {p} must contain a JSON object")
         rid = art.get("runId") or fn[:-5]
         out[rid] = art
     return out
@@ -253,8 +255,27 @@ def _source_fingerprints(root):
             if fn.endswith(".json"):
                 parts.append(f"{fn}:{_sha_file(os.path.join(d, fn))}")
     import hashlib
-    fp["runs"] = hashlib.sha256("|".join(parts).encode()).hexdigest()
+    fp["runs"] = (hashlib.sha256("|".join(parts).encode()).hexdigest()
+                  if os.path.isdir(d) else "absent")
     return fp
+
+
+def _source_doc_counts(root):
+    """Current documents in each typed source, without building an index."""
+    lessons = memory_mod.current(root)
+    decisions = set()
+    for art in _read_runs(root).values():
+        summary = art.get("summary") if isinstance(art, dict) else None
+        rows = summary.get("decisions") if isinstance(summary, dict) else None
+        if isinstance(rows, dict):
+            decisions.update(k for k, v in rows.items()
+                             if isinstance(v, dict))
+    counterexamples = {str(row.get("cexId")) for row in _read_cex(root)
+                       if isinstance(row, dict) and row.get("cexId")}
+    primitives, _ = _read_substrate(root)
+    return {"lesson": len(lessons), "decision": len(decisions),
+            "cex": len(counterexamples),
+            "primitive": len({row["id"] for row in primitives})}
 
 
 # ------------------------------------------------------------------ build
@@ -455,15 +476,19 @@ def build(root, embed_backfill=False, transport=None):
                   newline="\n") as fh:
             fh.write(_dumps(obj))
 
+    kinds = {kind: sum(1 for n in docs.values() if n["kind"] == kind)
+             for kind in sorted(DOC_KINDS)}
     stats = {"docs": n_docs, "nodes": len(nodes), "edges": len(edges),
              "droppedPaths": dropped_paths, "staleKills": stale_kills,
-             "primitives": len(prims), "pending": 0, "provider": "none"}
+             "primitives": len(prims), "kinds": kinds,
+             "pending": 0, "provider": "none"}
     stats.update(_sync_vectors(root, docs, embed_backfill, transport))
 
     meta = {"version": 1, "sources": _source_fingerprints(root),
             "docs": n_docs, "pending": stats["pending"],
             "provider": stats["provider"],
-            "droppedPaths": dropped_paths, "staleKills": stale_kills}
+            "droppedPaths": dropped_paths, "staleKills": stale_kills,
+            "kinds": kinds}
     with open(os.path.join(idx, META_F), "w", encoding="utf-8",
               newline="\n") as fh:
         fh.write(_dumps(meta))
@@ -985,32 +1010,72 @@ def for_session(root):
     """The SessionStart section: offline, capped, never rebuilding, silent
     when there is nothing to say. Exit 0 unconditionally — a hook that can
     wedge a session is a worse failure than the memory it was protecting."""
-    if not os.path.exists(memory_mod.path_for(root)):
+    query = _work_query(root)
+    if not query:
+        try:
+            source_docs = sum(_source_doc_counts(root).values())
+        except SystemExit as e:
+            print(f"- FluxPoint recall unavailable: {e}")
+            return 0
+        if not source_docs:
+            return 0
+        meta = _load_json(root, META_F) or {}
+        indexed = int(meta.get("docs") or 0)
+        if not meta:
+            print(f"- FluxPoint recall has {source_docs} source document(s) "
+                  "available, but the index is not built yet; run "
+                  "/fluxpoint:recall build.")
+        elif is_stale(root):
+            print(f"- FluxPoint recall index lags the stores; {source_docs} "
+                  "source document(s) available. Run /fluxpoint:recall build "
+                  "to refresh it.")
+        elif indexed:
+            print(f"- FluxPoint recall has {indexed} indexed document(s), but "
+                  "there is no WORK.md or LOOP.md query to rank them against; "
+                  "run /fluxpoint:recall for an explicit query.")
+        else:
+            print(f"- FluxPoint recall index contains no documents despite "
+                  f"{source_docs} document(s) in its current sources; run "
+                  "/fluxpoint:recall build.")
         return 0
-    query = _work_query(root) or "lessons decisions counterexamples"
     files = _session_files(root)
     try:
         records, diagnostics = search(root, query=query, files=files,
                                       offline=True, k=5,
                                       allow_rebuild=False)
     except SystemExit as e:
-        print(f"- Memory recall unavailable: {e}")
+        print(f"- FluxPoint recall unavailable: {e}")
         return 0
     if not records:
         # No index yet: the newest filed lessons still orient a fresh
         # context, and the line names how to get ranking back.
         rows = memory_mod.current(root)
-        if not rows:
+        if rows:
+            rows.sort(key=lambda r: str(r.get("establishedWhen") or ""),
+                      reverse=True)
+            note = "; ".join(diagnostics) or "no recall candidates"
+            print(f"- Newest filed lessons ({note}):")
+            for r in rows[:3]:
+                print(f"    ({r.get('status')}) {r.get('tag')}/"
+                      f"{r.get('dedupeKey')} — {str(r.get('claim'))[:120]}")
             return 0
-        rows.sort(key=lambda r: str(r.get("establishedWhen") or ""),
-                  reverse=True)
-        note = "; ".join(diagnostics) or "no recall candidates"
-        print(f"- Newest filed lessons ({note}):")
-        for r in rows[:3]:
-            print(f"    ({r.get('status')}) {r.get('tag')}/"
-                  f"{r.get('dedupeKey')} — {str(r.get('claim'))[:120]}")
+        try:
+            source_docs = sum(_source_doc_counts(root).values())
+        except SystemExit as e:
+            print(f"- FluxPoint recall unavailable: {e}")
+            return 0
+        if source_docs:
+            index_notes = [d for d in diagnostics if "index" in d]
+            if index_notes:
+                print(f"- FluxPoint recall: {'; '.join(index_notes)}; "
+                      f"{source_docs} source document(s) available. Run "
+                      "/fluxpoint:recall build to refresh the ranked index.")
+            else:
+                print("- No task-specific FluxPoint context matched the "
+                      f"current index; {source_docs} source document(s) "
+                      "remain available for an explicit query.")
         return 0
-    header = ("- Lessons recalled from prior campaigns, most relevant "
+    header = ("- FluxPoint context recalled for this work, most relevant "
               "first (offline ranking; advisory — a re-found item is "
               "still judged on its merits):")
     print(render_lines(records[:5], diagnostics, budget_bytes=1200,
@@ -1066,12 +1131,22 @@ def for_prompt(root):
     prompt = str(payload.get("prompt") or "")[:512]
     if not prompt.strip():
         return 0
-    if not os.path.exists(memory_mod.path_for(root)):
-        return 0
     try:
-        records, _ = search(root, query=prompt, offline=True, k=8,
-                            allow_rebuild=False)
+        records, diagnostics = search(root, query=prompt, offline=True, k=8,
+                                      allow_rebuild=False)
     except SystemExit:
+        return 0
+    if not records:
+        index_notes = [d for d in diagnostics if "index" in d]
+        if index_notes:
+            try:
+                source_docs = sum(_source_doc_counts(root).values())
+            except SystemExit:
+                return 0
+            if source_docs:
+                print("FluxPoint prompt recall skipped (" +
+                      "; ".join(index_notes) + f"); {source_docs} source "
+                      "document(s) available. Run /fluxpoint:recall build.")
         return 0
     strong = []
     for r in records:
@@ -1084,8 +1159,8 @@ def for_prompt(root):
     if not strong:
         return 0
     print(render_lines(
-        strong, [], budget_bytes=1200,
-        header="Filed memory relevant to this prompt (advisory; a re-found "
+        strong, [d for d in diagnostics if "index" in d], budget_bytes=1200,
+        header="FluxPoint context relevant to this prompt (advisory; a re-found "
                "item is still judged on its merits):"))
     return 0
 
@@ -1182,15 +1257,36 @@ def main():
         return 0
 
     if a.stats:
+        source_fp = _source_fingerprints(a.root)
+        source_state = ", ".join(
+            f"{label} {'absent' if source_fp[key] == 'absent' else 'present'}"
+            for key, label in (("memory.jsonl", "memory.jsonl"),
+                               ("runs", "runs"),
+                               ("cex.jsonl", ".fluxpoint-cex.jsonl"),
+                               ("substrate.json", "substrate.json")))
         meta = _load_json(a.root, META_F)
         if not meta:
-            print("recall: no index built yet — run --build")
+            print("recall: no index built yet — run --build; recognized "
+                  f"sources: {source_state}")
             return 0
         state = "stale" if is_stale(a.root) else "current"
+        kinds = meta.get("kinds")
+        if not isinstance(kinds, dict):
+            kinds = {kind: 0 for kind in DOC_KINDS}
+            graph = _load_json(a.root, GRAPH_F) or {}
+            for node in (graph.get("nodes") or {}).values():
+                kind = node.get("kind") if isinstance(node, dict) else None
+                if kind in kinds:
+                    kinds[kind] += 1
         print(f"recall: {meta['docs']} doc(s) indexed ({state}); dense "
               f"provider {meta['provider']}" +
               (f", {meta['pending']} pending embedding"
-               if meta.get("pending") else ""))
+               if meta.get("pending") else "") +
+              f"; documents: lessons {kinds.get('lesson', 0)}, "
+              f"decisions {kinds.get('decision', 0)}, "
+              f"counterexamples {kinds.get('cex', 0)}, "
+              f"primitives {kinds.get('primitive', 0)}; recognized sources: "
+              f"{source_state}")
         return 0
 
     if a.format == "seedmap" and not a.tag:

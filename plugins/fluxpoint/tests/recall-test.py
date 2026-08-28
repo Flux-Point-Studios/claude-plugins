@@ -60,8 +60,8 @@ def rmtree(path):
         shutil.rmtree(path, onerror=clear)
 
 
-def scratch(rows, runs=None, files=None, cex=None):
-    root = tempfile.mkdtemp(prefix="fpl-recall-")
+def scratch(rows, runs=None, files=None, cex=None, parent=None):
+    root = tempfile.mkdtemp(prefix="fpl-recall-", dir=parent)
     sh(root, "git", "init", "-q", ".")
     sh(root, "git", "config", "user.email", "t@t")
     sh(root, "git", "config", "user.name", "t")
@@ -508,12 +508,291 @@ r = run_cli(root, "--for-session")
 report("for-session with no index falls back, named",
        r.returncode == 0 and "not built yet" in r.stdout
        and "Newest filed lessons" in r.stdout, r.stdout.splitlines()[0][:70])
-noroot = scratch([], {}, {})
-os.remove(os.path.join(noroot, ".claude", "fluxpoint", "memory.jsonl"))
-r = run_cli(noroot, "--for-session")
-report("for-session with no memory at all stays silent",
-       r.returncode == 0 and r.stdout.strip() == "", "no store, no lines")
-rmtree(noroot)
+
+source_work = ("# beacon decoder hardening\nSTATUS: IN PROGRESS\n\n## Plan\n"
+               "- [ ] normalize malformed beacons at the decoder boundary\n")
+
+decision_only = scratch([], {
+    "decision-run": {
+        "runId": "decision-run", "when": "2026-08-20T09:00:00Z",
+        "summary": {"campaign": "decoder hardening", "decisions": {
+            "decode-boundary": {
+                "question": "where are malformed beacon names normalized?",
+                "chosen": "at the decoder boundary",
+                "rationale": "every consumer receives one canonical name",
+            },
+        }},
+    },
+}, {"WORK.md": source_work})
+os.remove(os.path.join(decision_only, ".claude", "fluxpoint",
+                       "memory.jsonl"))
+quiet(recall.build, decision_only)
+r = run_cli(decision_only, "--for-session")
+report("for-session recalls a decision-only index without memory.jsonl",
+       r.returncode == 0 and "decision:decode-boundary" in r.stdout,
+       "decision source reached automatic recall")
+rmtree(decision_only)
+
+cex_only = scratch([], {}, {"WORK.md": source_work}, cex=[{
+    "cexId": "cex_beacon_prefix",
+    "title": "malformed beacon prefix reaches the decoder",
+    "module": "src/beacon.ak", "tool": "aiken", "status": "pinned",
+}])
+os.remove(os.path.join(cex_only, ".claude", "fluxpoint", "memory.jsonl"))
+quiet(recall.build, cex_only)
+r = run_cli(cex_only, "--for-session")
+report("for-session recalls a counterexample-only index without memory.jsonl",
+       r.returncode == 0 and "cex:cex_beacon_prefix" in r.stdout,
+       "counterexample source reached automatic recall")
+rmtree(cex_only)
+
+primitive_manifest = {
+    "repo": "recall-fixture",
+    "primitives": [
+        {"id": "beacon-decoder", "kind": "engine", "status": "live",
+         "desc": "normalizes malformed beacon names at the decoder boundary",
+         "paths": [], "consumes": []},
+        {"id": "budget-meter", "kind": "gate", "status": "live",
+         "desc": "checks transaction execution budgets",
+         "paths": [], "consumes": []},
+        {"id": "run-ledger", "kind": "store", "status": "live",
+         "desc": "records graph campaign receipts",
+         "paths": [], "consumes": []},
+    ],
+}
+primitive_only = scratch([], {}, {
+    "WORK.md": source_work,
+    "substrate.json": json.dumps(primitive_manifest),
+})
+os.remove(os.path.join(primitive_only, ".claude", "fluxpoint",
+                       "memory.jsonl"))
+primitive_stats, _, _ = quiet(recall.build, primitive_only)
+r = run_cli(primitive_only, "--for-session")
+report("for-session recalls a primitive-only index without memory.jsonl",
+       r.returncode == 0 and "prim:beacon-decoder" in r.stdout,
+       "primitive source reached automatic recall")
+primitive_json = json.dumps({
+    "prompt": "why are malformed beacon names normalized at the decoder?",
+    "cwd": primitive_only,
+})
+r = subprocess.run(
+    [sys.executable, os.path.join(SCRIPTS, "recall.py"), "--for-prompt"],
+    cwd=primitive_only, input=primitive_json, capture_output=True, text=True,
+    timeout=60)
+report("for-prompt recalls a primitive-only index without memory.jsonl",
+       r.returncode == 0 and "prim:beacon-decoder" in r.stdout,
+       "primitive source reached prompt recall")
+expected_kinds = {"cex": 0, "decision": 0, "lesson": 0, "primitive": 3}
+meta_path = os.path.join(primitive_only, recall.INDEX_DIR, recall.META_F)
+with open(meta_path, encoding="utf-8") as fh:
+    primitive_meta = json.load(fh)
+report("build records document-kind counts in stats and metadata",
+       primitive_stats.get("kinds") == expected_kinds
+       and primitive_meta.get("kinds") == expected_kinds,
+       str(primitive_meta.get("kinds")))
+r = run_cli(primitive_only, "--stats")
+report("stats name the indexed document kinds",
+       r.returncode == 0 and "lessons 0" in r.stdout
+       and "decisions 0" in r.stdout and "counterexamples 0" in r.stdout
+       and "primitives 3" in r.stdout and "substrate.json present" in r.stdout,
+       r.stdout.strip()[:100])
+primitive_meta.pop("kinds")
+with open(meta_path, "w", encoding="utf-8", newline="\n") as fh:
+    json.dump(primitive_meta, fh, sort_keys=True, separators=(",", ":"))
+r = run_cli(primitive_only, "--stats")
+report("stats derives document kinds for an older index",
+       r.returncode == 0 and "lessons 0" in r.stdout
+       and "primitives 3" in r.stdout,
+       r.stdout.strip()[:100])
+
+mixed_source = scratch(
+    [lesson("mixed", "one-lesson", "one retained lesson")],
+    {"mixed-run": {
+        "runId": "mixed-run", "when": "2026-08-20T09:00:00Z",
+        "summary": {"decisions": {"one-decision": {
+            "question": "where does the check live?", "chosen": "boundary",
+            "rationale": "one canonical input",
+        }}},
+    }},
+    {"substrate.json": json.dumps({
+        "repo": "mixed-fixture", "primitives": [
+            {"id": "one-primitive", "desc": "first declaration"},
+            {"id": "one-primitive", "desc": "duplicate declaration"},
+        ],
+    })},
+    cex=[
+        {"cexId": "one-cex", "title": "first row"},
+        {"cexId": "one-cex", "title": "newest row"},
+    ])
+mixed_counts = recall._source_doc_counts(mixed_source)
+report("source fallback counts each typed identity once",
+       mixed_counts == {"lesson": 1, "decision": 1,
+                        "cex": 1, "primitive": 1},
+       str(mixed_counts))
+r = run_cli(mixed_source, "--for-session")
+report("no-query cold start names every available source kind",
+       r.returncode == 0 and "4 source document(s)" in r.stdout
+       and "index is not built yet" in r.stdout,
+       r.stdout.strip() or "no output")
+rmtree(mixed_source)
+
+unbuilt_source = scratch([], {}, {
+    "WORK.md": source_work,
+    "substrate.json": json.dumps(primitive_manifest),
+})
+os.remove(os.path.join(unbuilt_source, ".claude", "fluxpoint",
+                       "memory.jsonl"))
+r = run_cli(unbuilt_source, "--for-session")
+report("for-session names an unbuilt non-empty source corpus",
+       r.returncode == 0 and "index not built yet" in r.stdout
+       and "3 source document(s) available" in r.stdout,
+       r.stdout.strip() or "no output")
+r = subprocess.run(
+    [sys.executable, os.path.join(SCRIPTS, "recall.py"), "--for-prompt"],
+    cwd=unbuilt_source, input=json.dumps({
+        "prompt": "why are malformed beacon names normalized at the decoder?",
+        "cwd": unbuilt_source,
+    }), capture_output=True, text=True, timeout=60)
+report("for-prompt names an unbuilt non-empty source corpus",
+       r.returncode == 0 and "prompt recall skipped" in r.stdout
+       and "index not built yet" in r.stdout,
+       r.stdout.strip() or "no output")
+r = run_cli(unbuilt_source, "--stats")
+report("stats name source presence before the first index build",
+       r.returncode == 0 and "no index built yet" in r.stdout
+       and "memory.jsonl absent" in r.stdout
+       and "substrate.json present" in r.stdout,
+       r.stdout.strip())
+rmtree(unbuilt_source)
+
+wrong_run = scratch([], {"not-an-object": []}, {"WORK.md": source_work})
+os.remove(os.path.join(wrong_run, ".claude", "fluxpoint", "memory.jsonl"))
+r = run_cli(wrong_run, "--for-session")
+report("for-session names a non-object run artifact without crashing",
+       r.returncode == 0 and "must contain a JSON object" in r.stdout,
+       r.stdout.strip() or r.stderr.strip() or "no output")
+rmtree(wrong_run)
+
+stale_empty = scratch([], {}, {"WORK.md": source_work})
+os.remove(os.path.join(stale_empty, ".claude", "fluxpoint", "memory.jsonl"))
+quiet(recall.build, stale_empty)
+with open(os.path.join(stale_empty, "substrate.json"), "w") as fh:
+    json.dump(primitive_manifest, fh)
+r = run_cli(stale_empty, "--for-session")
+report("for-session names sources added after an empty index build",
+       r.returncode == 0 and "index lags the stores" in r.stdout
+       and "3 source document(s) available" in r.stdout,
+       r.stdout.strip() or "no output")
+r = subprocess.run(
+    [sys.executable, os.path.join(SCRIPTS, "recall.py"), "--for-prompt"],
+    cwd=stale_empty, input=json.dumps({
+        "prompt": "why are malformed beacon names normalized?",
+        "cwd": stale_empty,
+    }), capture_output=True, text=True, timeout=60)
+report("for-prompt names a stale empty index with new sources",
+       r.returncode == 0 and "prompt recall skipped" in r.stdout
+       and "index lags the stores" in r.stdout
+       and "3 source document(s) available" in r.stdout,
+       r.stdout.strip() or "no output")
+rmtree(stale_empty)
+
+current_no_match = scratch([], {}, {
+    "WORK.md": "# unrelated invoice export\nSTATUS: IN PROGRESS\n",
+    "substrate.json": json.dumps(primitive_manifest),
+})
+os.remove(os.path.join(current_no_match, ".claude", "fluxpoint",
+                       "memory.jsonl"))
+quiet(recall.build, current_no_match)
+r = run_cli(current_no_match, "--for-session")
+report("a current index with no task match does not prescribe a rebuild",
+       r.returncode == 0 and "No task-specific FluxPoint context matched" in r.stdout
+       and "/fluxpoint:recall build" not in r.stdout,
+       r.stdout.strip() or "no output")
+rmtree(current_no_match)
+
+no_work = scratch([], {}, {"substrate.json": json.dumps(primitive_manifest)})
+os.remove(os.path.join(no_work, ".claude", "fluxpoint", "memory.jsonl"))
+quiet(recall.build, no_work)
+r = run_cli(no_work, "--for-session")
+report("for-session names a non-empty index with no work query",
+       r.returncode == 0 and "3 indexed document(s)" in r.stdout
+       and "no WORK.md or LOOP.md query" in r.stdout,
+       r.stdout.strip() or "no output")
+rmtree(no_work)
+
+stale_no_work = scratch([], {}, {
+    "substrate.json": json.dumps(primitive_manifest),
+})
+os.remove(os.path.join(stale_no_work, ".claude", "fluxpoint",
+                       "memory.jsonl"))
+quiet(recall.build, stale_no_work)
+changed_manifest = dict(primitive_manifest)
+changed_manifest["revision"] = 2
+with open(os.path.join(stale_no_work, "substrate.json"), "w") as fh:
+    json.dump(changed_manifest, fh)
+r = run_cli(stale_no_work, "--for-session")
+report("a stale index with no work query is named stale",
+       r.returncode == 0 and "index lags the stores" in r.stdout
+       and "no WORK.md or LOOP.md query" not in r.stdout,
+       r.stdout.strip() or "no output")
+rmtree(stale_no_work)
+
+stale_ranked = scratch([], {}, {
+    "substrate.json": json.dumps(primitive_manifest),
+})
+os.remove(os.path.join(stale_ranked, ".claude", "fluxpoint", "memory.jsonl"))
+quiet(recall.build, stale_ranked)
+with open(os.path.join(stale_ranked, "substrate.json"), "w") as fh:
+    json.dump(changed_manifest, fh)
+r = subprocess.run(
+    [sys.executable, os.path.join(SCRIPTS, "recall.py"), "--for-prompt"],
+    cwd=stale_ranked, input=json.dumps({
+        "prompt": "why are malformed beacon names normalized at the decoder?",
+        "cwd": stale_ranked,
+    }), capture_output=True, text=True, timeout=60)
+report("ranked prompt recall names a stale index",
+       r.returncode == 0 and "prim:beacon-decoder" in r.stdout
+       and "index lags the stores" in r.stdout,
+       r.stdout.strip() or "no output")
+rmtree(stale_ranked)
+
+empty_sources = scratch([], {}, {})
+os.remove(os.path.join(empty_sources, ".claude", "fluxpoint",
+                       "memory.jsonl"))
+rmtree(os.path.join(empty_sources, ".claude", "fluxpoint", "runs"))
+quiet(recall.build, empty_sources)
+r = run_cli(empty_sources, "--for-session")
+report("for-session with a genuinely empty index stays silent",
+       r.returncode == 0 and r.stdout.strip() == "", "no sources, no lines")
+r = run_cli(empty_sources, "--stats")
+report("stats name an absent source set",
+       r.returncode == 0 and "0 doc(s) indexed (current)" in r.stdout
+       and "lessons 0" in r.stdout and "decisions 0" in r.stdout
+       and "counterexamples 0" in r.stdout and "primitives 0" in r.stdout
+       and "memory.jsonl absent" in r.stdout and "runs absent" in r.stdout
+       and ".fluxpoint-cex.jsonl absent" in r.stdout
+       and "substrate.json absent" in r.stdout,
+       r.stdout.strip()[:100])
+rmtree(empty_sources)
+
+query_empty = scratch([], {}, {"WORK.md": source_work})
+os.remove(os.path.join(query_empty, ".claude", "fluxpoint", "memory.jsonl"))
+quiet(recall.build, query_empty)
+r = run_cli(query_empty, "--for-session")
+report("for-session with a work query and empty index stays silent",
+       r.returncode == 0 and r.stdout.strip() == "", "no sources, no lines")
+rmtree(query_empty)
+
+present_empty = scratch([], {}, {}, cex=[])
+quiet(recall.build, present_empty)
+r = run_cli(present_empty, "--stats")
+report("stats distinguish present-but-empty source files",
+       r.returncode == 0 and "memory.jsonl present" in r.stdout
+       and "runs present" in r.stdout
+       and ".fluxpoint-cex.jsonl present" in r.stdout
+       and "substrate.json absent" in r.stdout,
+       r.stdout.strip()[:100])
+rmtree(present_empty)
 
 # ==================== per-prompt hook (dark launch) ========================
 quiet(recall.build, root)  # the for-session cases above removed the index
@@ -548,11 +827,12 @@ def bash_exe():
 BASH = bash_exe()
 
 
-def run_hook(env_extra, stdin):
-    env = {k: v for k, v in os.environ.items() if k != "FPL_MEM_PROMPT"}
+def run_hook(env_extra, stdin, project_dir=root, script=PROMPT_SH):
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("FPL_MEM_PROMPT", "FPL_RECALL_INJECT", "FPL_DISABLE")}
     env.update(env_extra)
-    env["CLAUDE_PROJECT_DIR"] = root
-    return subprocess.run([BASH, PROMPT_SH], input=stdin, env=env,
+    env["CLAUDE_PROJECT_DIR"] = project_dir
+    return subprocess.run([BASH, script], input=stdin, env=env,
                           capture_output=True, text=True, timeout=60)
 
 r = run_hook({}, hook_json)
@@ -564,6 +844,33 @@ report("armed, it injects corroborated items under budget",
        and len(r.stdout) <= 1400
        and "beacons unprefixed" in r.stdout,
        f"{len(r.stdout)} byte(s)")
+r = run_hook({"FPL_MEM_PROMPT": "1"}, primitive_json,
+             project_dir=primitive_only)
+report("armed prompt recall accepts a primitive-only index",
+       r.returncode == 0 and "prim:beacon-decoder" in r.stdout,
+       "no lesson store required")
+workspace_root = tempfile.mkdtemp(prefix="fpl-workspace-")
+workspace_child = scratch(ROWS, RUNS, FILES, parent=workspace_root)
+quiet(recall.build, workspace_child)
+workspace_json = json.dumps({
+    "prompt": "why do two-way beacon names misread in the decoder?",
+    "cwd": workspace_child,
+})
+r = run_hook({"FPL_MEM_PROMPT": "1"}, workspace_json,
+             project_dir=workspace_root)
+report("prompt recall follows payload cwd below a non-git workspace root",
+       r.returncode == 0 and "beacons unprefixed" in r.stdout,
+       "child repo index selected")
+rmtree(workspace_root)
+
+INJECT_SH = os.path.join(SCRIPTS, "inject-state.sh").replace(os.sep, "/")
+session_json = json.dumps({"session_id": "recall-source-test",
+                           "cwd": primitive_only})
+r = run_hook({"FPL_RECALL_INJECT": "1"}, session_json,
+             project_dir=primitive_only, script=INJECT_SH)
+report("SessionStart injects a primitive-only index",
+       r.returncode == 0 and "prim:beacon-decoder" in r.stdout,
+       "wrapper did not require memory.jsonl")
 # The floor must be a floor: a prompt sharing only stopword-grade tokens
 # with the store injects nothing. Lex+graph is one signal counted twice
 # (the graph leg is seeded from the lexical top ranks), so corroboration
@@ -591,6 +898,7 @@ report("budget overflow is elided by name",
 
 rmtree(root)
 rmtree(troot)
+rmtree(primitive_only)
 
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)
