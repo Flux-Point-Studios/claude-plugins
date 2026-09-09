@@ -28,7 +28,11 @@ BASE = {
     "version": 1,
     "name": "t",
     "campaign": "a campaign that exists to be validated",
-    "budget": {"maxNodes": 32},
+    # The canonical sound graph declares the prompt-cache TTL its fan-out
+    # needs; without one the compiler (rightly) says the 5-minute default
+    # expires while the parent blocks, and the silence cases below would
+    # be measuring that warning instead of their own.
+    "budget": {"maxNodes": 32, "cacheTtl": "1h"},
     "lists": {"dims": [{"key": "a", "brief": "x"}]},
     "nodes": [
         {
@@ -158,6 +162,17 @@ def prev_without_after(ir):
 
 
 case("{{prev}} with no after edge", prev_without_after, "hidden coupling")
+
+# Budget as cost, not calls (issue #66). maxNodes is a fan-out guardrail;
+# the estimate prices effort, the prompt cache and the model, and the
+# ceiling on it is the one the bill answers to.
+case("maxEstimatedTokens below the estimate", lambda ir: ir["budget"].update(maxEstimatedTokens=1000),
+     "estimated at")
+case("maxEstimatedTokens above the estimate", lambda ir: ir["budget"].update(maxEstimatedTokens=10_000_000), None)
+case("maxEstimatedTokens that is not a positive integer", lambda ir: ir["budget"].update(maxEstimatedTokens="lots"),
+     "positive integer")
+case("cacheTtl the runtime does not offer", lambda ir: ir["budget"].update(cacheTtl="2h"), "cacheTtl must be")
+case("cacheTtl of an hour", lambda ir: ir["budget"].update(cacheTtl="1h"), None)
 
 # --- {{prev.<field>}} projection ------------------------------------------
 # The trap this closes: a dotted prev token used to pass validation on its

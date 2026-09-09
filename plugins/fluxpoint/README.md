@@ -33,7 +33,8 @@ does.
   lesson's verdict, executed by the harness and reported at session start);
   `proof-guard.py` (proof-strength ratchet); `spec-guard.py` (statement
   ratchet — what is being proved, not just how); `cex.py` (counterexample
-  ledger: a prover's shrunk failing input, pinned to a regression);
+  ledger: a prover's shrunk failing input, pinned to a regression; one
+  parser per prover, Aiken and Dafny today, one pinning discipline);
   `mutation-guard.py` (mutation score — whether the tests can fail, not
   just whether they pass);
   `seam-guard.py` (seam ratchet — whether the tests reach the code at
@@ -46,29 +47,44 @@ does.
   without it — `--verify` runs the proof intact, then disables the guard
   and requires the same proof to break, so a proof that cannot run is
   reported rather than counted as evidence);
+  `prompt-audit.py` (prompt hygiene: a deterministic scan of agents,
+  commands, skills and templates for the anti-patterns that hobble a
+  frontier model — shouted imperatives, thoroughness boosters,
+  verification rituals, scratchpad scaffolds, stale model ids,
+  contradictory or repeated rules — advisory in the harness, `--strict`
+  as the promotion path, suppressions on the record);
   `plutus-budget.py` (on-chain
   size and execution-unit limits); `pair-guard.py` (relation gate over
-  declared artifact pairs); `ledger.py` (once-only guard for
+  declared artifact pairs: co-change, parity, a differential over generated
+  inputs, a bite that proves the parity can fail, and `--scan` for the
+  mirror nobody declared); `ledger.py` (once-only guard for
   irreversible nodes); `release.py`, `inbox.py`, `wake-check.sh`
   (the park layer); `migrate.py` (pre-1.0 migration,
   plan/apply/finalize).
 - `contracts/` — versioned named schemas (`FindingsV1`, `VerdictV1`,
-  `HarnessCheckV1`, `DesignV1`, `SliceV1`, `RedTeamV1`, `DecisionV1`,
-  `LessonV1`, `ExecutionV1`).
+  `HarnessCheckV1`, `DesignV1`, `SliceV1`, `RedTeamV1`, `ProofV1`,
+  `DecisionV1`, `LessonV1`, `ExecutionV1`).
 - `commands/` — `/fluxpoint:init`, `:status`, `:migrate`, `:red-team`,
   `:proof-audit`, `:graph-design`, `:graph-run`, `:graph-audit`,
   `:release`.
-- `agents/` — `red-team-reviewer` (adversarial diff review),
-  `graph-auditor` (semantic review of a campaign IR), `proof-auditor`
-  (did the verification get weaker, not just greener).
+- `agents/` — `red-team-reviewer` (adversarial diff review, `RedTeamV1`),
+  `proof-auditor` (did the verification get weaker, not just greener;
+  `ProofV1`, bound as a gate node in the feature campaign), `prover`
+  (proof synthesis apart from program synthesis; `SliceV1`, a mutator),
+  `graph-auditor` (semantic review of a campaign IR; prose, and outside
+  the graph on purpose).
 - `skills/` — `loop-engineering` (driver selection, conditions, the gate),
   `graph-engineering` (escalation rule, primitives, tiers, shapes),
   `secret-handling` (derive instead of read, so a credential can be worked
   with rather than denied).
 - `templates/` — `harness.sh` contract, `WORK.md`, `WORK.feature.md`,
-  `WORK.discovery.md`, `WORK_PROMPT.md`, `loop.sh`, settings snippet.
+  `WORK.discovery.md`, `WORK.consolidate.md`, `WORK.verified.md` (opt-in:
+  a `prover` node beside the builder), `WORK_PROMPT.md`, `loop.sh`,
+  settings snippet.
 - `tests/` — `compile-test.py` (compiler invariants), `emission-test.py`
-  (field-effect probes), `gate-test.sh` (Stop-gate bypass cases),
+  (field-effect probes), `proof-verdict-test.py` (a ProofV1 verdict
+  reaches the outcome and the Evidence row, executed),
+  `gate-test.sh` (Stop-gate bypass cases),
   `hooks-test.sh` (hooks.json command strings + PostToolUse behavior),
   `evidence-test.sh` (gate-authored rows and the classed bootstrap),
   `security-test.py` (codegen injection and red-team regressions),
@@ -76,16 +92,21 @@ does.
   `proof-guard-test.sh` (the ratchet, per prover), `spec-guard-test.sh`
   (the statement ratchet and its false-positive boundary), `cex-test.sh`
   (the counterexample ledger and every way of appearing to pin without
-  pinning, executed), `mutation-test.sh` (the score ratchet in both
+  pinning, executed, for Aiken JSON and Dafny models alike), `mutation-test.sh` (the score ratchet in both
   directions, and staleness staying loud rather than fatal),
   `seam-guard-test.sh` (the seam ratchet end to end, including that the
   scaffolded harness enforces it), `budget-test.sh`
   (on-chain limits), `ledger-test.py` (the once-only guard, executed
   rather than grepped), `attest-test.sh` (execution attestation and its
   laundering cases, executed), `memory-test.py` (lessons across runs,
-  executed), `pair-test.sh` (relation gate),
-  `unify-test.sh` (state model and compatibility). All of it runs from
-  `scripts/harness.sh --full` in CI.
+  executed), `pair-test.sh` (relation gate), `pair-verify-test.sh` (the
+  differential tier, the bite under `--verify` with every trap it refuses,
+  and `--scan`, executed),
+  `cost-test.py` (the token estimate, its ceiling, the declared cache
+  TTL and the effort-transition warnings, executed), `prompt-audit-test.py`
+  (each prompt anti-pattern class fires on a sample and stays silent on
+  the house idiom), `unify-test.sh` (state model and compatibility). All
+  of it runs from `scripts/harness.sh --full` in CI.
 
 ## The two contracts
 
@@ -133,6 +154,15 @@ Evidence table both modes append to.
   included), and run-time floors stop verification and work fan-out
   separately. Anything declined is recorded `SKIPPED` and surfaces in
   Evidence as incomplete coverage.
+- Calls are the wrong unit for the bill, so the compiler also estimates
+  every graph in cold-input-token equivalents — prefix per call, priced
+  as a cache read when the previous call shares its `(model, effort)` and
+  the declared `cacheTtl` keeps it warm, work scaled by effort, the call
+  weighted by model — and `budget.maxEstimatedTokens` is the ceiling on
+  that estimate. The constants are stated assumptions in one place;
+  `metrics.py` holds them to the runtime's own `spent`. Effort
+  transitions between consecutive nodes are warned about as the cold
+  prefills they are.
 - Ending a discovery sweep on its round ceiling is logged
   `discovery INCOMPLETE, not exhausted` — stopping early and finishing are
   different claims.
@@ -192,6 +222,40 @@ characters is refused, because the ack's whole content is the claim that a
 human read the mirror and found it unaffected. An ack that discharged nothing
 is reported as spent rather than left to read as coverage. It clears
 **co-change only** -- a failing parity is a broken relation and stays fatal.
+
+Three more primitives came out of a seven-round review campaign on a mainnet
+keeper, where every HIGH finding was a hand-written reader disagreeing with
+the parser it claimed to mirror, and the parity that should have caught it
+compared two identical strings:
+
+- **`differential`** is the parity nobody has to hand-roll: a `generator`
+  emits one input per line under `FPL_PAIR_SEED`/`FPL_PAIR_CASES`, `sourceRun`
+  and `mirrorRun` read each one on stdin, and the two `(exit, stdout,
+  stderr)` triples must be identical, bytes compared, error text and key
+  order included, no normalisation. It runs inside `--check`; a generator
+  that fails, emits too few cases, or emits one input repeated is refused
+  rather than read as agreement, and a side that is killed or not found is
+  reported as that, never as a divergence. `--seed`/`--cases` override the
+  manifest so the line that reported a divergence reproduces it.
+- **`bite`** makes a parity prove it can fail. `--verify` runs the checks
+  intact, mutates the reader (`file`, `find`, `replace`, with the anchor
+  required to match exactly once), requires the checks to go RED, and
+  restores — reading the file back after the write and after the restore,
+  because an anchor that misses is a no-op that reads as a survivor and a
+  restore that did not restore corrupts every later measurement. An optional
+  `compile` runs before and after each step with its exit printed on its own
+  line, since a test runner that compiles in a global setup reports zero
+  failures for a mutant that does not compile. `--check` and `--list` name a
+  parity with no bite as unproven; `--verify` fails it.
+- **`authority`** names the funds-moving side, so a divergence reads as *the
+  reader diverged from the authority* rather than *they differ*, and a bite
+  that would mutate the authority to prove a reader notices is refused.
+
+And for the mirror nobody declared, **`--scan`** proposes manifest entries
+from the same non-trivial error message thrown in two modules, overlapping
+thrown-message sets, and a comment or docstring claiming to mirror or
+delegate — JSON on stdout, evidence in each `why`, exit 0 always. It is a
+suggestion list; the parity, differential and bite are the repo's to write.
 
 ## Blocked is a state
 

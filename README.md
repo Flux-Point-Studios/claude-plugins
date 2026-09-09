@@ -27,11 +27,11 @@ Evidence table, and one authority on done: `scripts/harness.sh`.
 | Proof ratchets | `proof-guard.py` (bodies), `spec-guard.py` (statements) | A checker exits 0 on an assumed lemma exactly as on a proved one, so escape-hatch counts may fall but never rise — and because the easier move is to weaken the theorem instead, the obligations themselves are hashed too: a dropped `ensures` conjunct, a deleted or renamed property test, a flipped `fail` test, or a narrowed fuzzer is red unless a Decisions row names it. Both share one committed baseline. |
 | Mutation score | `scripts/mutation-guard.py` | Every other gate asks whether the tests pass; this asks whether they can fail — break the implementation on purpose and count what the suite notices. `--measure` carries the ratchet (red when the score falls *or* the survivor count rises, since a ratio can hold flat while coverage shrinks) and runs off-session; `--check` is cheap enough for `--full` and only asks whether a measurement exists and still describes this tree. Staleness is named and raised in the inbox, fatal only if the repo asks. |
 | Seam ratchet | `scripts/seam-guard.py` | Mutation asks whether the tests can fail; this asks whether they reach the code at all. `vi.mock('@/services/x')` asserts what the author believed that module does, and nothing ever checks the belief — a mutant behind that wall reports the same green either way. The count of module mocks (first-party and third-party tracked apart) may fall but never rise against a committed baseline shared with the proof ratchets. Process-boundary stubs and partial mocks via `importActual`/`importOriginal` are deliberately not counted: they are the fix, not the disease. |
-| Counterexamples | `scripts/cex.py`, `.fluxpoint-cex.jsonl` | A prover's shrunk failing input is the most reusable thing it produces and it lives in a log the next command overwrites. `aiken check`'s JSON is captured, each failure recorded, and a fix pinned to a regression test — accepted only when the recorded value is physically in that test's body, outside comments and strings, in a test that is neither `fail`-annotated nor hollow. Losing a pinned test is red; releasing one costs a reason and a Decisions row. |
+| Counterexamples | `scripts/cex.py`, `.fluxpoint-cex.jsonl` | A prover's shrunk failing input is the most reusable thing it produces and it lives in a log the next command overwrites. `aiken check`'s JSON and `dafny verify`'s counterexample model are captured, each failure recorded, and a fix pinned to a regression test — accepted only when the recorded value is physically in that test's body, outside comments and strings, in a test that neither inverts nor disables its oracle (`fail`-annotated, `{:verify false}`, an `assume`) and is not hollow. Losing a pinned test is red; releasing one costs a reason and a Decisions row. |
 | Decisions | `scripts/decision.py`, `PreCompact` hook | A choice with more than one defensible answer is recorded against `DecisionV1` — the options, the best case against each including the winner, the rationale — so it survives the context that made it; `--none` makes silence a statement. At compaction the hook records whether anything reached the disk, and SessionStart tells the next context when the reasoning behind the current diff is gone. `FPL_DISTILL=1` makes the Stop gate ask for one; off by default. |
 | Attestation | `PostToolUse` hook on `Bash` | For a declared command that succeeds, records the runtime's own exit code to `.claude/fluxpoint/attest.jsonl`, so a green stops depending on an agent typing it back. PostToolUse has been measured not to fire when a Bash call fails, so the log binds passes and is silent about reds. Dormant in a repo that declares no gates. |
 | Proved gates | `verify: "prove:<gate>"`, `ExecutionV1` | A node can declare that its verdict must match the hook's record. The gate name resolves at compile time, so a tier naming nothing refuses to compile; at record time a citation that does not exist or disagrees files the run `TAMPERED-EXECUTION`, and citing nothing files it `INCOMPLETE`. Where a repo declares gates, an `irreversible` node's guard must be prove-gated — an effect nobody can undo may not rest on a self-reported exit code. |
-| Review | `red-team-reviewer` agent, `/fluxpoint:red-team` | Adversarial pass over the diff: eUTxO, oracle, authority, numeric, off-chain, and infra attack surface. Ends `VERDICT: SHIP` or `VERDICT: BLOCK`. |
+| Review | `red-team-reviewer` agent, `/fluxpoint:red-team`; `proof-auditor` agent, `/fluxpoint:proof-audit` | Adversarial pass over the diff: eUTxO, oracle, authority, numeric, off-chain, and infra attack surface. Ends `VERDICT: SHIP` or `VERDICT: BLOCK`. The proof-auditor asks whether verification got weaker while the checker stayed green and ends `SOUND`, `WEAKENED`, `UNPROVEN` (no checker ran) or `NOT-APPLICABLE` (no proof surface). Both are typed contracts (`RedTeamV1`, `ProofV1`) and both are gate nodes in the feature campaign. |
 | Drivers | `loop-engineering` skill + templates | `/goal` for interactive convergence, native `/loop` (self-paced) for in-session grinding, `/schedule` Routines for cloud standing guardrails, `scripts/loop.sh` for multi-hour outer Ralph runs with fresh context per iteration. |
 
 The repo-side contract is a single file: `scripts/harness.sh` supporting
@@ -51,7 +51,7 @@ restarts.
 | Piece | Mechanism | Behavior |
 |---|---|---|
 | Spec | ```json graph-ir block in `WORK.md` | The single source of truth: nodes with named contracts, `foreach`/`after` edges, a verification tier per node, budget ceiling, failure policy. Prose explains intent; the IR decides what runs. |
-| Compiler | `scripts/compile-graph.py` (python3, stdlib) | Compiles the IR to a Workflow script **deterministically — no model transcribes it**, so spec and executor cannot drift. Rejects unsound graphs at compile time: missing/unknown contracts, even panels, `verifyOver` that is not a contract field, dangling `after`/`foreach`/`role`, `{{prev}}` without an edge, a discovery loop with no dry rule/ceiling/dedup key, planned fan-out over `budget.maxNodes` (rounds priced in), and any mutator with no independent node verifying it. Unknown fields are errors too, at every level, so a misspelled `verifyOver` fails loudly instead of silently disabling verification. It also warns (without blocking) on shapes that compile but disappoint — a discovery ceiling too tight for its dry rule to ever fire, or a sweep with no verification tier. |
+| Compiler | `scripts/compile-graph.py` (python3, stdlib) | Compiles the IR to a Workflow script **deterministically — no model transcribes it**, so spec and executor cannot drift. Rejects unsound graphs at compile time: missing/unknown contracts, even panels, `verifyOver` that is not a contract field, dangling `after`/`foreach`/`role`, `{{prev}}` without an edge, a discovery loop with no dry rule/ceiling/dedup key, planned fan-out over `budget.maxNodes` (rounds priced in), and any mutator with no independent node verifying it. Unknown fields are errors too, at every level, so a misspelled `verifyOver` fails loudly instead of silently disabling verification. It also warns (without blocking) on shapes that compile but disappoint — a discovery ceiling too tight for its dry rule to ever fire, a sweep with no verification tier, an effort transition between consecutive nodes (a cold prefill each), or a fan-out with no declared prompt-cache TTL. Every graph is priced in cold-input-token equivalents from effort, model and the declared `cacheTtl`, and `budget.maxEstimatedTokens` is a ceiling on that estimate, because agent-call count is the wrong unit for the bill. |
 | Executor | Claude Code Workflow tool | `/fluxpoint:graph-run` compiles, runs, and records. Generated code carries the guarantees: input normalization, worktree isolation for mutators, refuter panels that attack rather than confirm, a budget floor that logs whatever it leaves unverified. On partial failure, `resumeFromRunId` re-runs only the repaired node onward. |
 | Reducers | `reduce` IR nodes, `{{prev.<field>}}` projection | Deterministic code between agents — dedupe, rank, cut, or project one contract field — compiled to plain JS with zero spawns, every cut named in the log. Models for ambiguity, code for plumbing: the synthesis node judges a shortlist, not a landfill. |
 | Metrics | structured provenance, `scripts/metrics.py`, `/fluxpoint:status` | Every summary records agent calls spawned vs planned and the runtime's token meter; discovery rounds carry found/new/kept tallies with per-worker unique-new counts; reduces carry before/after. `metrics.py` folds runs, lessons, and inbox into per-campaign rates — death and skip rates, sweep endings split dry/ceiling/truncated/halted, panel kill rate — so campaigns are tuned against numbers, not vibes. |
@@ -307,11 +307,23 @@ into any other repo, and `.github/workflows/harness.yml` runs it on every
 push to `main`, every pull request, and on demand. It checks every manifest and contract, syntax-checks
 every script, validates the plugin, compiles all campaign templates and
 `node --check`s the generated JavaScript, then runs every suite in
-`plugins/fluxpoint/tests/` (35 today), among them: compiler
+`plugins/fluxpoint/tests/` (39 today), among them: compiler
 invariants, field-effect probes, codegen-injection regressions, Stop-gate
 regression cases, hook wiring and PostToolUse behavior, migration against
 real pre-1.0 fixtures, the proof-strength ratchet across seven provers, and
 unified-state compatibility.
+
+One step is advisory on purpose. `plugins/fluxpoint/scripts/prompt-audit.py`
+scans the prompt-bearing surface — agents, commands, skills, templates —
+for the anti-patterns that hobble a frontier model (shouted imperatives,
+thoroughness boosters, verification rituals, scratchpad scaffolds, stale
+model ids, contradictory or repeated rules) and prints the trend without
+flipping the verdict, because the house style is deliberately dense prose
+and a gate that starts by failing on idiom gets routed around. Suppressions
+are on the record (an inline marker, or `.fluxpoint-prompt-audit.json`,
+whose spent entries are reported), and `--strict` is the promotion path
+once the false-positive rate is known. CI runs the same scan on its own
+line.
 
 The field-effect suite exists because of the defect that kept recurring
 here: not a wrong output, a *silent* one. `verify: harness` was accepted,
@@ -484,13 +496,14 @@ plugins/fluxpoint/
 ├── scripts/            lib.sh, inject-state.sh, verify-changed.sh, dod-gate.sh,
 │                       compile-graph.py, record-run.py, recall.py, embedder.py,
 │                       prompt-recall.sh
-├── contracts/          FindingsV1, VerdictV1, HarnessCheckV1, DesignV1, SliceV1, RedTeamV1
-├── commands/           init.md, status.md, migrate.md, red-team.md, recall.md,
-│                       graph-design.md, graph-run.md, graph-audit.md
-├── agents/             red-team-reviewer.md, graph-auditor.md
-├── skills/             loop-engineering/SKILL.md, graph-engineering/SKILL.md
+├── contracts/          FindingsV1, VerdictV1, HarnessCheckV1, DesignV1, SliceV1, RedTeamV1,
+│                       ProofV1, DecisionV1, LessonV1, ExecutionV1, TreeCheckV1
+├── commands/           init.md, status.md, migrate.md, red-team.md, proof-audit.md, recall.md,
+│                       graph-design.md, graph-run.md, graph-audit.md, release.md
+├── agents/             red-team-reviewer.md, proof-auditor.md, prover.md, graph-auditor.md
+├── skills/             loop-engineering/SKILL.md, graph-engineering/SKILL.md, secret-handling/SKILL.md
 ├── templates/          harness.sh, WORK.md, WORK.feature.md, WORK.discovery.md,
-│                       WORK.consolidate.md, WORK_PROMPT.md, loop.sh,
+│                       WORK.consolidate.md, WORK.verified.md, WORK_PROMPT.md, loop.sh,
 │                       settings.snippet.json
 ├── tests/              gate-test.sh, compile-test.py, unify-test.sh
 └── DESIGN-NOTES.md

@@ -7,7 +7,7 @@ JSON on stdin (or --result FILE).
 
 Usage:
   record-run.py --run-id wf_abc --graph WORK.md [--harness 0]
-                [--red-team SHIP] [--executor workflow] < result.json
+                [--red-team SHIP] [--proof-audit SOUND] [--executor workflow] < result.json
 """
 import argparse
 import datetime
@@ -25,6 +25,10 @@ LEGACY_HDR = "| When (UTC) | runId | Outcome | Nodes OK/dead | Findings | Harnes
 # decision that lived only in a transcript was re-decided by the next
 # context that had to ask the same question.
 DEC_HDR = "| When (UTC) | Decision | Chosen | Overturned prior | Frozen by | Rationale |"
+# The proof-auditor's vocabulary, worst last. A campaign with several
+# proof-audit nodes files the worst verdict, the way several harness nodes
+# file the worst exit: one WEAKENED is the campaign's answer.
+PROOF_RANK = {"NOT-APPLICABLE": 0, "SOUND": 1, "UNPROVEN": 2, "WEAKENED": 3}
 
 
 def cell(s, n=160):
@@ -111,12 +115,16 @@ def derive(summary):
     carry declared contracts, and the compiler emits the nodeId -> contract
     map precisely so this does not have to guess from a result's shape.
 
-    Returns (harness_exit, red_team_verdict, blocked) with None where the
-    campaign genuinely produced no such node.
+    Returns (harness_exit, red_team_verdict, blocked, proof_verdict,
+    proof_surface) with None where the campaign genuinely produced no such
+    node. The proof verdict is the ProofV1 node's, worst of several, and
+    proof_surface is how many files, obligations or suites it reviewed —
+    a SOUND over zero is vacuous and the row says so.
     """
     results = summary.get("results") or {}
     contracts = summary.get("contracts") or {}
     harness, verdict, blocked = None, None, False
+    proof, proof_surface = None, None
     for node, value in results.items():
         c = contracts.get(node)
         for r in _each(value):
@@ -132,7 +140,13 @@ def derive(summary):
                     verdict, blocked = "BLOCK", True
                 elif v and verdict is None:
                     verdict = v
-    return harness, verdict, blocked
+            pv = r.get("verdict")
+            if c == "ProofV1" or (c is None and pv in PROOF_RANK and "surface" in r):
+                if pv in PROOF_RANK and (proof is None or PROOF_RANK[pv] > PROOF_RANK[proof]):
+                    proof = pv
+                    sf = r.get("surface")
+                    proof_surface = len(sf) if isinstance(sf, list) else 0
+    return harness, verdict, blocked, proof, proof_surface
 
 
 def main():
@@ -142,6 +156,8 @@ def main():
     ap.add_argument("--result", help="file holding the workflow's return value (default stdin)")
     ap.add_argument("--harness", default="n/a", help="independent harness exit code")
     ap.add_argument("--red-team", default="n/a", help="SHIP | BLOCK | n/a")
+    ap.add_argument("--proof-audit", default="n/a",
+                    help="SOUND | WEAKENED | UNPROVEN | NOT-APPLICABLE | n/a")
     ap.add_argument("--executor", default="workflow", help="workflow | degraded-subagents")
     ap.add_argument("--state-dir", default=".claude/fluxpoint/runs")
     ap.add_argument("--root", default=".", help="repo root holding .claude/fluxpoint")
@@ -169,14 +185,23 @@ def main():
 
     # Derived beats declared: the flags are a fallback for a run whose
     # summary carries no such node, never an override of one that does.
-    d_harness, d_verdict, blocked = derive(summary)
+    d_harness, d_verdict, blocked, d_proof, proof_surface = derive(summary)
     harness = str(d_harness) if d_harness is not None else args.harness
     red_team = d_verdict if d_verdict is not None else args.red_team
+    proof_audit = d_proof if d_proof is not None else args.proof_audit
     if blocked and outcome in ("COMPLETE", "INCOMPLETE", "UNKNOWN"):
         # A campaign does not get to report COMPLETE over a blocking
         # verdict it collected. Halting is the graph's job; refusing to
         # file the run as clean is this script's.
         outcome = "BLOCKED-REDTEAM"
+    weakened = d_proof == "WEAKENED"
+    if weakened and outcome in ("COMPLETE", "INCOMPLETE", "UNKNOWN"):
+        # "Treat WEAKENED as harness-red" was policy; this is the mechanism.
+        outcome = "BLOCKED-PROOF"
+    elif d_proof == "UNPROVEN" and outcome in ("COMPLETE", "UNKNOWN"):
+        # No checker ran. That is the same sentence as a prove: node that
+        # cited no attestation: the declared verification did not happen.
+        outcome = "INCOMPLETE"
 
     # 1a. Irreversible effects go into the once-only ledger first. Written
     # before anything else in this script, because a row missing here is the
@@ -331,6 +356,7 @@ def main():
                 "findings": findings,
                 "harnessExit": harness,
                 "redTeam": red_team,
+                "proofAudit": proof_audit,
                 "attestation": attestation,
                 "summary": summary,
             },
@@ -382,6 +408,14 @@ def main():
     claim = f"graph run: {ok} node(s) OK, {dead} dead, {findings} produced item(s)"
     if blocked:
         claim += "; red-team returned BLOCK — not shippable"
+    if weakened:
+        claim += ("; proof-audit returned WEAKENED — verification got weaker while "
+                  "the checker stayed green")
+    elif d_proof == "UNPROVEN":
+        claim += "; proof-audit UNPROVEN — no checker ran, static review only"
+    elif d_proof == "SOUND" and not proof_surface:
+        claim += ("; proof-audit SOUND over an EMPTY surface — vacuous, treat the "
+                  "proofs as unreviewed")
     if blocked_nodes:
         claim += (f"; {len(blocked_nodes)} node(s) BLOCKED on a person "
                   f"({', '.join(blocked_nodes[:3])})")
@@ -417,7 +451,14 @@ def main():
         elif t.get("unattested"):
             claim += (f"; {t['unattested']} gate claim(s) UNATTESTED — self-reported "
                       f"exit code(s), no hook-minted record")
-    proof = f"harness exit {harness}; red-team {red_team}; executor {args.executor}"
+    if d_proof == "NOT-APPLICABLE":
+        proof_cell = "n/a (no proof surface)"
+    elif d_proof in ("SOUND", "WEAKENED"):
+        proof_cell = f"{d_proof} ({proof_surface} surface item(s))"
+    else:
+        proof_cell = proof_audit
+    proof = (f"harness exit {harness}; red-team {red_team}; proof-audit {proof_cell}; "
+             f"executor {args.executor}")
     if attestation:
         att = attestation["tally"]
         proof += ("; attestation " + ", ".join(

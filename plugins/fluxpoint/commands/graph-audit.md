@@ -24,7 +24,13 @@ structure; this pass judges what it cannot.
      and prior contracts suffice, or prompts that leak the desired
      answer to a verifier.
    - nodes whose prompts assume state no `after` edge delivers.
-   - budget ceilings set so high they are not really ceilings.
+   - budget ceilings set so high they are not really ceilings, and an
+     estimate (`--check` prints it) that no `maxEstimatedTokens` bounds.
+   - effort transitions that buy nothing: a mechanical schema-only node
+     bumped above its neighbours, or an inline effort that equals its
+     role's — each real transition is a cold prefill, and a graph that
+     fans out or parks without `cacheTtl: "1h"` is paying full prefill on
+     every hop.
 4. Treat REWIRE findings as the work list, highest severity first. Fix
    the IR, recompile, re-audit until SOUND. Never weaken a contract, drop
    a verifier, or raise a ceiling to reach SOUND — that is the graph

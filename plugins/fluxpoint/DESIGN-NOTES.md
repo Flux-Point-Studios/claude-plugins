@@ -89,6 +89,44 @@ compile to syntactically valid Workflow scripts; the provenance path
 writes a real artifact and Evidence row; and compiled campaigns have been
 executed end-to-end on the Workflow engine.
 
+## Effort is asserted, never measured (issues #64–#67)
+
+The shipped roles run `builder: high` and `red-team: high`, `architect:
+medium`, refuters at `low`. None of those numbers came from a measurement;
+they came from a sentence in this file ("cheap skeptics beat expensive
+believers") and from taste. The cost article's nearest analogue to a
+campaign — an agentic coding benchmark — cut spend by about half by
+dropping effort to `medium` and constraining output, and also shows
+high effort degrading answers when there is no more evidence to find. It
+is plausible that `red-team: high` is right (its job is to keep looking)
+and `builder: high` is not. Guessing which is what has to stop.
+
+What v1.36 changed is the instrumentation, and only that:
+
+- the compiler prices every graph (`estimate_tokens`: prefix per call,
+  warm or cold by the declared `cacheTtl` and the `(model, effort)` of the
+  call before it, work scaled by `EFFORT_MULT`, the call weighted by
+  `MODEL_MULT`) and refuses a graph over `budget.maxEstimatedTokens`;
+- every compiled script carries `ESTIMATE` and a per-node `PROFILE`
+  (effort, model, calls, estimated tokens) into its summary beside
+  `spent`;
+- `metrics.py` folds `estimated` against `spent` per campaign and reports
+  the effort mix, so a sweep has a per-role number to compare.
+
+What it did not do, and cannot do from inside a repository: run the
+sweep. The evaluation `hillclimb` needs is a graded score, and
+`scripts/harness.sh --full` is a binary Definition-of-Done signal — it
+discriminates green from red and nothing finer. The candidate score is
+the one `metrics.py` already computes per campaign: harness green rate
+across repeated runs of one template, over `spent`, with node death rate
+and panel kill rate as tie-breakers, swept per role over `effort` and
+`model` (a stronger model at `low` against the default at `high` is the
+case never tried). Every constant in the cost model is a stated
+assumption until that sweep has run; a flat curve would itself be the
+finding, and would mean the task is not bound by thinking compute and the
+defaults should come down. Until then the templates keep their
+settings, and every one of them is labelled as asserted.
+
 ## What the smoke test established
 
 *(Historical record from v0.1/v0.2. Filenames are as they were then:

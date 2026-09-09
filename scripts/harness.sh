@@ -53,6 +53,26 @@ step() { # name, then command
   fi
 }
 
+# An advisory step: it runs, its output is shown, and it never flips the
+# verdict. The prompt-hygiene audit starts here on purpose — the house
+# style is deliberately dense prose, and a gate that begins by failing
+# runs on idiom is a gate people learn to route around. A crash (exit 2:
+# nothing scanned, unreadable input) is still a failure, because a step
+# that ran nothing must not read as a step that found nothing.
+advise() { # name, then command
+  local name="$1"; shift
+  local rc=0
+  "$@" >/tmp/fpl-step.log 2>&1 || rc=$?
+  if [ "$rc" -eq 2 ]; then
+    printf '  FAIL  %s (advisory step could not run)\n' "$name"
+    sed 's/^/        /' /tmp/fpl-step.log | tail -25
+    fail=1
+  else
+    printf '  note  %s\n' "$name"
+    sed 's/^/        /' /tmp/fpl-step.log | tail -25
+  fi
+}
+
 check_json() { "$FPL_PY" -m json.tool "$1" >/dev/null; }
 check_sh()   { bash -n "$1"; }
 
@@ -155,6 +175,11 @@ case "${1:---full}" in
       "$PLUGIN"/scripts/memory.py | "$PLUGIN"/scripts/recurrence-guard.py)
         step "recurrence gate" "$FPL_PY" "$PLUGIN/tests/recurrence-test.py"
         step "lessons across runs" "$FPL_PY" "$PLUGIN/tests/memory-test.py" ;;
+      "$PLUGIN"/scripts/pair-guard.py)
+        step "relation gate" bash "$PLUGIN/tests/pair-test.sh"
+        step "relation gate: differential + bite + scan" bash "$PLUGIN/tests/pair-verify-test.sh" ;;
+      "$PLUGIN"/scripts/cex.py)
+        step "counterexample ledger" bash "$PLUGIN/tests/cex-test.sh" ;;
     esac
     ;;
   --full)
@@ -176,7 +201,9 @@ case "${1:---full}" in
     step "templates compile + emit valid JS" compile_templates
     step "compiler invariants" "$FPL_PY" "$PLUGIN/tests/compile-test.py"
     step "agentType resolution + contract" "$FPL_PY" "$PLUGIN/tests/agenttype-test.py"
+    step "proof verdict reaches the record (executed)" "$FPL_PY" "$PLUGIN/tests/proof-verdict-test.py"
     step "emission coverage" "$FPL_PY" "$PLUGIN/tests/emission-test.py"
+    step "cost model: estimate, ceiling, cache TTL (executed)" "$FPL_PY" "$PLUGIN/tests/cost-test.py"
     step "codegen injection + red-team regressions" "$FPL_PY" "$PLUGIN/tests/security-test.py"
     step "stop-gate regression" bash "$PLUGIN/tests/gate-test.sh"
     step "hygiene scope (executed)" bash "$PLUGIN/tests/hygiene-scope-test.sh"
@@ -196,12 +223,16 @@ case "${1:---full}" in
     step "once-only ledger (executed)" "$FPL_PY" "$PLUGIN/tests/ledger-test.py"
     step "execution attestation (executed)" bash "$PLUGIN/tests/attest-test.sh"
     step "documented claims match the code" "$FPL_PY" "$PLUGIN/tests/doc-claims-test.py"
+    step "prompt hygiene scanner (executed)" "$FPL_PY" "$PLUGIN/tests/prompt-audit-test.py"
+    advise "prompt hygiene over agents, commands, skills, templates (advisory)" \
+      "$FPL_PY" "$PLUGIN/scripts/prompt-audit.py"
     step "lessons across runs (executed)" "$FPL_PY" "$PLUGIN/tests/memory-test.py"
     step "recurrence gate (executed)" "$FPL_PY" "$PLUGIN/tests/recurrence-test.py"
     step "hybrid recall pipeline (executed)" "$FPL_PY" "$PLUGIN/tests/recall-test.py"
     step "embedder quarantine (executed)" "$FPL_PY" "$PLUGIN/tests/embedder-test.py"
     step "graph metrics aggregator (executed)" "$FPL_PY" "$PLUGIN/tests/metrics-test.py"
     step "relation gate" bash "$PLUGIN/tests/pair-test.sh"
+    step "relation gate: differential + bite + scan (executed)" bash "$PLUGIN/tests/pair-verify-test.sh"
     step "gate presence + resolver (executed)" bash "$PLUGIN/tests/gate-presence-test.sh"
     step "credential gate (executed)" bash "$PLUGIN/tests/secret-guard-test.sh"
     step "secret-handling skill shapes (executed)" "$FPL_PY" "$PLUGIN/tests/secret-handling-test.py"
@@ -209,7 +240,9 @@ case "${1:---full}" in
     step "unified state + compatibility" bash "$PLUGIN/tests/unify-test.sh"
     step "interpreter resolution" bash "$PLUGIN/tests/interpreter-test.sh"
     step "outer runner + co-change base" bash "$PLUGIN/tests/loop-runner-test.sh"
-    step "substrate: node --check" node --check "$SUB/scripts/substrate-graph.mjs"
+    for f in "$SUB"/scripts/*.mjs; do
+      [ -f "$f" ] && step "substrate: node --check $(basename "$f")" node --check "$f"
+    done
     step "substrate: registry graph + staleness suites" substrate_tests
     ;;
   *)

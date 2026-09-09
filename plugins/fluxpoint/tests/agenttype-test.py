@@ -92,9 +92,27 @@ report("a built-in agent type is not refused",
 
 # The same rule reached through a role, which is how the README writes it.
 role_ir = ir(role="red-team")
-role_ir["roles"] = {"red-team": {"agentType": "fluxpoint:proof-auditor"}}
+role_ir["roles"] = {"red-team": {"agentType": "fluxpoint:graph-auditor"}}
 report("a role's agentType is checked too",
        any("answers in a report" in x for x in errs(role_ir)), "checked")
+
+# ==================== the proof-auditor is reachable from a graph =========
+# Issue #72: security review was a node and verification review was not,
+# because proof-auditor answered in prose. It now declares ProofV1, so a
+# node contracted to ProofV1 may bind it and a node contracted to anything
+# else is refused for the same reason red-team-reviewer would be.
+report("proof-auditor declares ProofV1",
+       AGENTS.get("proof-auditor", {}).get("contract") == "ProofV1",
+       str(AGENTS.get("proof-auditor", {}).get("contract")))
+e = errs(ir(agentType="proof-auditor"))
+report("proof-auditor on a RedTeamV1 node is rejected",
+       any("declares contract 'ProofV1'" in x for x in e), e[0][:46] if e else "ACCEPTED")
+report("proof-auditor on a ProofV1 node halting on WEAKENED is accepted",
+       not errs(ir(agentType="proof-auditor", contract="ProofV1",
+                   haltWhen="verdict == 'WEAKENED'")), "accepted")
+report("prover declares SliceV1 (its output is edits, not a report)",
+       AGENTS.get("prover", {}).get("contract") == "SliceV1",
+       str(AGENTS.get("prover", {}).get("contract")))
 
 # ==================== silence when nothing is bound ======================
 report("a node with no agentType is silent",
@@ -106,15 +124,58 @@ report("a node with no agentType is silent",
 import glob
 import json
 import re
+# Gates resolve against the repo root's manifest, the way harness.sh
+# compiles the templates: a template using prove:<gate> is legal only there.
+REPO = os.path.dirname(os.path.dirname(PLUGIN))
+GATES = cg.load_gates(REPO)
+TEMPLATES = {}
 for t in sorted(glob.glob(os.path.join(PLUGIN, "templates", "WORK*.md"))):
     src = open(t, encoding="utf-8").read()
     m = cg.IR_FENCE.search(src)
     if not m:
         continue
     tir = json.loads(m.group(1))
-    te = cg.validate(tir, CONTRACTS, None, AGENTS)
+    TEMPLATES[os.path.basename(t)] = tir
+    te = cg.validate(tir, CONTRACTS, GATES, AGENTS)
     report(f"shipped {os.path.basename(t)} still compiles",
            not te, "valid" if not te else te[0][:44])
+
+
+def _bound(tir, agent):
+    """Nodes in an IR that resolve (via role or agentType) to `agent`."""
+    roles = tir.get("roles") or {}
+    out = []
+    for n in tir.get("nodes") or []:
+        want = n.get("agentType") or (roles.get(n.get("role")) or {}).get("agentType")
+        if want == agent:
+            out.append(n)
+    return out
+
+
+# The failure mode itself, pinned: a template that binds the security
+# reviewer and leaves the verification reviewer unbound is #72 again.
+for name, tir in TEMPLATES.items():
+    rt = _bound(tir, "red-team-reviewer")
+    if not rt:
+        continue
+    pa = _bound(tir, "proof-auditor")
+    report(f"{name}: red-team bound implies proof-audit bound", bool(pa),
+           f"{len(pa)} proof node(s)")
+    report(f"{name}: the proof node is contracted to ProofV1 and halts on WEAKENED",
+           all(n.get("contract") == "ProofV1" and n.get("haltWhen") == "verdict == 'WEAKENED'"
+               for n in pa) and bool(pa), "halts on WEAKENED")
+    order = [n["id"] for n in tir["nodes"]]
+    report(f"{name}: proof-audit runs before red-team closes",
+           all(order.index(p["id"]) < order.index(r["id"]) for p in pa for r in rt),
+           "ordered")
+
+verified = TEMPLATES.get("WORK.verified.md") or {}
+pv = _bound(verified, "prover")
+report("WORK.verified.md binds a prover node that mutates",
+       bool(pv) and all(n.get("mutates") for n in pv), f"{len(pv)} prover node(s)")
+report("and an independent node verifies it",
+       bool(pv) and all(any(o.get("independent") and o.get("verifies") == n["id"]
+                            for o in verified.get("nodes", [])) for n in pv), "verified")
 
 # ===== the plugin namespace survives a real install ======================
 # load_agents took the qualified prefix from basename(plugin_dir). In this repo

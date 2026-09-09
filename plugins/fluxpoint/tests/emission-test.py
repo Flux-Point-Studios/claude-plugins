@@ -340,6 +340,15 @@ probe("budget", "verifyFloorTokens", REPEAT_BASE,
       lambda ir: ir["budget"].update(verifyFloorTokens=123456))
 probe("budget", "nodeFloorTokens", NODE_BASE,
       lambda ir: ir["budget"].update(nodeFloorTokens=654321))
+# The cost ceiling: a graph estimated above it is refused, which is the
+# effect — an estimate the ceiling cannot refuse would be decoration.
+probe("budget", "maxEstimatedTokens", NODE_BASE,
+      lambda ir: ir["budget"].update(maxEstimatedTokens=1))
+# The TTL changes what the estimate prices as warm, and the emitted script
+# says which TTL it was written for; a field that changed neither would let
+# a graph declare a cache it never priced.
+probe("budget", "cacheTtl", NODE_BASE,
+      lambda ir: ir["budget"].update(cacheTtl="1h"))
 
 # ------------------------------------------------------- top-level IR fields
 probe("IR", "version", NODE_BASE, lambda ir: ir.update(version=2))
@@ -376,7 +385,8 @@ probed = {
     "memory": {"seed", "emit", "key", "priors", "classBy"},
     "release": {"instructions", "proofContract", "whyNotAgent"},
     "wake": {"check", "everyMinutes", "deadline"},
-    "budget": {"maxNodes", "verifyFloorTokens", "nodeFloorTokens"},
+    "budget": {"maxNodes", "verifyFloorTokens", "nodeFloorTokens",
+               "maxEstimatedTokens", "cacheTtl"},
     "IR": {
         "version", "name", "campaign", "budget", "defaults", "roles", "lists",
         "nodes", "requiredArgs", "argDefaults", "imports", "treeGuard",

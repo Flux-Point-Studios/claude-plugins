@@ -1,4 +1,4 @@
-# WORK: exhaustively surface defects until discovery goes dry
+# WORK: surface defects until two consecutive rounds find nothing new
 
 STATUS: DESIGN
 MODE: graph
@@ -6,7 +6,11 @@ MODE: graph
 Third canonical campaign: unknown-size discovery. A fixed fan-out finds
 what one pass happens to find; a discovery loop keeps going until two
 consecutive rounds surface nothing new. Use it for audits and sweeps where
-"how many are there" is the question, not an input.
+"how many are there" is the question, not an input. Coverage is a
+property of the dry rule and the budget floors, so nothing in this file
+tells an agent how hard to look: the loop stops when discovery stops, and
+a prompt that exhorts coverage buys verbosity and extra tool calls rather
+than findings.
 
 Copy over `WORK.md`'s Campaign section to use it.
 
@@ -22,7 +26,7 @@ Copy over `WORK.md`'s Campaign section to use it.
   "version": 1,
   "name": "discovery-campaign",
   "campaign": "Sweep for defects until two consecutive rounds find nothing new",
-  "budget": { "maxNodes": 126, "verifyFloorTokens": 50000, "nodeFloorTokens": 80000 },
+  "budget": { "maxNodes": 126, "verifyFloorTokens": 50000, "nodeFloorTokens": 80000, "cacheTtl": "1h", "maxEstimatedTokens": 1600000 },
   "defaults": { "effort": "medium" },
   "requiredArgs": ["target"],
   "roles": { "hunter": { "effort": "medium" } },
@@ -112,7 +116,11 @@ Copy over `WORK.md`'s Campaign section to use it.
 
 `maxNodes` prices the worst case: 3 modalities x (1 finder + 2 expected
 items x 3 refuters) x 6 rounds = 126. Typical runs cost far less, because
-a converging sweep never reaches its later rounds.
+a converging sweep never reaches its later rounds. `maxEstimatedTokens`
+prices the same worst case in tokens (~1.26M under the declared 1-hour
+prompt-cache TTL, most of it the refuters' warm reads) and is the ceiling
+the bill answers to; `cacheTtl: "1h"` is declared because every round
+blocks the parent far longer than the default five-minute cache lives.
 
 ## Decisions
 Appended automatically by `scripts/record-run.py` — do not hand-edit.

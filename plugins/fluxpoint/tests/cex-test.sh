@@ -345,6 +345,190 @@ err="$(cex --check 2>&1 >/dev/null)"
 case "$err" in *"is not valid JSON"*) ok "a corrupted store fails hard on read" "hard error" ;;
   *) bad "a corrupted store fails hard on read" "${err:0:44}" ;; esac
 
+# ================= 9. a second prover: dafny =============================
+# The ledger, the containment rule, the refusal to mint from a green run and
+# the INGEST-FAILED row are shared; only the parser is per prover. Fixtures
+# are the literal shape `dafny verify --extract-counterexample` prints
+# (Dafny 3: `name : type = value` state blocks; Dafny 4: the same model as
+# `assume` statements), captured from a real run, never from documentation.
+mkdafny() {
+  mkrepo
+  mkdir -p "$R/src" "$R/test"
+  cat >"$R/src/example.dfy" <<'EOF'
+module M {
+  method Fill(a: array?<int>, n: int, j: int, k: int)
+    requires a != null && a.Length == n
+    modifies a
+  {
+    var i := 0;
+    while i < n
+      invariant 0 <= i <= n
+    {
+      a[i] := i;
+      i := i + 1;
+    }
+  }
+}
+EOF
+  git -C "$R" add -A; git -C "$R" -c user.email=t@t -c user.name=t commit -qm dafny
+}
+dafny3() {
+  cat <<'EOF'
+src/example.dfy(8,16): Error: This loop invariant might not be maintained by the loop.
+src/example.dfy(8,16): Related message: loop invariant violation
+
+Dafny program verifier finished with 1 verified, 1 error
+Counterexample for first failing assertion: 
+src/example.dfy(2,2): initial state:
+        a : _System.array?<int> = ()
+        n : int = 1237
+        j : int = 196
+        k : int = 1236
+src/example.dfy(6,14):
+        a : _System.array?<int> = ()
+        n : int = 1237
+        i : int = 0
+        j : int = 196
+        k : int = 1236
+EOF
+}
+dafny4() {
+  cat <<'EOF'
+src/example.dfy(8,16): Error: this loop invariant could not be proved to be maintained by the loop
+
+Dafny program verifier finished with 1 verified, 1 error
+Counterexample for first failing assertion:
+src/example.dfy(2,2): initial state:
+    assume n == 1237 && j == 196 && k == 1236;
+EOF
+}
+dcex() { cex --ingest --tool dafny "$@"; }
+dcexid() { "$FPL_PY" - "$R/.fluxpoint-cex.jsonl" <<'PY2'
+import json, sys
+for l in open(sys.argv[1]):
+    r = json.loads(l)
+    if r["tool"] == "dafny": print(r["cexId"]); break
+PY2
+}
+
+mkdafny
+dafny3 | dcex --exit 4 >/dev/null 2>&1
+check "a dafny 3 model records one counterexample" 1 "$(rows)"
+out="$(cex --list)"
+case "$out" in *"[dafny] src/example.dfy:Fill"*) ok "the row names the tool and the enclosing method" "selector" ;;
+  *) bad "the row names the tool and the enclosing method" "${out:0:80}" ;; esac
+"$FPL_PY" - "$R/.fluxpoint-cex.jsonl" <<'PY2' && ok "the initial state is the recorded input, in order" "n, j, k" \
+  || bad "the initial state is the recorded input, in order" "wrong payload"
+import json, sys
+r = json.loads(open(sys.argv[1]).readline())
+# Every assignment of the initial state, in the order the prover printed it.
+# The opaque array renders as `()` and yields no literal, so it never becomes
+# something a pin must contain; it stays in the record because it is evidence.
+assert r["input"] == "a == (), n == 1237, j == 196, k == 1236", r["input"]
+assert r["signature"] == "counterexample" and r["inputForm"] == "dafny-model"
+assert r["containment"] == r["input"]
+PY2
+dafny3 | dcex --exit 4 >/dev/null 2>&1
+check "re-ingesting the same model appends nothing" 1 "$(rows)"
+
+mkdafny
+dafny4 | dcex --exit 4 >/dev/null 2>&1
+check "the dafny 4 assume spelling records the same literals" 1 "$(rows)"
+"$FPL_PY" - "$R/.fluxpoint-cex.jsonl" <<'PY2' && ok "and reads the conjuncts as assignments" "assume" \
+  || bad "and reads the conjuncts as assignments" "wrong payload"
+import json, sys
+r = json.loads(open(sys.argv[1]).readline())
+assert r["input"] == "n == 1237, j == 196, k == 1236", r["input"]
+PY2
+
+# ----- what a dafny pin has to survive
+dpin() { # $1 = body
+  printf 'include "../src/example.dfy"\n\nmethod {:test} %s() {\n  %s\n}\n' "$DID" "$1" >"$R/test/reg.dfy"
+  commit p >/dev/null
+}
+mkdafny; dafny3 | dcex --exit 4 >/dev/null 2>&1; DID="$(dcexid)"
+cex --pin "$DID" >/dev/null 2>&1
+[ -f "$R/.claude/fluxpoint/cex/$DID.dfy.draft" ] \
+  && ok "the draft carries the prover's own extension" "dfy" \
+  || bad "the draft carries the prover's own extension" "missing"
+dpin 'var a := new int[1237]; M.Fill(a, 1237, 196, 1236); expect a[0] == 0;'
+check "a tracked .dfy test carrying the literals in order pins" 0 \
+  "$(rc_of --pin "$DID" --file test/reg.dfy --test-name "$DID")"
+check "and --check is green" 0 "$(rc_of --check)"
+
+mkdafny; dafny3 | dcex --exit 4 >/dev/null 2>&1; DID="$(dcexid)"
+dpin '// Fill(a, 1237, 196, 1236)
+  expect 1 == 1;'
+check "the values in a COMMENT are refused" 1 \
+  "$(rc_of --pin "$DID" --file test/reg.dfy --test-name "$DID")"
+dpin 'var a := new int[1237]; M.Fill(a, 1237, 196, 1236); assume false; expect a[0] == 9;'
+check "an assume in the body is refused (anything verifies under it)" 1 \
+  "$(rc_of --pin "$DID" --file test/reg.dfy --test-name "$DID")"
+printf 'include "../src/example.dfy"\n\nmethod {:test} {:verify false} %s() {\n  var a := new int[1237]; M.Fill(a, 1237, 196, 1236); expect a[0] == 0;\n}\n' "$DID" >"$R/test/reg.dfy"
+commit v >/dev/null
+check "{:verify false} on the test is refused" 1 \
+  "$(rc_of --pin "$DID" --file test/reg.dfy --test-name "$DID")"
+dpin 'assert true;'
+check "an assert-true body is refused" 1 \
+  "$(rc_of --pin "$DID" --file test/reg.dfy --test-name "$DID")"
+dpin 'var a := new int[1237]; M.Fill(a, 1237, 196, 1238); expect a[0] == 0;'
+check "a retyped value is refused" 1 \
+  "$(rc_of --pin "$DID" --file test/reg.dfy --test-name "$DID")"
+printf 'test %s() {\n  pred(1237, 196, 1236)\n}\n' "$DID" >"$R/lib/reg.ak"; commit ak >/dev/null
+check "a pin in another prover's language is refused" 1 \
+  "$(rc_of --pin "$DID" --file lib/reg.ak --test-name "$DID")"
+
+# ----- failures without a model, and runs that record nothing
+mkdafny
+printf 'src/example.dfy(3,12): Error: a postcondition could not be proved on this return path\nsrc/example.dfy(3,12): Related location: this is the postcondition that could not be proved\n\nDafny program verifier finished with 0 verified, 1 error\n' \
+  | dcex --exit 4 >/dev/null 2>&1
+check "an error with no model is recorded as an assertion" 1 "$(rows)"
+DID="$(dcexid)"
+check "and stays open rather than failing --check" 0 "$(rc_of --check)"
+dpin 'expect 1 == 1;'
+err="$(cex --pin "$DID" --file test/reg.dfy --test-name "$DID" 2>&1 >/dev/null)"
+case "$err" in *"no literal"*) ok "it cannot be pinned mechanically, and says so" "refused" ;;
+  *) bad "it cannot be pinned mechanically, and says so" "${err:0:60}" ;; esac
+
+mkdafny
+printf 'src/example.dfy(4,9): Error: unresolved identifier: Lenght\n1 resolution/type errors detected in example.dfy\n' \
+  | dcex --exit 2 >/dev/null 2>&1
+check "a resolution error is not a counterexample" 0 "$(rows)"
+check "and files nothing" 0 "$("$FPL_PY" "$INBOX" --root "$R" --count)"
+dafny3 | dcex --exit 0 >/dev/null 2>&1
+check "exit 0 records nothing whatever was printed" 0 "$(rows)"
+
+# ----- drift is loud and never red
+mkdafny
+printf 'src/example.dfy(8,16): Error: This loop invariant might not be maintained by the loop.\n\nDafny program verifier finished with 1 verified, 1 error\nCounterexample for first failing assertion:\nsrc/example.dfy(2,2): initial state:\n    <opaque model dump>\n' \
+  | dcex --exit 4 >/dev/null 2>&1
+check "a model heading with nothing readable under it is a parser break" 1 \
+  "$("$FPL_PY" "$INBOX" --root "$R" --count)"
+check "and it is not red" 0 "$(printf 'x\n' | dcex --exit 4 >/dev/null 2>&1; echo $?)"
+mkdafny
+printf 'Unhandled exception: System.Something\n' | dcex --exit 3 >/dev/null 2>&1
+check "output with no Error line and no summary is a parser break" 1 \
+  "$("$FPL_PY" "$INBOX" --root "$R" --count)"
+out="$("$FPL_PY" "$INBOX" --root "$R" --list 2>/dev/null || cat "$R/.claude/fluxpoint/inbox.jsonl")"
+case "$out" in *"dafny"*) ok "the inbox row names the prover that drifted" "named" ;;
+  *) bad "the inbox row names the prover that drifted" "${out:0:60}" ;; esac
+check "an unknown tool is refused" 1 "$(printf 'x\n' | cex --ingest --tool kani --exit 1 >/dev/null 2>&1; echo $?)"
+
+# ----- the scaffolded harness captures dafny the way it captures aiken
+mkdafny
+mkdir -p "$R/scripts" "$R/bin"
+cp "$PLUGIN/templates/harness.sh" "$R/scripts/harness.sh"; chmod +x "$R/scripts/harness.sh"
+printf '#!/usr/bin/env bash\nif [ "$1" = "--version" ]; then echo "Dafny 4.9.0"; exit 0; fi\ncat <<'"'"'EOF'"'"'\n%s\nEOF\nexit 4\n' "$(dafny3)" >"$R/bin/dafny"
+chmod +x "$R/bin/dafny"
+cp "$R/src/example.dfy" "$R/example.dfy"   # the template globs one level down
+git -C "$R" add -A; git -C "$R" -c user.email=t@t -c user.name=t commit -qm shim
+( cd "$R" && env -u CLAUDE_PLUGIN_ROOT PATH="$R/bin:$PATH" FPL_PLUGIN_ROOT="$PLUGIN" \
+    bash scripts/harness.sh --full >"$ROOT/harness.log" 2>&1 ); hrc=$?
+[ "$hrc" -ne 0 ] && ok "the harness still fails on the prover's exit" "rc=$hrc" \
+  || bad "the harness still fails on the prover's exit" "rc=0"
+check "and the counterexample was recorded on the way" 1 "$(rows)"
+[ "$(rows)" = 1 ] || { echo "      harness output:"; tail -15 "$ROOT/harness.log" | sed 's/^/      /'; }
+
 cd /; rm -rf "$ROOT"
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
