@@ -108,6 +108,21 @@ grep -q 'if amount > 100' "$WORK/restore/server.py" \
   && ok "and the in-flight sentinel is cleared" "clean" \
   || bad "and the in-flight sentinel is cleared" "SENTINEL LEFT"
 
+# The anchor must match EXACTLY once. `replace(find, replace, 1)` on the
+# first of several hits disables a site the proof may never reach, and the
+# proof's failure (or success) is then a fact about the wrong line; an
+# anchor that misses is a no-op that reads the same way (issue #62).
+mkrepo twice
+printf '\n\ndef refund_ok(amount):\n    if amount > 100:\n        return False\n    return True\n' >>"$WORK/twice/server.py"
+before="$(cat "$WORK/twice/server.py")"
+out="$("$FPL_PY" "$GG" --root "$WORK/twice" --verify 2>&1)"; rc=$?
+check "an anchor matching twice is refused" 1 "$rc"
+case "$out" in *"matched 2 time(s)"*) ok "and the count is named" "reported" ;;
+  *) bad "and the count is named" "${out:0:60}" ;; esac
+[ "$(cat "$WORK/twice/server.py")" = "$before" ] \
+  && ok "and the guard file is untouched" "untouched" \
+  || bad "and the guard file is untouched" "CHANGED"
+
 # A killed run is the case `finally` does not cover. SIGTERM mid-proof must
 # still put the guard back, because a repo left with `if False:` in place of
 # a fee bound is the silent-guard-death this tool exists to prevent.

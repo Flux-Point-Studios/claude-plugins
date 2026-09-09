@@ -18,7 +18,7 @@ function runOnText(text, args = []) {
   const file = path.join(dir, "draft.md");
   fs.writeFileSync(file, text);
   const r = spawnSync("node", [SCRIPT, ...args, file], { encoding: "utf8" });
-  return { ...r, file };
+  return { ...r, file, dir };
 }
 
 function runHook(toolInput, toolName = "Write") {
@@ -72,6 +72,184 @@ test("stock LLM vocabulary is a high finding", () => {
   }
 });
 
+// ------------------------------------------- the frame family beyond one spelling
+// Issue #63: a 1,300-word document carried nine contrastive-negation frames
+// and the gate returned exit 0, because the rule matched exactly one
+// spelling. These are the sentences it passed, verbatim.
+const NINE = [
+  "Settlement is a computation, not a decision: the trigger reads three feeds.",
+  "The product is not the gap.",
+  "Reserves are paid by premiums rather than emissions, and the pool is funded first.",
+  "Capital sits in the pool instead of sitting idle.",
+  "Claims are paid as a waterfall, never into the asset being insured.",
+  "Anyone can submit; there is no adjuster and no vote.",
+  "Aegis itself has no token and no TGE planned; the treasury holds stablecoins only.",
+  "Every figure is on chain, and we would rather you check the chain than take our word.",
+];
+
+test("the nine live sentences from #63 no longer pass as a document", () => {
+  const r = runOnText(NINE.join("\n\n"));
+  assert.equal(r.status, 2, `expected exit 2\n${r.stdout}${r.stderr}`);
+  for (const rule of ["contrast-comma", "contrast-slogan", "rather-than", "instead-of",
+                      "contrast-never", "no-and-no", "would-rather-than"]) {
+    assert.match(r.stderr, new RegExp(rule), `expected a HIGH ${rule} finding`);
+  }
+});
+
+test("each slogan form is HIGH on a single hit", () => {
+  for (const [line, rule] of [
+    ["Settlement is a computation, not a decision: the trigger reads three feeds.", "contrast-comma"],
+    ["The gate reads the tree. The product is not the gap.", "contrast-slogan"],
+    ["Fees are paid to the pool, not to the insured.", "contrast-comma"],
+  ]) {
+    const r = runOnText(line);
+    assert.equal(r.status, 2, `expected exit 2 for: ${line}\n${r.stdout}${r.stderr}`);
+    assert.match(r.stderr, new RegExp(rule));
+  }
+});
+
+test("a factual qualifier after a comma is not a contrast", () => {
+  // The last sentence from the issue, kept in the set on purpose: a naive
+  // ", not X" rule fires on it and a gate that cries wolf gets skimmed.
+  for (const line of [
+    "Chris Borders, counsel, formerly of a large firm, not full-time.",
+    "The audit is scheduled, not yet started.",
+    "Retries are billed per attempt, not applicable to the free tier.",
+    "The row was dropped, not because it failed, and the log says so.",
+  ]) {
+    const r = runOnText(line);
+    assert.equal(r.status, 0, `expected exit 0 for: ${line}\n${r.stderr}`);
+    assert.doesNotMatch(r.stderr, /contrast-comma/);
+  }
+});
+
+test("a comparand that keeps going is a sentence, not a slogan", () => {
+  // The comma form needs the comparand to close its clause within a few
+  // words; a clause that carries on is ordinary prose.
+  const r = runOnText(
+    "The figure is net, not the gross number the vendor quoted in the original estimate " +
+    "before the rebate was applied to the second invoice.");
+  assert.equal(r.status, 0, r.stderr);
+});
+
+test("connective contrasts fail by density, with the denominator floored", () => {
+  // One "rather than" in a short note is English.
+  const one = runOnText("Reserves are paid by premiums rather than emissions.");
+  assert.equal(one.status, 0, one.stderr);
+  assert.equal(one.stdout.trim(), "");
+  // Two in under 500 words is advice (density 2 per 500 at the floor).
+  const two = runOnText(
+    "Reserves are paid by premiums rather than emissions.\n\n" +
+    "Capital sits in the pool instead of sitting idle.");
+  assert.equal(two.status, 0, two.stderr);
+  assert.match(two.stdout, /\[medium\] (?:rather-than|instead-of)/);
+  // Four in under 500 words fails; and the count is named on every line.
+  const four = runOnText(
+    "Reserves are paid by premiums rather than emissions.\n\n" +
+    "Capital sits in the pool instead of sitting idle.\n\n" +
+    "Claims are paid as a waterfall, never into the asset.\n\n" +
+    "There is no adjuster and no vote.");
+  assert.equal(four.status, 2, four.stdout);
+  assert.match(four.stderr, /4 connective contrasts/);
+  // The same four spread across 1,200 words is a density under 2 and clean.
+  const filler = Array(300).fill("plain words that carry no frame here").join(" ");
+  const diluted = runOnText(
+    "Reserves are paid by premiums rather than emissions. " + filler + "\n\n" +
+    "Capital sits in the pool instead of sitting idle. " + filler + "\n\n" +
+    "Claims are paid as a waterfall, never into the asset. " + filler + "\n\n" +
+    "There is no adjuster and no vote. " + filler);
+  assert.equal(diluted.status, 0, diluted.stderr);
+  assert.doesNotMatch(diluted.stdout, /rather-than/);
+});
+
+test("inline code spans are never scanned, so a report can quote the tell", () => {
+  const r = runOnText(
+    "The rule misses `Settlement is a computation, not a decision.` and " +
+    "`The product is not the gap.` alike; both should fail.");
+  assert.equal(r.status, 0, r.stderr);
+  assert.doesNotMatch(r.stdout + r.stderr, /contrast-/);
+  // And line numbers survive the blanking: the span is replaced in place.
+  const r2 = runOnText("first line has `code`\n\nThe product is not the gap.");
+  assert.equal(r2.status, 2);
+  assert.match(r2.stderr, /draft\.md:3 \[HIGH\] contrast-slogan/);
+});
+
+test("the aphoristic restatement after a long sentence is advice", () => {
+  const long = "The settlement engine reads three independent price feeds, waits for " +
+    "two of them to agree within the configured tolerance window, and only then " +
+    "releases the payout to the policyholder's address on chain.";
+  const r = runOnText(`${long} Settlement is a computation.`);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /aphoristic-restatement/);
+  // A short sentence with no copula, or with no long sentence before it, is rhythm.
+  const r2 = runOnText(`${long} Then it stops.`);
+  assert.doesNotMatch(r2.stdout, /aphoristic-restatement/);
+  const r3 = runOnText("Fees are low. Settlement is a computation.");
+  assert.doesNotMatch(r3.stdout, /aphoristic-restatement/);
+});
+
+// ---------------------------------------------------------- in-house config
+test("a .prose-smell.json above the file downgrades the family to advice", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "smell-cfg-"));
+  fs.writeFileSync(path.join(dir, ".prose-smell.json"), JSON.stringify({ contrastive: "advise" }));
+  const nested = path.join(dir, "docs", "deep");
+  fs.mkdirSync(nested, { recursive: true });
+  const file = path.join(nested, "README.md");
+  fs.writeFileSync(file, NINE.join("\n\n"));
+  const r = spawnSync("node", [SCRIPT, file], { encoding: "utf8" });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /\[medium\] contrast-comma .*in-house: advised/);
+  assert.match(r.stdout, /\[medium\] contrast-slogan/);
+  assert.equal(r.stderr.trim(), "");
+  // The canonical rules keep their severity under the same config.
+  fs.writeFileSync(file, "This isn't just about OCR — it's about capacity.");
+  const r2 = spawnSync("node", [SCRIPT, file], { encoding: "utf8" });
+  assert.equal(r2.status, 2);
+  assert.match(r2.stderr, /negation-contrast/);
+  // And the hook path honors it too.
+  fs.writeFileSync(file, NINE.join("\n\n"));
+  assert.equal(runHook({ file_path: file }).status, 0);
+});
+
+test("a malformed or unknown config is reported and ignored, never obeyed", () => {
+  for (const body of ["{not json", JSON.stringify({ contrastive: "off" }),
+                      JSON.stringify({ contrasitve: "advise" }), "[]"]) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "smell-badcfg-"));
+    fs.writeFileSync(path.join(dir, ".prose-smell.json"), body);
+    const file = path.join(dir, "draft.md");
+    fs.writeFileSync(file, "The product is not the gap.");
+    const r = spawnSync("node", [SCRIPT, file], { encoding: "utf8" });
+    assert.equal(r.status, 2, `config ${body} must not switch the gate off`);
+    assert.match(r.stderr, /prose-smell: .*\.prose-smell\.json/);
+    assert.doesNotMatch(r.stderr, /at .*\(node:/);
+  }
+});
+
+test("the shipped WRITING snippet passes its own gate", () => {
+  // The snippet quotes every banned frame as an example. Quoted in code
+  // spans, it is a list of tells rather than a document carrying them —
+  // the same rule this repo's harness applies to itself.
+  const snippet = fileURLToPath(new URL("../templates/WRITING.snippet.md", import.meta.url));
+  const r = spawnSync("node", [SCRIPT, snippet], { encoding: "utf8" });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stderr.trim(), "");
+});
+
+test("a bold-lead bullet slogan is still the slogan", () => {
+  const r = runOnText("- **The ledger is not a receipt.** It records what fired.");
+  assert.equal(r.status, 2, r.stdout);
+  assert.match(r.stderr, /contrast-slogan/);
+});
+
+test("the repo's own docs are treated as in-house prose", () => {
+  // This repository writes dense engineering prose and carries the config;
+  // its README must scan clean on exit code, with the frames reported as
+  // advice rather than blocking every doc edit through the hook.
+  const readme = fileURLToPath(new URL("../../../README.md", import.meta.url));
+  const r = spawnSync("node", [SCRIPT, readme], { encoding: "utf8" });
+  assert.equal(r.status, 0, r.stderr);
+});
+
 // -------------------------------------------------------------- medium rules
 test("sentence-initial from-to coverage parallelism is medium, not failing", () => {
   const r = runOnText(
@@ -82,11 +260,11 @@ test("sentence-initial from-to coverage parallelism is medium, not failing", () 
 
 test("em-dash density is reported as medium only when genuinely heavy", () => {
   const heavy = Array(6).fill(
-    "The run — measured, not modeled — proved it — twice — cleanly.").join("\n");
+    "The run — measured yesterday — proved it — twice — cleanly.").join("\n");
   const r = runOnText(heavy);
-  assert.equal(r.status, 0);
+  assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /em-dash-density/);
-  const light = "The run — measured, not modeled — proved it across two hundred and " +
+  const light = "The run — measured yesterday — proved it across two hundred and " +
     "forty statements yesterday, and the cache made the second pass free. " +
     "Nothing in the report needed a caveat beyond the snapshot date itself.";
   const r2 = runOnText(light);
@@ -99,7 +277,7 @@ test("normal writing with metaphors, qualifiers and a dash passes clean", () => 
     "The queue drained like a bathtub with the plug half out — slowly, then all " +
     "at once. It was remarkably difficult to verify the older scans, and the " +
     "results were slightly confusing until we checked the snapshot date. " +
-    "Whether the carrier resends the file is their call, not ours.");
+    "Whether the carrier resends the file is their call, and we will wait.");
   assert.equal(r.status, 0, r.stderr);
   assert.equal(r.stdout.trim(), "");
 });

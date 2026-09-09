@@ -1,0 +1,33 @@
+{
+  "$id": "ProofV1",
+  "type": "object",
+  "required": ["verdict", "surface", "findings"],
+  "properties": {
+    "verdict": {
+      "enum": ["SOUND", "WEAKENED", "UNPROVEN", "NOT-APPLICABLE"],
+      "description": "SOUND: the proofs still prove what they claim. WEAKENED: harness-red, a finding below says how the checker still passes. UNPROVEN: the checker could not be run, static review only — never SOUND. NOT-APPLICABLE: the diff carries no proof surface; surface must be empty."
+    },
+    "surface": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Every proof file, obligation id, or test suite actually reviewed. Empty only with NOT-APPLICABLE: a SOUND over nothing is vacuous and is reported as such."
+    },
+    "checker": {
+      "type": "string",
+      "description": "The prover command that was run, or 'none installed'."
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["severity", "finding", "why_checker_passes", "minimal_fix"],
+        "properties": {
+          "severity": { "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW"] },
+          "finding": { "type": "string", "minLength": 1 },
+          "why_checker_passes": { "type": "string", "minLength": 1 },
+          "minimal_fix": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}

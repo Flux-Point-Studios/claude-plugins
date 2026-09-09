@@ -195,6 +195,45 @@ front of it. Echoed content is control-character-stripped and capped, and the
 exit code is 0 unconditionally — a lint that can wedge a session start is
 worse than the staleness it reports.
 
+## The prose-smell gate
+
+`prose-smell.mjs` rides every `Write`/`Edit` of a prose file (`.md`,
+`.txt`, `.html`, `.eml`) as a PostToolUse hook and fails the write (exit 2,
+findings on stderr) when the text carries a frame that marks generated
+prose. It is a regex gate and says so: it catches spellings, and the
+WRITING doctrine snippet covers what a regex cannot.
+
+| Rule | Severity | What it matches |
+|---|---|---|
+| `negation-contrast`, `more-than-just` | HIGH | the canonical contrastive frame: `isn't just about X — it's about Y`, `is more than just` |
+| `contrast-comma`, `contrast-slogan` | HIGH on one hit | the slogan spellings of the same frame: `a computation, not a decision`; `The product is not the gap.` A comparand that keeps going (`, not the number the vendor quoted in …`) is a sentence and is left alone, as is a qualifier (`counsel, not full-time`, `, not yet`, `, not because …`). |
+| `rather-than`, `instead-of`, `contrast-never`, `no-and-no`, `would-rather-than` | by density | the connective spellings, counted together per 500 words with the denominator floored at 500: two or three is MEDIUM, four or more is HIGH. One `rather than` in a page is English. |
+| `whether-your`, `assistant-artifact`, `stock-vocab` | HIGH | inclusive triples, leftover assistant phrasing, stock LLM vocabulary |
+| `from-to-coverage`, `concluder`, `em-dash-density`, `aphoristic-restatement` | MEDIUM | advice: a coverage opener, a summary opener, heavy em dashes, a slogan of eight words or fewer with a copula right after a sentence of twenty-five or more |
+
+Fenced code blocks and inline `` `code` `` spans are blanked before
+scanning, with offsets preserved, so a bug report that quotes the tell it
+is about is not flagged for quoting it and every reported line number is
+real.
+
+**In-house prose.** Dense engineering documentation uses `X, not Y` as a
+precision device several times a page, and a gate that failed every edit
+to such a tree would be routed around. A repo therefore declares its own
+docs in-house with a `.prose-smell.json` at its root:
+
+```json
+{ "contrastive": "advise" }
+```
+
+The file is found by walking up from the scanned file's directory. Under
+it, the contrastive family is reported at MEDIUM (every finding still
+prints, tagged `in-house: advised`) and the exit code stays 0; every other
+rule keeps its severity. An artifact drafted outside such a tree gets the
+default, which fails. A malformed config, an unknown key, or an unknown
+mode is reported on stderr and ignored — the default applies — because a
+config that could silently switch the gate off would be the inverse of
+what a config is for.
+
 ## Honest limitations
 
 - Discovery is exactly one level under the root: `root/repo/substrate.json`.

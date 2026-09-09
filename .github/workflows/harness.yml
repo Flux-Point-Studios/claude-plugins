@@ -45,6 +45,14 @@ jobs:
       - name: Run the Definition-of-Done harness
         run: bash scripts/harness.sh --full
 
+      - name: Prompt hygiene (advisory)
+        # The same scan the harness runs as an advisory step, on its own
+        # line so the trend is readable in the job log without digging.
+        # Advisory: findings print and exit 0; only a scan that could not
+        # run (exit 2) fails this step. Promote with --strict once the
+        # false-positive rate on the house idiom is known.
+        run: python3 plugins/fluxpoint/scripts/prompt-audit.py
+
   hygiene:
     name: executable bits
     runs-on: ubuntu-latest

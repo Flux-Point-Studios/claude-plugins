@@ -92,18 +92,38 @@ _PENDING = {}
 
 
 def _restore_pending():
+    """Put every disabled guard back, and READ IT BACK.
+
+    A restore that did not restore is worse than no restore: the mutant stays
+    in place with the sentinel gone, and every later proof runs against a
+    guard that is off. So the bytes are compared after the copy; a mismatch
+    keeps the backup and the sentinel on disk and says so on stderr.
+    """
+    problems = []
     for target, backup in list(_PENDING.items()):
         try:
             shutil.copyfile(backup, target)
+            with open(backup, "rb") as fh:
+                want = fh.read()
+            with open(target, "rb") as fh:
+                got = fh.read()
+            if got != want:
+                problems.append(f"{target} differs from its backup {backup} after restore")
+                continue
             os.unlink(backup)
-        except OSError:
-            pass
+        except OSError as e:
+            problems.append(f"{target}: restore failed ({e}); backup kept at {backup}")
+            continue
         _PENDING.pop(target, None)
-    try:
-        os.unlink(_PENDING_SENTINEL[0])
-    except (OSError, IndexError):
-        pass
-    _PENDING_SENTINEL.clear()
+    if not _PENDING:
+        try:
+            os.unlink(_PENDING_SENTINEL[0])
+        except (OSError, IndexError):
+            pass
+        _PENDING_SENTINEL.clear()
+    for p in problems:
+        print(f"guard-guard: RESTORE DID NOT RESTORE — {p}; the sentinel stays on "
+              f"disk", file=sys.stderr)
 
 
 _PENDING_SENTINEL = []
@@ -225,8 +245,15 @@ def verify_one(root, g, quiet=False):
         return False, f"guard file {rel} is gone"
 
     find, replace = g["mutation"]["find"], g["mutation"]["replace"]
-    if find not in original:
-        return False, f"mutation target not present in {rel}: {find!r}"
+    # Exactly once. A `replace(..., 1)` on the first of several hits mutates
+    # a site the proof may never reach and reads as "the guard is real" for
+    # a guard that was never disabled; an anchor that misses is a no-op that
+    # reads the same way. Both are the anchor trap named in issue #62.
+    n = original.count(find)
+    if n != 1:
+        return False, (f"mutation anchor matched {n} time(s) in {rel}; it must match "
+                       f"exactly once, or the proof is measured against the wrong "
+                       f"site (or none): {find!r}")
     mutated = original.replace(find, replace, 1)
     if mutated == original:
         return False, f"mutation changed nothing in {rel}"

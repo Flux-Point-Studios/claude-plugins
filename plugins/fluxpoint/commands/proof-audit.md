@@ -6,6 +6,14 @@ argument-hint: [path or diff spec; defaults to the working diff]
 Audit the verification work in this repo. A green checker is the input to
 this command, never its conclusion.
 
+In a campaign this whole sequence is the `proof-audit` node of
+`templates/WORK.feature.md` and `templates/WORK.verified.md`: the
+`proof-auditor` agent bound by `agentType`, contracted to `ProofV1`
+(`verdict` SOUND / WEAKENED / UNPROVEN / NOT-APPLICABLE, the `surface` it
+reviewed, the findings table), with `haltWhen: "verdict == 'WEAKENED'"`
+making WEAKENED harness-red structurally and `record-run.py` filing the
+verdict into the Evidence row. This command is the same audit run by hand.
+
 Resolve the plugin root: `${CLAUDE_PLUGIN_ROOT}`, else
 `find ~/.claude/plugins -type d -name fluxpoint | head -1`. Call it `$ROOT`.
 

@@ -368,23 +368,41 @@ node that ran it wrote by hand.
 - **Council → build → gate** (`templates/WORK.feature.md`): independent
   designs from stated angles → one node judges them side by side
   (`{{prev}}`, a justified barrier) → a mutator implements → an
-  independent node re-runs the harness → red-team.
+  independent node re-runs the harness → the proof-auditor judges whether
+  verification got weaker (`ProofV1`, halting on WEAKENED; NOT-APPLICABLE
+  when the diff carries no proof surface) → red-team closes.
+- **Verified slice** (`templates/WORK.verified.md`, opt-in): program
+  synthesis and proof synthesis as separate mutators. The `builder` writes
+  the logic and may not touch a statement; the `prover` (`agents/prover.md`,
+  contracted to `SliceV1` because its output is edits) writes the
+  invariants, lemmas, decreases clauses and property tests, and may add
+  obligations but never remove one. Two mutators need two independent
+  gates, since `verifies` names one node; the prover's gate is a
+  `prove:harness` node so the attested exit, never a typed one, stands
+  behind the proofs. Prototype it on a repo with a real proof surface
+  before promoting the split into the feature template.
 - **Advisor–orchestrator**: a planner node emits the work-list as a typed
   contract; worker nodes consume it. The planner never grades its own plan.
 - **Zone defense** (org graph): stable `agents/*.md` roles own domains —
-  `red-team-reviewer` owns the adversarial pass — referenced by
+  `red-team-reviewer` owns the adversarial pass, `proof-auditor` owns the
+  verification review, `prover` owns proof synthesis — referenced by
   `agentType`, not re-prompted inline. An agent file may declare the contract
-  it answers in (`contract: RedTeamV1` in its frontmatter, or `contract: prose`
-  for one that reports rather than returns a schema). Binding a node to a
-  resolved agent whose declared contract is not the node's is rejected at
-  compile time: the name being real is not evidence the answer fits, and that
-  mismatch otherwise surfaces as a dead gate late in the run. An `agentType`
-  the compiler cannot resolve is only ever a **warning** — plugins and
-  built-in types are outside its view, so refusing would reject valid IR.
+  it answers in (`contract: RedTeamV1` or `contract: ProofV1` in its
+  frontmatter, or `contract: prose` for one that reports rather than returns
+  a schema, as `graph-auditor` does: it reviews the IR itself, and a node
+  running it inside the graph it audits would be circular). Binding a node
+  to a resolved agent whose declared contract is not the node's is rejected
+  at compile time: the name being real is not evidence the answer fits, and
+  that mismatch otherwise surfaces as a dead gate late in the run. An
+  `agentType` the compiler cannot resolve is only ever a **warning** —
+  plugins and built-in types are outside its view, so refusing would reject
+  valid IR.
 - **Loop-until-dry** (`templates/WORK.discovery.md`): a `repeat` block on a
   finder turns fixed fan-out into unknown-size discovery. Use it when "how
   many are there" is the question rather than an input — audits, sweeps,
-  exhaustive reviews.
+  reviews whose coverage the dry rule decides rather than a fixed pass
+  count. The prompt asks for findings; the budget floors and the dry rule
+  enforce thoroughness, so the prompt never has to exhort it.
 - **Pipeline of loops**: each mutating node works one loop slice
   — TDD, `--changed` green per edit, `--full` before returning. The graph
   sequences slices; it never replaces the gate.
@@ -416,6 +434,49 @@ logged UNVERIFIED) and `nodeFloorTokens` stops *work* fan-out before a
 node or another discovery round starts — recorded as `SKIPPED` in
 provenance and carried into the Evidence row as incomplete coverage. A
 campaign that ran out of budget says so; it never reads as a clean sweep.
+
+**Calls are the wrong unit for the bill.** Spend is dominated by whether
+each call's prefix was a cache read or a cold prefill, and by how much the
+model deliberated — so twenty medium-effort nodes sharing a warm prefix
+can cost less than six at `max` running cold, and raising a node's effort
+was free as far as `maxNodes` could see. The compiler therefore estimates
+every graph in cold-input-token equivalents: a shared prefix per call
+(priced at a tenth when warm), work tokens scaled by effort (`low` 0.5×,
+`medium` 1×, `high` 1.8×, `xhigh` 2.5×, `max` 3.5×), the whole call
+weighted by the model's price, refuters and tree sentinels included. The
+constants are stated assumptions in `compile-graph.py`, and `metrics.py`
+folds the estimate against the runtime's own `spent` per run so they get
+corrected by evidence rather than argued. `budget.maxEstimatedTokens` is
+the ceiling on that estimate and is refused at compile time like
+`maxNodes`; the estimate itself prints on every `--check`, in the compiled
+script's header, and in the run summary as `estimate` beside `spent`, with
+a per-node `profile` (effort, model, calls, tokens) so an effort setting
+has a number to answer for.
+
+**The prompt cache is a budget decision, declared as one.** A forked call
+shares its parent's cache only on a byte-identical prefix at the same
+model and the same effort, and the default time-to-live is five minutes
+from the request start — which a parent blocking on a `panel:5`, a
+`foreach`, or a discovery round outlives as a matter of course, and a park
+outlives by days. So the IR declares what it needs: `budget.cacheTtl`
+(`"5m"`, the default, or `"1h"`). Under `1h` the estimate prices
+consecutive calls at the same `(model, effort)` as warm; under `5m` only
+siblings that dispatch together are, and every sequential hop is a cold
+prefill. The runtime sets the TTL per session, never per call, so the
+declaration is a requirement on the session that runs the graph —
+`/fluxpoint:graph-run` names it in preflight — and the compiled script
+logs it at launch. A resume past a parked node is a cold start whatever
+the TTL and is priced as one. Every shipped template declares `1h`.
+
+**An effort transition is a cold prefill.** The compiler warns on every
+consecutive pair of nodes whose `(model, effort)` differs, and on an inline
+`effort` equal to what the role or defaults already give (it changes
+nothing and reads as a decision). Where a change is justified, put it
+where the cache is cold anyway — after a park, or on the first node of a
+phase — and put same-effort work together; `graph-audit` judges whether
+the bump buys anything, because the compiler cannot know a task's shape.
+Whether `builder: high` is the right setting at all is a separate
+question, and it is asserted today, never measured; see DESIGN-NOTES.
 
 ## Discovery loops
 
@@ -538,12 +599,22 @@ job is to look everywhere. The compiler rejects `priors` without a `seed`
 `/fluxpoint:graph-run` compiles, runs, and records. Watch with
 `/workflows`; never poll with sleep. Repair is targeted: fix the one red
 node in the IR, recompile, then re-invoke with `resumeFromRunId` — the
-unchanged prefix returns from cache and only the repaired node onward
-re-runs. Never restart a mostly-green graph from zero. Before diagnosing
-an empty result, read `journal.jsonl`. There is deliberately no per-node
-retry knob: recovery is cached-prefix resume plus the once-only ledger,
-because an in-run retry loop is a second failure policy hiding inside the
-first.
+unchanged prefix of `agent()` calls returns its memoized results and only
+the repaired node onward re-runs. Never restart a mostly-green graph from
+zero. Before diagnosing an empty result, read `journal.jsonl`. There is
+deliberately no per-node retry knob: recovery is memoized resume plus the
+once-only ledger, because an in-run retry loop is a second failure policy
+hiding inside the first.
+
+Two caches share a vocabulary and are different mechanisms. **Memoized
+resume** is the executor replaying completed `agent()` calls whose
+`(prompt, opts)` did not change — a journal lookup, valid for as long as
+the run's journal exists. The **prompt cache** is the model API reusing
+the prefill of a byte-identical prompt prefix on the same model at the
+same effort — a KV cache with a time-to-live measured in minutes. This
+skill says "memoized resume" for the first and "prompt cache" or
+"warm prefix" for the second; the older wording that used one phrase for
+both is retired.
 
 ## Observe the graph, not the chat
 

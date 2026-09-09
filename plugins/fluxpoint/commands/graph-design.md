@@ -41,6 +41,16 @@ command.
      fan-out should stop before exhaustion, `foreach` lists named,
      `onRed` policy per node, `haltWhen` where a numeric result should
      stop the campaign.
+   - `budget.maxEstimatedTokens` set from the estimate `--check` prints —
+     calls are the wrong unit for the bill, and this is the ceiling on the
+     right one — and `budget.cacheTtl: "1h"` whenever a node fans out or
+     parks, because the default five-minute prompt cache expires while
+     the parent blocks. Read the compiler's transition warnings: an effort
+     bump between consecutive nodes is a cold prefill, so bump only where
+     the task shape needs it and place the change where the cache is cold
+     anyway. Effort is a cost lever with no measurement behind it yet;
+     prefer the role default unless the node's job is to keep looking for
+     evidence (verification, red-team).
    - where the size of the work is unknown rather than given, a `repeat`
      block instead of a fixed fan-out: `untilDryRounds`, `maxRounds`, and
      a `dedupeBy` key that is neither so coarse it collapses distinct
@@ -61,6 +71,7 @@ command.
    cannot do: are the prompts scoped to what the node may believe, do the
    tiers match the stakes, does any edge exist only because it looked
    tidy. Apply every REWIRE finding and re-audit until `VERDICT: SOUND`.
-7. Set `STATUS: READY` and report: node count, planned agent calls from
-   `--check`, the verification tiers in one line, the audit verdict, and
-   the run command (`/fluxpoint:graph-run`).
+7. Set `STATUS: READY` and report: node count, planned agent calls and
+   the estimated tokens from `--check` (with the ceiling and the TTL the
+   graph declares), the verification tiers in one line, the audit
+   verdict, and the run command (`/fluxpoint:graph-run`).

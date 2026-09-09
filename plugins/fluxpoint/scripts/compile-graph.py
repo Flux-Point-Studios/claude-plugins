@@ -71,9 +71,36 @@ REPEAT_FIELDS = {"untilDryRounds", "maxRounds", "dedupeBy"}
 # receives every raw fan-out item pays a reasoning model to do a Set's job.
 REDUCE_FIELDS = {"from", "over", "dedupeBy", "sortBy", "order", "topK"}
 MEMORY_FIELDS = {"seed", "emit", "key", "priors", "classBy"}
-BUDGET_FIELDS = {"maxNodes", "verifyFloorTokens", "nodeFloorTokens"}
+BUDGET_FIELDS = {"maxNodes", "verifyFloorTokens", "nodeFloorTokens",
+                 "maxEstimatedTokens", "cacheTtl"}
 ROLE_FIELDS = {"agentType", "effort", "model"}
 DEFAULTS_FIELDS = {"effort", "model"}
+# The prompt-cache time-to-live the graph is written for. The runtime sets
+# it per session, never per agent call, so the IR can only declare what it
+# needs and price accordingly: under the default five minutes a parent that
+# blocks on a fan-out or a park outlives its own cache, so every hop is
+# priced as a cold prefill; under an hour, consecutive calls at the same
+# (model, effort) share a warm prefix.
+CACHE_TTLS = {"5m": 300, "1h": 3600}
+DEFAULT_CACHE_TTL = "5m"
+
+# ---------------------------------------------------------------- cost model
+# STATED ASSUMPTIONS, not measurements. `budget.maxNodes` counts agent calls,
+# and spend is dominated by two things a call count cannot see: whether the
+# prefix was a cache read or a cold prefill, and how much the model
+# deliberated. These constants turn a plan into an estimate in cold-input-
+# token equivalents, so an effort bump or a broken cache shows up at design
+# time as a number the ceiling can refuse. Every one of them is a guess
+# stated in one place; `metrics.py` folds `estimate` against the runtime's
+# own `spent` per run, which is how the guesses get corrected.
+PREFIX_TOKENS = 12000          # the shared prefix every spawned agent re-reads
+CACHED_PREFIX_FRACTION = 0.1   # a cache read costs about a tenth of a prefill
+WORK_TOKENS = 15000            # a medium-effort call's own reading and output
+SENTINEL_WORK_TOKENS = 1500    # a tree sentinel runs two git commands and returns
+EFFORT_MULT = {"low": 0.5, "medium": 1.0, "high": 1.8, "xhigh": 2.5, "max": 3.5}
+# Price weight by model family, matched on a substring of the model id;
+# anything unmatched is the session's default model at weight 1.
+MODEL_MULT = (("haiku", 0.25), ("sonnet", 0.5))
 
 
 class GraphError(Exception):
@@ -1169,6 +1196,29 @@ def validate(ir, contracts, gates=None, agents=None):
         )
     if max_nodes is None:
         f.append("budget.maxNodes: required — an unbounded graph has no halt condition")
+    # The cost ceiling. maxNodes stays as the fan-out guardrail; this is the
+    # number anyone actually cares about, denominated in what the bill is.
+    ttl = budget.get("cacheTtl")
+    if ttl is not None and ttl not in CACHE_TTLS:
+        f.append(
+            f"budget.cacheTtl must be one of {', '.join(sorted(CACHE_TTLS))} — "
+            f"'{ttl}' names no prompt-cache lifetime the runtime offers, and an "
+            f"unknown value would price every hop as warm while nothing is")
+    cap = budget.get("maxEstimatedTokens")
+    if cap is not None:
+        if isinstance(cap, bool) or not isinstance(cap, int) or cap < 1:
+            f.append("budget.maxEstimatedTokens must be a positive integer")
+        elif ttl is None or ttl in CACHE_TTLS:
+            est = estimate_tokens(ir, contracts)
+            if est["total"] > cap:
+                f.append(
+                    f"budget: the graph is estimated at ~{est['total']:,} tokens "
+                    f"({est['calls']} agent call(s), {est['cold']} cold prefill(s), "
+                    f"prompt-cache TTL {est['ttl']}) but budget.maxEstimatedTokens "
+                    f"is {cap:,} — lower effort where it buys nothing, put "
+                    f"same-effort work together so the prefix stays warm, declare "
+                    f"cacheTtl '1h' if the session provides it, or raise the "
+                    f"ceiling on purpose")
     return f
 
 
@@ -1230,6 +1280,58 @@ def warnings(ir, agents=None):
                 f"output is usually consumed as fact; consider skeptic:1 or panel:3"
             )
     nodes = ir.get("nodes") or []
+    # --- the prompt cache: effort transitions and the TTL the graph needs ---
+    # A forked call shares the parent's prompt cache only on a byte-identical
+    # prefix at the same model and effort. An inline effort equal to what the
+    # role or default already gives changes nothing and reads as a decision;
+    # a real change between consecutive nodes is a cold prefill each time.
+    roles = ir.get("roles") or {}
+    dflt = (ir.get("defaults") or {}).get("effort")
+    for n in nodes:
+        if is_reduce(n) or n.get("actor", "agent") != "agent" or not n.get("effort"):
+            continue
+        inherited = (roles.get(n.get("role"), {}) or {}).get("effort") or dflt
+        if inherited and n["effort"] == inherited:
+            w.append(
+                f"node '{n.get('id', '?')}': effort '{n['effort']}' inline equals "
+                f"what its {'role' if n.get('role') else 'defaults'} already "
+                f"gives — it changes nothing and reads as a deliberate bump; "
+                f"drop it, or bump it on purpose")
+    budget = ir.get("budget") or {}
+    ttl = budget.get("cacheTtl")
+    trans = effort_transitions(ir)
+    if trans:
+        hops = ", ".join(f"'{a}'({ka[1]}{'@' + ka[0] if ka[0] else ''}) -> "
+                         f"'{b}'({kb[1]}{'@' + kb[0] if kb[0] else ''})"
+                         for a, ka, b, kb in trans[:4])
+        more = f" (+{len(trans) - 4} more)" if len(trans) > 4 else ""
+        if ttl in CACHE_TTLS and CACHE_TTLS[ttl] >= 3600:
+            w.append(
+                f"{len(trans)} effort/model transition(s) between consecutive "
+                f"nodes ({hops}{more}) — each is a cold prefill even under the "
+                f"1-hour TTL, so a bump that the node's task shape does not need "
+                f"is a cost error; put same-effort work together, or move the "
+                f"change to a point that is cold anyway (after a park or a fan-out)")
+        else:
+            w.append(
+                f"{len(trans)} effort/model transition(s) between consecutive "
+                f"nodes ({hops}{more}) — under the default 5-minute prompt-cache "
+                f"TTL every sequential hop is priced cold, so these cost nothing "
+                f"extra yet; declare budget.cacheTtl '1h' and the same-effort hops "
+                f"become warm, at which point each transition is a cold prefill "
+                f"the estimate charges for")
+    fans_or_parks = [n.get("id", "?") for n in nodes
+                     if n.get("foreach") or n.get("repeat") or panel_size(n)
+                     or n.get("actor", "agent") != "agent"]
+    if fans_or_parks and ttl is None:
+        w.append(
+            f"{len(fans_or_parks)} node(s) fan out or park ({', '.join(fans_or_parks[:3])}"
+            f"{' …' if len(fans_or_parks) > 3 else ''}) and the graph declares no "
+            f"budget.cacheTtl — the default 5-minute prompt-cache TTL is counted "
+            f"from the request start, so the parent's prefix expires while it "
+            f"blocks; declare cacheTtl '1h' and run under a session configured "
+            f"for one, or accept that every hop is priced cold (as the estimate "
+            f"does now)")
     # The skill's ten-node rule, said where the author is looking. A warning
     # rather than a rejection: a big campaign is legal, but it is usually a
     # campaign that should have been split, with frozen decisions crossing
@@ -1261,6 +1363,128 @@ def warnings(ir, agents=None):
             f"are truly independent, fold them into one foreach fan-out so "
             f"they overlap; if the order matters, it is an undeclared edge")
     return w
+
+
+def node_key(n, ir):
+    """(model, effort) a node's spawn runs at — the prompt-cache identity."""
+    roles = ir.get("roles") or {}
+    role = roles.get(n.get("role"), {}) or {}
+    effort = n.get("effort") or role.get("effort") or (ir.get("defaults") or {}).get("effort") or "medium"
+    model = n.get("model") or role.get("model") or (ir.get("defaults") or {}).get("model") or ""
+    return (str(model), str(effort))
+
+
+def _model_mult(model):
+    m = (model or "").lower()
+    for needle, mult in MODEL_MULT:
+        if needle in m:
+            return mult
+    return 1.0
+
+
+def plan_groups(ir):
+    """The campaign's spawns as groups that run concurrently, in order.
+
+    Each group is a list of (nodeId, (model, effort)) — a fan-out's workers,
+    a panel's refuters, a tree sentinel, an advisor. `park` marks a group
+    after which the cache is cold whatever the TTL: nothing survives the
+    hours a person takes. This is the same arithmetic as plan_node_count(),
+    laid out so each call carries the identity the prompt cache keys on.
+    """
+    lists = ir.get("lists") or {}
+    tree_guard = ir.get("treeGuard", True)
+    groups = []
+    sentinel = ("", "low")
+    if tree_guard:
+        groups.append({"calls": [("tree-check", sentinel)], "park": False})
+    for n in ir.get("nodes") or []:
+        if is_reduce(n):
+            continue
+        nid = n.get("id", "?")
+        if tree_guard and (prove_gate(n) or n.get("independent")):
+            groups.append({"calls": [("tree-check", sentinel)], "park": False})
+        if n.get("actor", "agent") != "agent":
+            groups.append({"calls": [(nid, ("", "medium"))], "park": True})
+            continue
+        key = node_key(n, ir)
+        fan = len(lists.get(n.get("foreach"), [None])) if n.get("foreach") else 1
+        rounds = max(1, int((n.get("repeat") or {}).get("maxRounds", 1)))
+        cnt = panel_size(n)
+        per = int(n.get("expectItems", 3))
+        for _ in range(rounds):
+            groups.append({"calls": [(nid, key)] * fan, "park": False})
+            if cnt:
+                groups.append({"calls": [(nid, ("", "low"))] * (fan * per * cnt),
+                               "park": False})
+    if tree_guard:
+        groups.append({"calls": [("tree-check", sentinel)], "park": False})
+    return groups
+
+
+def estimate_tokens(ir, contracts=None):
+    """Cold-input-token equivalents for the worst-case plan.
+
+    A call's prefix is warm when an earlier call at the same (model, effort)
+    key is still in the cache: within one concurrent group always (siblings
+    dispatch together), across groups only under a one-hour TTL, and never
+    across a park. Everything else is a cold prefill. Work tokens scale with
+    effort and the whole call with the model's price weight. Returns the
+    total, the call and cold-prefill counts, a per-node breakdown, and the
+    assumptions it rested on, so a reader can disagree with a number rather
+    than a feeling.
+    """
+    budget = ir.get("budget") or {}
+    ttl = budget.get("cacheTtl") or DEFAULT_CACHE_TTL
+    persist = CACHE_TTLS.get(ttl, 300) >= 3600
+    warm = set()
+    total, calls, cold = 0.0, 0, 0
+    per_node = {}
+    for g in plan_groups(ir):
+        if not persist:
+            warm = set()
+        for nid, (model, effort) in g["calls"]:
+            calls += 1
+            key = (model, effort)
+            is_warm = key in warm
+            prefix = PREFIX_TOKENS * (CACHED_PREFIX_FRACTION if is_warm else 1.0)
+            work = (SENTINEL_WORK_TOKENS if nid == "tree-check"
+                    else WORK_TOKENS * EFFORT_MULT.get(effort, 1.0))
+            cost = (prefix + work) * _model_mult(model)
+            if not is_warm:
+                cold += 1
+                warm.add(key)
+            total += cost
+            rec = per_node.setdefault(nid, {"calls": 0, "estimatedTokens": 0, "effort": effort,
+                                            "model": model or "default"})
+            rec["calls"] += 1
+            rec["estimatedTokens"] += int(round(cost))
+        if g["park"]:
+            warm = set()
+    return {
+        "total": int(round(total)), "calls": calls, "cold": cold, "ttl": ttl,
+        "perNode": per_node,
+        "assumptions": {"prefixTokens": PREFIX_TOKENS,
+                        "cachedPrefixFraction": CACHED_PREFIX_FRACTION,
+                        "workTokens": WORK_TOKENS, "effortMult": EFFORT_MULT,
+                        "modelMult": dict(MODEL_MULT)},
+    }
+
+
+def effort_transitions(ir):
+    """Consecutive agent nodes whose (model, effort) key changes.
+
+    Each is a cold prefill for the second node, on top of whatever the TTL
+    already costs. Returns [(from_id, from_key, to_id, to_key)].
+    """
+    out, prev = [], None
+    for n in ir.get("nodes") or []:
+        if is_reduce(n) or n.get("actor", "agent") != "agent":
+            continue
+        key = node_key(n, ir)
+        if prev is not None and key != prev[1]:
+            out.append((prev[0], prev[1], n.get("id", "?"), key))
+        prev = (n.get("id", "?"), key)
+    return out
 
 
 def plan_node_count(ir):
@@ -1493,11 +1717,16 @@ def emit(ir, contracts, imports_resolved=None):
             phases.append(p)
     needs_panel = any(panel_size(n) for n in nodes)
 
+    est = estimate_tokens(ir, contracts)
     L = []
     a = L.append
     a("// GENERATED by fluxpoint compile-graph.py — DO NOT EDIT.")
     a("// Source of truth is the ```json graph-ir block in WORK.md.")
     a("// Regenerate with /fluxpoint:graph-run (or compile-graph.py).")
+    a(f"// estimate: ~{est['total']:,} tokens across {est['calls']} agent call(s), "
+      f"{est['cold']} cold prefill(s), prompt-cache TTL {est['ttl']} "
+      f"(stated assumptions live in compile-graph.py; metrics.py checks them "
+      f"against spent)")
     a("export const meta = {")
     a(f"  name: {js_str(ir.get('name') or 'graph-campaign')},")
     a(f"  description: {js_str(ir['campaign'])},")
@@ -1527,6 +1756,28 @@ def emit(ir, contracts, imports_resolved=None):
     a(f"const campaign = {js_str(ir['campaign'])}")
     a("// Resolved inputs are logged, never silently defaulted behind your back.")
     a("log(`inputs: ${JSON.stringify(A)}`)")
+    # What the spec priced, next to what the run will meter. The profile is
+    # per node — effort, model, calls, estimated tokens — so a later sweep of
+    # effort settings has a per-role number to compare against `spent`.
+    a("// --- cost: what the compiler estimated, so the run can be held to it ---")
+    a("const ESTIMATE = " + json.dumps(
+        {"total": est["total"], "calls": est["calls"], "cold": est["cold"],
+         "cacheTtl": est["ttl"]}, sort_keys=True))
+    a("const PROFILE = " + json.dumps(est["perNode"], sort_keys=True))
+    a(f"log(`estimate: ~${{ESTIMATE.total}} tokens across ${{ESTIMATE.calls}} call(s), "
+      f"${{ESTIMATE.cold}} cold prefill(s), prompt-cache TTL {est['ttl']}`)")
+    blocking = [n for n in nodes if n.get("foreach") or n.get("repeat") or panel_size(n)
+                or n.get("actor", "agent") != "agent"]
+    if blocking:
+        if CACHE_TTLS.get(est["ttl"], 300) >= 3600:
+            a("log('prompt cache: this graph fans out or parks and declares a 1-hour "
+              "TTL — run it in a session configured for one, or every hop below is "
+              "a cold prefill the estimate did not charge for')")
+        else:
+            a("log('prompt cache: this graph fans out or parks under the default "
+              "5-minute TTL — the parent prefix expires while it blocks, and every "
+              "hop is priced cold; declare budget.cacheTtl 1h once the session "
+              "provides it')")
     a("")
     if lists:
         a("// --- lists ---")
@@ -1740,7 +1991,8 @@ def emit(ir, contracts, imports_resolved=None):
     # budget surface, and a summary that throws on an older runtime loses
     # the entire run record over a nice-to-have number.
     extra += (f", planned: {plan_node_count(ir)}, "
-              "spent: (budget && typeof budget.spent === 'function') ? budget.spent() : null")
+              "spent: (budget && typeof budget.spent === 'function') ? budget.spent() : null, "
+              "estimate: ESTIMATE, profile: PROFILE")
     if imports:
         # Which run each imported record came from rides out in the summary,
         # so provenance can tell an imported decision from one this campaign
@@ -1967,7 +2219,11 @@ def emit_parked(n):
     a(f"if (rel_{var}) {{")
     a(f"  {var} = rel_{var}.proof")
     a(f"  note({js_str(nid)}, 'RELEASED', `released by ${{rel_{var}.by || 'operator'}}`)")
-    a(f"  log(`{nid}: released — the {actor} step is done`)")
+    # A park is measured in hours or days; no prompt-cache TTL survives it.
+    # Said here so the resume is understood as a cold start rather than hoped
+    # to be warm — the estimate priced it cold for the same reason.
+    a(f"  log(`{nid}: released — the {actor} step is done; resuming past a park is "
+      f"a cold start for the prompt cache, and was priced as one`)")
     a("} else {")
     # Handing someone a block with no recommendation is a punt. The advisor
     # runs before the block is reported, is contracted to DecisionV1 so a
@@ -2552,12 +2808,18 @@ def main():
             print(f"  - {f}", file=sys.stderr)
         return 1
 
+    est = estimate_tokens(ir, contracts)
+    cap = (ir.get("budget") or {}).get("maxEstimatedTokens")
+    cost_line = (f"~{est['total']:,} estimated tokens"
+                 + (f" of {cap:,} allowed" if cap is not None else "")
+                 + f" ({est['cold']} cold prefill(s) of {est['calls']} call(s), "
+                 f"prompt-cache TTL {est['ttl']})")
     if args.check:
         imported = (f", {len(resolved)} imported decision(s) resolved"
                     if resolved else "")
         print(f"graph-compile: IR valid — {len(ir['nodes'])} node(s), "
               f"{planned} planned agent call(s), budget.maxNodes="
-              f"{(ir.get('budget') or {}).get('maxNodes')}{imported}")
+              f"{(ir.get('budget') or {}).get('maxNodes')}, {cost_line}{imported}")
         return 0
 
     js = emit(ir, contracts, resolved)
@@ -2566,7 +2828,7 @@ def main():
         with open(args.out, "w", encoding="utf-8", newline="\n") as fh:
             fh.write(js)
         print(f"graph-compile: wrote {args.out} — {len(ir['nodes'])} node(s), "
-              f"{planned} planned agent call(s)")
+              f"{planned} planned agent call(s), {cost_line}")
     else:
         # Pin the newline on this path too. `--out` above opens with
         # newline="\n"; stdout is a TextIOWrapper with newline=None, which

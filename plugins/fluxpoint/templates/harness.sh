@@ -222,7 +222,25 @@ full() {
   # Provers run in --full, not only per-file. A gate that decides "done"
   # without invoking the prover is not a gate.
   if has dafny && compgen -G '**/*.dfy' >/dev/null 2>&1; then
-    dafny verify .
+    # Same shape as the aiken block above: capture, record, re-raise, with
+    # the prover's exit code staying the gate. Dafny prints a model for the
+    # first failing assertion only under --extract-counterexample; put it
+    # (and whatever else this repo's verify needs) in FPL_DAFNY_ARGS so the
+    # harness stays the one place the prover is invoked. The output is
+    # echoed unconditionally: in a repo carrying this harness without the
+    # plugin, it is the only record of what failed.
+    dafny_out="$(mktemp)"
+    dafny_rc=0
+    # shellcheck disable=SC2086
+    dafny verify ${FPL_DAFNY_ARGS:-} . >"$dafny_out" 2>&1 || dafny_rc=$?
+    cat "$dafny_out"
+    cx="$(plugin_script cex.py)"
+    if [ -n "$cx" ]; then
+      "$FPL_PY" "$cx" --ingest --tool dafny --from "$dafny_out" \
+        --exit "$dafny_rc" || true
+    fi
+    rm -f "$dafny_out"
+    if [ "$dafny_rc" -ne 0 ]; then return "$dafny_rc"; fi
   fi
   if [ -f lakefile.lean ] || [ -f lakefile.toml ]; then
     if has lake; then lake build; fi
@@ -295,6 +313,11 @@ full() {
   # Relation gate. Every check above measures one artifact; the defects that
   # cost the most are relationships between two, and a suite stays green
   # because each half is individually correct. Dormant without a manifest.
+  # --check runs co-change, every parity command, and every differential
+  # (generated inputs through both implementations, bytes compared);
+  # FPL_PAIR_CASES caps the differential when this gate needs to be quick.
+  # The expensive --verify (mutate each reader, require the parity to go
+  # RED, restore) belongs off-session, on a Routine, like guard-guard.
   #
   # `if`, not `[ -n "$x" ] && cmd`: as the LAST statement of a function under
   # `set -e`, that form returns 1 when the variable is empty, so a repo whose

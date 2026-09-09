@@ -3,18 +3,21 @@
 STATUS: DESIGN
 
 Second canonical campaign: a council designs, one loop-engineered node
-implements, and a node that did NOT write the code re-runs the harness
-before red-team sees it. Copy over `WORK.md` to use it, or keep both and
-point `graph-run` at this file.
+implements, a node that did NOT write the code re-runs the harness, the
+proof-auditor judges whether verification got weaker, and red-team closes.
+Copy over `WORK.md` to use it, or keep both and point `graph-run` at this
+file.
 
-Uses the loop side of the plugin: the gate resolves `red-team-reviewer` via
-`agentType`, and the implement node assumes `scripts/harness.sh` exists.
+Uses the loop side of the plugin: the gate resolves `proof-auditor` and
+`red-team-reviewer` via `agentType`, and the implement node assumes
+`scripts/harness.sh` exists.
 
 ## Org graph
 | Role | Zone owned | Binding | Notes |
 |---|---|---|---|
 | architect | design proposals | inline prompt | one per angle, no repo writes |
 | builder | implementation | inline prompt, worktree-isolated | works one loop slice |
+| proof | verification review | `agentType: proof-auditor` | WEAKENED is harness-red; NOT-APPLICABLE when the diff carries no proof surface |
 | red-team | adversarial diff review | `agentType: red-team-reviewer` | verdict gates the merge |
 
 ## Work graph
@@ -24,13 +27,14 @@ Uses the loop side of the plugin: the gate resolves `red-team-reviewer` via
   "version": 1,
   "name": "feature-campaign",
   "campaign": "Council-designed, loop-implemented, independently gated feature slice",
-  "budget": { "maxNodes": 20, "verifyFloorTokens": 50000 },
+  "budget": { "maxNodes": 20, "verifyFloorTokens": 50000, "cacheTtl": "1h", "maxEstimatedTokens": 300000 },
   "defaults": { "effort": "medium" },
   "requiredArgs": ["goal"],
   "argDefaults": { "constraints": "none beyond WORK.md" },
   "roles": {
     "architect": { "effort": "medium" },
     "builder": { "effort": "high" },
+    "proof": { "agentType": "proof-auditor", "effort": "high" },
     "red-team": { "agentType": "red-team-reviewer", "effort": "high" }
   },
   "lists": {
@@ -87,11 +91,23 @@ Uses the loop side of the plugin: the gate resolves `red-team-reviewer` via
       "onRed": "halt"
     },
     {
+      "id": "proof-audit",
+      "phase": "Gate",
+      "role": "proof",
+      "after": "gate",
+      "prompt": "Audit the verification work on the branch this campaign built, starting from the independent harness result: {{prev}}. Check the branch out into a worktree of your own (git worktree add --detach) and run every experiment there; the shared checkout is guarded and must not change. Resolve the fluxpoint plugin root (${CLAUDE_PLUGIN_ROOT}, else `find ~/.claude/plugins -type d -name fluxpoint | head -1`) and run its scripts/py.sh proof-guard.py --scan and spec-guard.py --scan against the branch first. If the diff touches no proof-language file (.ak, .dfy, .lean, .v, .thy, .tla, verified Rust) and no test or property suite, return verdict NOT-APPLICABLE with an empty surface and stop. Otherwise run the sequence /fluxpoint:proof-audit prescribes: both ratchets with --check, mutation-guard.py --report where .fluxpoint-mutation.json exists, confirm scripts/harness.sh --full invokes the prover, plutus-budget.py --report where plutus.json exists, then your checklist: vacuity, specification drift, assumption laundering, test theatre, negative tests failing for the wrong reason, unproved surface, on-chain budgets, solver honesty. Name every file, obligation and suite you reviewed in surface. UNPROVEN when no checker could run; never SOUND on a static read.",
+      "contract": "ProofV1",
+      "verify": "schema-only",
+      "haltWhen": "verdict == 'WEAKENED'",
+      "haltReason": "the proof-auditor found the verification weaker while the checker stayed green; WEAKENED is harness-red and the campaign does not ship over it",
+      "onRed": "halt"
+    },
+    {
       "id": "red-team",
       "phase": "Gate",
       "role": "red-team",
-      "after": "gate",
-      "prompt": "Red-team the diff of the branch implemented in this campaign against the default branch. Apply your full adversarial checklist. Context: {{prev}}",
+      "after": "proof-audit",
+      "prompt": "Red-team the diff of the branch implemented in this campaign against the default branch. Apply your full adversarial checklist. The proof-auditor's verdict on the same branch, for context and never as a substitute for your own reading: {{prev}}",
       "contract": "RedTeamV1",
       "verify": "schema-only",
       "haltWhen": "verdict == 'BLOCK'",
@@ -107,8 +123,17 @@ Uses the loop side of the plugin: the gate resolves `red-team-reviewer` via
   re-reads the repo anyway; a panel here buys nothing.
 - `build`: mutates, so it is worktree-isolated and may not certify itself.
 - `gate`: the only node whose exit code the campaign trusts. It never
-  wrote the code. `haltWhen: exit != 0` stops the campaign before
-  red-team burns tokens on a red branch.
+  wrote the code. `haltWhen: exit != 0` stops the campaign before the
+  reviewers burn tokens on a red branch.
+- `proof-audit`: `VERDICT: WEAKENED` is harness-red, and `haltWhen` makes
+  that structural, the same way it does for red-team. The halt is on
+  WEAKENED alone, on purpose: a diff with no proof surface returns
+  NOT-APPLICABLE and a repo with no installed prover returns UNPROVEN, and
+  neither is a reason to halt a feature campaign — `record-run.py` files
+  UNPROVEN as INCOMPLETE and a SOUND over an empty surface as vacuous, so
+  the Evidence row still says which of the three it was. The node runs its
+  ratchets in a worktree of its own because the compiled graph brackets
+  every verdict with a tree sentinel.
 - `red-team`: `VERDICT: BLOCK` is harness-red, and `haltWhen` makes that
   structural. A verdict this node collects but nothing reads is the exact
   smell `graph-auditor` hunts — and being the terminal node is what makes
@@ -121,9 +146,12 @@ Uses the loop side of the plugin: the gate resolves `red-team-reviewer` via
   gate never passes by default.
 - Dead council seats drop and log; the campaign proceeds if at least one
   design survives.
-- Budget: 20 planned agent calls, verification floor 50k tokens.
-- Halt conditions a human can name: independent harness exit != 0, and a
-  red-team verdict of BLOCK.
+- Budget: 20 planned agent calls, verification floor 50k tokens, and a
+  cost ceiling of 300k estimated tokens over the compiler's estimate
+  (~218k under the declared 1-hour prompt-cache TTL; every effort
+  transition in the chain is a cold prefill the estimate charges for).
+- Halt conditions a human can name: independent harness exit != 0, a
+  proof-audit verdict of WEAKENED, and a red-team verdict of BLOCK.
 
 ## Decisions
 Appended automatically by `scripts/record-run.py` — do not hand-edit.
@@ -134,10 +162,12 @@ silently re-decide the other way.
 |---|---|---|---|---|---|
 
 ## Evidence
-Appended automatically by `scripts/record-run.py` — do not hand-edit.
+Appended automatically by `scripts/record-run.py` — do not hand-edit. The
+Proof cell carries the harness exit, the proof-audit verdict and the
+red-team verdict together.
 
-| When (UTC) | runId | Outcome | Nodes OK/dead | Findings | Harness | Red-team |
-|---|---|---|---|---|---|---|
+| When (UTC) | Source | Outcome | Claim | Proof |
+|---|---|---|---|---|
 
 ## Notes for the next run
 <current state, dead nodes, targeted repairs planned, resume point>

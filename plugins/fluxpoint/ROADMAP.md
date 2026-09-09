@@ -27,10 +27,10 @@ another layer's missing input:
 | 2 | Discovery seen-sets → the next sweep | ~~`emit_repeat`'s seen-set is an in-run local.~~ **Closed**: `memory: {seed, emit}` carries the frontier across runs; run two opens where run one stopped. | — |
 | 3 | Loop-mode work → Evidence | **Partly closed**: the Stop gate now writes its own `Source: gate` rows and SessionStart labels agent-written rows as assertions (Part 2, slice 6). Still open: `WORK.md` itself is unguarded — `verify-changed.sh` and the hygiene scan both skip `*.md` — so a row can still be edited after the fact, and nothing re-executes a Proof cell. | A forged row is now a *visible* anomaly rather than an invisible one; making it impossible needs the work file guarded. |
 | 4 | Loop-mode work → Decisions | **Closed**: `decision.py --record`/`--none` gives loop mode the bus with the `DecisionV1` floors enforced, and a PreCompact hook plus SessionStart tell the post-compaction context when reasoning was lost (Part 3c, slice 8). | — |
-| 5 | Prover output → anywhere | The shrunk counterexample from `aiken check` (or any prover) lives in `full.log`, clobbered per run. | The single most valuable artifact a prover produces evaporates; a fixed bug carries no pinned regression. |
+| 5 | Prover output → anywhere | ~~The shrunk counterexample from `aiken check` (or any prover) lives in `full.log`, clobbered per run.~~ **Closed for Aiken and Dafny**: `cex.py` records the shrunk input (Aiken's JSON, Dafny's counterexample model), pins it to a regression test that must physically carry the literals, and ratchets on it in `--full` (Part 3b). Kani and Apalache remain unparsed. | — |
 | 6 | Frozen decisions → the next campaign | ~~`imports` resolved by the orchestrating agent by hand; the emitted guard checked key presence only.~~ **Closed**: the compiler resolves `imports` from recorded runs and embeds the records (see Part 2, slice 1). | — |
 | 7 | Real exit codes → claimed exit codes | ~~A gate node typed its own `{"exit": 0}` and nothing could contradict it.~~ **Closed in warn mode**: a PostToolUse hook mints the runtime's exit for declared gates and `record-run.py` cross-checks every claim (see Part 2, slice 2). | — |
-| 8 | Red-team / proof-audit verdicts → the gate | `SHIP/BLOCK` is typed (`RedTeamV1`) but `proof-auditor`'s `SOUND/WEAKENED` is prose; neither reaches `dod-gate.sh`. | "Treat WEAKENED as harness-red" is policy, not mechanism. |
+| 8 | Red-team / proof-audit verdicts → the gate | ~~`proof-auditor`'s `SOUND/WEAKENED` is prose.~~ **Half closed (issue #72)**: `ProofV1` types the verdict (SOUND / WEAKENED / UNPROVEN / NOT-APPLICABLE plus the surface reviewed), the feature campaign binds `proof-auditor` as a gate node halting on WEAKENED, and `record-run.py` files WEAKENED as `BLOCKED-PROOF`, UNPROVEN as INCOMPLETE, and a SOUND over an empty surface as vacuous. Still open: neither verdict reaches `dod-gate.sh` in loop mode. | "Treat WEAKENED as harness-red" is mechanism in graph mode and policy in loop mode. |
 | 9 | Evidence → freshness | Rows are never replayed; a row true at write time is injected unchanged after the code it describes was rewritten. | Memory rots silently, and the bootstrap presents rot as fact. |
 | 10 | Run artifacts → rates | ~~Runs recorded everything and computed nothing: no spend, no kill rate, no trend — the no-scheduler bet was uninstrumentable.~~ **Closed**: summaries carry `spawned`/`planned`/`spent`, provenance rows carry structured data (round tallies with per-worker unique-new counts, reduce before/after), and `scripts/metrics.py` folds runs + lessons + inbox into per-campaign rates surfaced by `/fluxpoint:status`. | — |
 
@@ -306,10 +306,27 @@ Not yet claimed, and named in the docstring: a pinned test is recorded as
 *carrying* the counterexample, not re-run against the un-fixed code to prove
 it would have caught it. That is why `signature` is already in the schema.
 
+**Dafny joined the ledger (issue #70).** `TOOLS` became a registry — one
+parser per prover, one ledger, one pinning discipline — and the second entry
+is Dafny, which jumped the queue below because it was already first-class in
+the other two ratchets. The parser reads the literal shape
+`dafny verify --extract-counterexample` prints (a `Counterexample for first
+failing assertion:` heading, then `file.dfy(l,c): initial state:` blocks of
+`name : type = value` lines) and Dafny 4's `assume name == value && …;`
+rendering of the same model, keeps the initial state as the method's inputs,
+and records later failures — Dafny models the first one only — as assertions
+with no input. Resolution and type errors print in the same `Error:` shape
+and are refused as counterexamples; a `Counterexample` heading with nothing
+readable under it files INGEST-FAILED, named by prover. A Dafny pin is a
+tracked `.dfy` declaration carrying the literals in order, refused when it is
+`{:verify false}`, `{:axiom}`, an `assume`, or `assert true`. The scaffolded
+harness captures `dafny verify` the way it captures `aiken check`, with
+`FPL_DAFNY_ARGS` carrying `--extract-counterexample`.
+
 The original design, for reference. `cex.py --ingest` parses prover
 output tee'd from the harness (aiken's shrunk counterexample block first;
-Kani traces and Apalache ITF later — parser drift is a loud INGEST-FAILED
-inbox row, never a silent drop). `--pin <id>` generates a concrete
+Dafny models second, shipped; Kani traces and Apalache ITF later — parser
+drift is a loud INGEST-FAILED inbox row, never a silent drop). `--pin <id>` generates a concrete
 regression test from the *recorded* input (never from agent prose) and
 `--check` in `--full` fails when a pinned counterexample has lost its test
 file. A pinned cex is the one memory artifact that re-verifies itself
@@ -628,6 +645,18 @@ verification moves trust to the spec rather than eliminating it, which is
 why the ratchet, the adversarial spec review, and the mutation floor are
 the load-bearing pieces, not the prover invocation.
 
+*Shipped as an opt-in prototype (issue #71):* `templates/WORK.verified.md`
+carries the Propose-and-Review split — a `builder` that may not touch a
+statement, a `prover` (`agents/prover.md`, contracted to `SliceV1`, a
+mutator) that adds invariants, lemmas, decreases clauses and property tests
+and may never remove an obligation, two independent gates because
+`verifies` names one node, the prover's gate attested through
+`prove:harness`, then `proof-audit` over the prover's diff and red-team.
+The spec node and the adversarial spec panel are still to come, and the
+split stays out of the default feature template until a Dafny-bearing
+campaign shows it pays; on Aiken the prover's output reduces to property
+tests, and the template says so.
+
 ## Part 5 — build order
 
 Ordered by leverage over effort; every slice lands green through the
@@ -646,7 +675,7 @@ existing harness and each is independently shippable.
 | 9 | `mutation-guard.py` wrapping cargo-mutants, floor + staleness stamp | **shipped** |
 | 10 | `ExecutionV1` + `verify: "prove:<gate>"` tier + TAMPERED-EXECUTION enforcement | **shipped** |
 | 11 | `WORK.consolidate.md` + consolidation Routine; evidence `--replay` + graded injection | |
-| 12 | Attack-taxonomy scaffolding in `/fluxpoint:init` for Aiken repos; `WORK.verified.md` | |
+| 12 | Attack-taxonomy scaffolding in `/fluxpoint:init` for Aiken repos; `WORK.verified.md` | template shipped as an opt-in prototype in slice 20; taxonomy scaffolding open |
 | 13 | Cross-repo federation (`.fluxpoint-federation.json`, org-scope lessons) | |
 | 14 | `{{prev.<field>}}` projection (validated single-hop, bracket-emitted; the compile-clean/launch-dead trap closed) + `reduce` nodes (deterministic dedupe/rank/cut between agents, zero spawns, cuts named) | **shipped** |
 | 15 | `onRed` as a closed registry, enforced on fan-out and discovery (a dead worker can halt; a round that lost any worker never reads as dry; a ceiling-declined spawn files SKIPPED and halts as BUDGET-EXHAUSTED, never NODE-DEAD) | **shipped** |
@@ -654,6 +683,7 @@ existing harness and each is independently shippable.
 | 17 | Hygiene scan no longer flags the proof ratchet's OWN baseline — `.fluxpoint-proof-baseline.json` records a count for every marker the scan hunts, so `"lean.sorry": 0` (the evidence a repo is clean) read as a proof hole and turned the gate red | **shipped** |
 | 18 | Hybrid recall (Part 3e): derived memory graph + pluggable embeddings + BM25 + PPR fused with weighted RRF; bi-temporal serving, stale-kill marks, relevance-ordered seed maps, SessionStart recall section, `/fluxpoint:recall` | **shipped** |
 | 19 | Recall follow-ons (Part 3e): `memory.priors` refuter wiring with emission probe; decision nodes from run artifacts; `substrate-graph.mjs --json` + primitive ingestion; gemini provider; dark-launched per-prompt hook (`FPL_MEM_PROMPT=1`); `WORK.consolidate.md` (3d's template half) | **shipped** |
+| 20 | Issues #62–#72 closed together (v1.36.0): relation gate `differential` / `bite` / `authority` / `--scan` (#62); Dafny in the counterexample ledger (#70); `ProofV1` + the `proof-audit` node in the feature campaign, `record-run` filing WEAKENED as `BLOCKED-PROOF` (#72); the `prover` role and opt-in `WORK.verified.md` (#71); the token estimate, `maxEstimatedTokens`, `cacheTtl`, effort-transition warnings and the estimate/profile instrumentation (#64–#67, the sweep itself still to run); `prompt-audit.py` as an advisory harness step (#68); the cached-prefix wording and the two thoroughness boosters retired (#69) | **shipped** |
 
 ## Part 6 — named absences
 
@@ -661,6 +691,11 @@ Things the graph layer does not do, said here so their absence is a
 decision rather than an oversight. Each names its trigger for being
 built.
 
+- **Per-node token spend.** The runtime meters the run (`budget.spent()`)
+  and never a node, so the per-node `profile` in every summary carries
+  the compiler's *estimate* beside a run-level `spent`. Build the per-node
+  fold in `metrics.py` when the runtime exposes per-call usage; the
+  effort sweep DESIGN-NOTES describes can start on run-level numbers.
 - **Per-node wall-clock and critical-path latency.** The executor forbids
   `Date` in workflow scripts (nondeterminism breaks resume), so the
   emitted code cannot timestamp itself. The compiler warns about the
@@ -684,10 +719,12 @@ built.
   The advisor–orchestrator shape passes the plan through `{{prev}}`
   instead. Build alongside multi-parent joins; both are one scheduler
   decision away, and the refusal is the same refusal.
-- **Per-node retry.** Refused, not pending: recovery is cached-prefix
-  resume plus the once-only ledger, and an in-run retry loop would be a
-  second failure policy hiding inside the first. A flaky node is repaired
-  and resumed, not retried until it confesses.
+- **Per-node retry.** Refused, not pending: recovery is memoized resume
+  (the executor replaying completed `agent()` calls from the run journal,
+  a different mechanism from the model's prompt cache) plus the once-only
+  ledger, and an in-run retry loop would be a second failure policy hiding
+  inside the first. A flaky node is repaired and resumed, not retried
+  until it confesses.
 
 Every proposal above follows the house idiom — closed field registries
 with emission probes, append-only stores whose reads hard-fail on

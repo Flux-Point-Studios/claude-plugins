@@ -91,6 +91,10 @@ def _empty():
         "runs": 0, "outcomes": {},
         "nodesOk": 0, "nodesDead": 0, "nodesSkipped": 0, "nodesBlocked": 0,
         "spawned": 0, "planned": 0, "spent": 0, "runsWithoutSpendData": 0,
+        # What the compiler priced against what the runtime metered, and the
+        # effort each call ran at: the raw material for an effort sweep, which
+        # is asserted today and measured only when these two numbers meet.
+        "estimated": 0, "runsWithEstimate": 0, "effortMix": {},
         "discovery": {"rounds": 0, "dryEnded": 0, "ceilingEnded": 0,
                       "truncated": 0, "halted": 0,
                       "found": 0, "fresh": 0, "kept": 0},
@@ -132,6 +136,15 @@ def _fold_one(art):
     for k, v in att.items():
         if isinstance(v, int):
             _bump(c["attestation"], k, v)
+    est = summary.get("estimate")
+    if isinstance(est, dict) and isinstance(est.get("total"), int):
+        c["estimated"] = est["total"]
+        c["runsWithEstimate"] = 1
+    prof = summary.get("profile")
+    if isinstance(prof, dict):
+        for rec in prof.values():
+            if isinstance(rec, dict) and rec.get("effort"):
+                _bump(c["effortMix"], str(rec["effort"]), _int(rec.get("calls") or 0))
     # Discovery endings are classified per NODE, not per run — a run with
     # two sweeps has two endings, and blurring them into one would erase a
     # convergence or a truncation from the split status.md tells the
@@ -250,6 +263,20 @@ def render(folded):
             lines.append(
                 f"  ({c['runsWithoutSpendData']} run(s) predate spawn/spend "
                 f"recording and are not in those numbers)")
+        if c["runsWithEstimate"]:
+            # Spent over estimated, on the runs that carry both. Far from 1
+            # means the compiler's stated assumptions are wrong for this
+            # campaign, which is the finding: correct the constants, not the
+            # ceiling.
+            spent_est = [1 for _ in range(c["runsWithEstimate"])]
+            ratio = (f"{c['spent'] / c['estimated']:.2f}x" if c["estimated"]
+                     and c["spent"] else "n/a")
+            lines.append(
+                f"  cost model: {c['estimated']} estimated vs {c['spent']} spent "
+                f"across {len(spent_est)} estimated run(s) (spent/estimated {ratio}); "
+                f"effort mix: "
+                + (", ".join(f"{k} {v} call(s)" for k, v in sorted(c["effortMix"].items()))
+                   or "unrecorded"))
         d = c["discovery"]
         if d["rounds"]:
             lines.append(

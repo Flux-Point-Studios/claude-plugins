@@ -61,12 +61,44 @@ step; do not stop at copying files.
    answer for itself: **which artifacts have to agree with each other?** An
    on-chain predicate and the off-chain builder that constructs
    transactions for it; a migration and the schema it assumes; a wire
-   format and both ends of it. Each side has its own tests and passes them;
-   the pair is what breaks. Write them into `.fluxpoint-pairs.json` with a
-   `parity` command wherever one can be written — a co-change rule only
-   proves somebody touched both files, never that they agree. The manifest
-   is worthless if it is not written at onboarding, because nobody adds a
-   pair after the incident it would have caught.
+   format and both ends of it; a deploy gate that re-reads a config the
+   keeper also parses. Each side has its own tests and passes them; the
+   pair is what breaks. Start with the mirrors nobody declared:
+   ```
+   bash "${CLAUDE_PLUGIN_ROOT}/scripts/py.sh" pair-guard.py --scan
+   ```
+   prints suggested manifest entries (the same error message thrown from two
+   modules, overlapping thrown-message sets, a docstring claiming to mirror
+   or delegate) with the evidence in each `why`; it is a suggestion list,
+   never a gate. Then write the pairs into `.fluxpoint-pairs.json` with a
+   `parity` command wherever one can be written, and a `differential`
+   wherever both sides can be run over generated inputs — a co-change rule
+   only proves somebody touched both files, never that they agree. Name the
+   funds-moving side with `authority`, and give every parity a `bite`, a
+   mutation of the reader that `pair-guard.py --verify` must turn RED:
+   ```json
+   [{"id": "config-gate",
+     "source": "keeper/config.py", "mirror": ["deploy/gate.py"],
+     "authority": "source",
+     "differential": {"generator": "python gen_configs.py",
+                      "sourceRun": "python -m keeper.config --check",
+                      "mirrorRun": "python -m deploy.gate --check",
+                      "cases": 500, "seed": 1},
+     "bite": {"file": "deploy/gate.py",
+              "find": "if doc.fee < 0:", "replace": "if False:",
+              "compile": "npx tsc --noEmit"}}]
+   ```
+   The generator reads `FPL_PAIR_SEED` and `FPL_PAIR_CASES` and prints one
+   input per line; both runs read one input on stdin, and any difference in
+   exit code, stdout or stderr is a divergence, bytes compared, no
+   normalisation. `--check` runs parity and differential on every `--full`;
+   `--verify` (mutate the reader, require RED, restore, every step read back)
+   belongs off-session on a Routine, like `guard-guard.py --verify`. A parity
+   nobody has shown to fail is named as such by `--check` and `--list` and
+   fails only under `--verify`. The manifest is worthless if it is not written
+   at onboarding, because nobody adds a pair after the incident it would have
+   caught — and nobody declares a mirror they do not know they wrote, which
+   is what `--scan` is for.
 6. Fill in the WORK.md goal line. Use "$ARGUMENTS" if provided; otherwise
    ask for the goal before writing.
 7. Set `MODE`. Default to `loop` and delete the Campaign section — most
@@ -98,10 +130,13 @@ step; do not stop at copying files.
    Confirm `harness.sh --full` actually invokes the prover; per-file
    checking on edit is not a Definition-of-Done gate.
    For Aiken repos the scaffolded harness also captures `aiken check`'s
-   JSON and records any counterexample it finds to `.fluxpoint-cex.jsonl`.
-   That file and `.fluxpoint-cex/` are committed artifacts like the
-   baselines — a ratchet only anyone else can see is one that lives in the
-   tree, so do not add them to `.gitignore`.
+   JSON and records any counterexample it finds to `.fluxpoint-cex.jsonl`;
+   for Dafny repos it captures `dafny verify` the same way, and
+   `FPL_DAFNY_ARGS="--extract-counterexample"` in the environment makes
+   the prover print the model the ledger records. That file and
+   `.fluxpoint-cex/` are committed artifacts like the baselines — a
+   ratchet only anyone else can see is one that lives in the tree, so do
+   not add them to `.gitignore`.
 9. If this repo has guards — the specific lines that stop money moving
    wrongly, an auth check, a spend limit, a signature verification — name
    them in `.fluxpoint-guards.json` so the guard ratchet can hold each one

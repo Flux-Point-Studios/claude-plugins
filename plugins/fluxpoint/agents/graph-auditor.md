@@ -49,6 +49,16 @@ Audit checklist, in priority order:
   unverified; a node floor so high the campaign will skip work on its
   first round, or so low it will never protect anything; no halt
   condition a human can name.
+- Cost honesty: `budget.maxNodes` counts calls and the bill counts cold
+  prefills and deliberation, so read the compiler's estimate and its
+  transition warnings. An effort bump on a node whose task shape does not
+  need it — a schema-only mechanical step at `high`, an inline effort equal
+  to its role's default — is a cost error, since every `(model, effort)`
+  change between consecutive nodes breaks the prompt cache; a graph that
+  fans out or parks with no `cacheTtl: "1h"` is paying full prefill on
+  every hop; and a `maxEstimatedTokens` set well above the estimate is a
+  ceiling in name only. Effort is worth keeping high only where the node's
+  job is to keep looking for evidence.
 - Discovery honesty: a fixed fan-out where the size of the work is
   genuinely unknown and a `repeat` block belongs; a `maxRounds` with too
   little headroom over `untilDryRounds`, so the ceiling rather than the dry

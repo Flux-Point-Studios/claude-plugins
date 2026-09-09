@@ -14,9 +14,14 @@ Workflow tool requires.
    - `bash "$ROOT/scripts/py.sh" compile-graph.py <graph> --check` exits 0.
      Its findings are the work list; fix the IR, never the compiler.
    - `STATUS:` reads `READY` (or `RUNNING` with a resume point in Notes).
+   - The `--check` line names the estimated tokens and the prompt-cache
+     TTL the graph declares (`budget.cacheTtl`). A graph written for `1h`
+     is priced for a session whose prompt cache lives an hour; run it in
+     one, or expect every hop to cost a cold prefill the estimate did not
+     charge for. The runtime sets the TTL per session, never per node.
    - Every command the verification map names exists (`scripts/harness.sh`
-     if referenced) and every `agentType` resolves — `red-team-reviewer`
-     ships with this plugin.
+     if referenced) and every `agentType` resolves — `red-team-reviewer`,
+     `proof-auditor` and `prover` ship with this plugin.
 3. Compile:
    `bash "$ROOT/scripts/py.sh" compile-graph.py <graph> -o .claude/workflows/<name>.graph.js`
    The output is generated code. Never hand-edit it; edit the IR and

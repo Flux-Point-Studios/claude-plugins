@@ -1,0 +1,12 @@
+{
+  "allow": [
+    {"path": "plugins/fluxpoint/templates/WORK.feature.md", "rule": "repeat",
+     "text": "Appended automatically by `scripts/record-run.py`"},
+    {"path": "plugins/fluxpoint/templates/WORK.discovery.md", "rule": "repeat",
+     "text": "Appended automatically by `scripts/record-run.py`"},
+    {"path": "plugins/fluxpoint/templates/WORK.consolidate.md", "rule": "repeat",
+     "text": "Appended automatically by `scripts/record-run.py`"},
+    {"path": "plugins/fluxpoint/templates/WORK.verified.md", "rule": "repeat",
+     "text": "Appended automatically by `scripts/record-run.py`"}
+  ]
+}
