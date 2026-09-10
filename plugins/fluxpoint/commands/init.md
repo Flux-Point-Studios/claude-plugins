@@ -30,7 +30,7 @@ step; do not stop at copying files.
    - Codex: append `templates/codex.config.snippet.toml` to
      `.codex/config.toml`, creating the file if absent. It enables
      `fluxpoint@fluxpoint` once the marketplace has been added with
-     `codex plugin marketplace add Flux-Point-Studios/claude-plugins`.
+     `codex plugin marketplace add Flux-Point-Studios/fluxpoint-plugins`.
 5. Tailor `scripts/harness.sh`: inspect the repo's real stack and replace
    the auto-detection floor with the exact commands the Definition of Done
    requires (build, unit and property tests, lint, typecheck, formal

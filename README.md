@@ -30,7 +30,7 @@ Once per machine.
 Claude Code:
 
 ```
-/plugin marketplace add Flux-Point-Studios/claude-plugins
+/plugin marketplace add Flux-Point-Studios/fluxpoint-plugins
 /plugin install fluxpoint@fluxpoint
 /plugin install substrate@fluxpoint
 ```
@@ -38,7 +38,7 @@ Claude Code:
 Codex:
 
 ```
-codex plugin marketplace add Flux-Point-Studios/claude-plugins
+codex plugin marketplace add Flux-Point-Studios/fluxpoint-plugins
 ```
 
 Then enable `fluxpoint@fluxpoint` and `substrate@fluxpoint` from

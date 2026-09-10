@@ -43,14 +43,14 @@ sweep-before-build doctrine has something deterministic to sweep.
 Claude Code:
 
 ```
-/plugin marketplace add Flux-Point-Studios/claude-plugins
+/plugin marketplace add Flux-Point-Studios/fluxpoint-plugins
 /plugin install substrate@fluxpoint
 ```
 
 Codex:
 
 ```
-codex plugin marketplace add Flux-Point-Studios/claude-plugins
+codex plugin marketplace add Flux-Point-Studios/fluxpoint-plugins
 ```
 
 then enable `substrate@fluxpoint`. Onboard with `/substrate:init <repo>`
