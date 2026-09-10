@@ -275,8 +275,11 @@ full() {
   # Statement ratchet. The hatch counts above police proof bodies; this
   # polices what is being proved, because dropping a conjunct from an
   # `ensures` or deleting a property test moves no count and keeps every
-  # checker green. Dormant until armed with --baseline.
-  if need_gate spec-guard.py .fluxpoint-proof-baseline.json; then
+  # checker green. It also holds the DoD's `— proof:` claims to the scan,
+  # audits headline theorems' axioms when the baseline names any, and
+  # requires every class in .fluxpoint-attacks.json to be specified, so the
+  # attack manifest arms it on its own. Dormant until one of them exists.
+  if need_gate spec-guard.py .fluxpoint-proof-baseline.json .fluxpoint-attacks.json; then
     "$FPL_PY" "$FPL_GATE" --check
   fi
   # Seam ratchet. The mutation score below asks whether the tests can fail;

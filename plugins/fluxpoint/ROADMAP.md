@@ -501,11 +501,27 @@ into the `spec` section of `.fluxpoint-proof-baseline.json` (each guard now
 preserves the other's section, or arming one would disarm the other).
 `--check` reds on a changed or removed obligation unless a Decisions row
 names its id; additions are free; reformatting, clause reordering, and file
-moves are not weakenings and stay green. Lean, Coq, Isabelle and TLA+ are
-reported `NOT COVERED` by name rather than passed over — that surface
-remains the proof-auditor's alone. Not yet built: `--axioms`, the DoD
-`— proof: <tool>:<id>` tails, and the Aiken attack-taxonomy scaffolding
-(slice 12).
+moves are not weakenings and stay green.
+
+*Slice 21 closed the rest of 4a.* Lean and Coq theorem statements, Isabelle
+lemma statements, TLA+ `THEOREM`s together with every `INVARIANT` and
+`PROPERTY` a TLC `.cfg` names (bound to the operator definition it checks,
+so deleting the config line and editing the operator are both visible),
+and every Rust fn carrying a `kani::` attribute are parsed; what remains
+uncovered (Agda, F*, Alloy) is still named. `--axioms` records the
+prover's own assumption listing for headline theorems — `#print axioms`
+through `lake env lean`, `Print Assumptions` through `coqc` with the
+module path resolved from `_CoqProject`, `dafny audit --report-format
+text` with line numbers dropped so a moved declaration is not a new
+assumption — and `--check` reds on a new axiom in a headline's set while
+fewer is always allowed; a missing toolchain prints NOT RUN by name and
+never reads clean, and a listing the parser cannot read is red. The DoD
+`— proof: <obligation id>` tail is enforced: a checked box whose obligation
+does not exist is red, and one whose obligation changed is caught by the
+statement hash. The toolchains are not installed where the plugin's own
+harness runs, so the audit parsers are pinned against the documented
+listings through shims; the first real run against each prover is the
+remaining check.
 
 Building it surfaced a live bug in the sibling guard, now fixed with
 regression cases: `proof-guard.py` matched Aiken parameter lists with a
@@ -634,6 +650,23 @@ the attested chain (statement hash → prover exit → mutation score →
 Evidence row) is reconstructible certification evidence rather than a
 vibe.
 
+*Shipped in slice 21, as a manifest rather than generated Aiken.* A
+scaffolded `.ak` file that does not compile would drop a red file into a
+tree that was merely unspecified, and nothing here can compile Aiken to
+prove otherwise, so the taxonomy ships as data: `templates/attack-taxonomy.json`
+names eight classes (double satisfaction, datum hijack, token-name
+confusion, unbounded value, staking-credential substitution, foreign
+UTxOs, unbounded validity, arbitrary mint), each with the property to
+state and the generator to fuzz it with. `/fluxpoint:init` copies it to
+`.fluxpoint-attacks.json`, and `spec-guard.py --check` is red for every
+class that has neither an Aiken test of that exact name nor a waiver in
+the manifest's `waived` object with a reason of at least twenty
+characters; a class specified as a unit test rather than a property over a
+generator is noted. The manifest arms the gate on its own, without a
+baseline, so an onboarded Aiken repo cannot report green with the
+taxonomy unspecified. Once written, the tests are spec-guard obligations
+and their signatures ratchet like any other.
+
 **Spec-first campaign shape.** A canonical `WORK.verified.md`: a spec node
 authors obligations (frozen via spec-guard, adversarially refuted by a
 panel — once implementation cannot move the target, the spec *is* the
@@ -675,7 +708,7 @@ existing harness and each is independently shippable.
 | 9 | `mutation-guard.py` wrapping cargo-mutants, floor + staleness stamp | **shipped** |
 | 10 | `ExecutionV1` + `verify: "prove:<gate>"` tier + TAMPERED-EXECUTION enforcement | **shipped** |
 | 11 | `WORK.consolidate.md` + consolidation Routine; evidence `--replay` + graded injection | |
-| 12 | Attack-taxonomy scaffolding in `/fluxpoint:init` for Aiken repos; `WORK.verified.md` | template shipped as an opt-in prototype in slice 20; taxonomy scaffolding open |
+| 12 | Attack-taxonomy scaffolding in `/fluxpoint:init` for Aiken repos; `WORK.verified.md` | **shipped**: the template as an opt-in prototype in slice 20, the taxonomy as `.fluxpoint-attacks.json` enforced by spec-guard in slice 21 |
 | 13 | Cross-repo federation (`.fluxpoint-federation.json`, org-scope lessons) | |
 | 14 | `{{prev.<field>}}` projection (validated single-hop, bracket-emitted; the compile-clean/launch-dead trap closed) + `reduce` nodes (deterministic dedupe/rank/cut between agents, zero spawns, cuts named) | **shipped** |
 | 15 | `onRed` as a closed registry, enforced on fan-out and discovery (a dead worker can halt; a round that lost any worker never reads as dry; a ceiling-declined spawn files SKIPPED and halts as BUDGET-EXHAUSTED, never NODE-DEAD) | **shipped** |
@@ -684,6 +717,7 @@ existing harness and each is independently shippable.
 | 18 | Hybrid recall (Part 3e): derived memory graph + pluggable embeddings + BM25 + PPR fused with weighted RRF; bi-temporal serving, stale-kill marks, relevance-ordered seed maps, SessionStart recall section, `/fluxpoint:recall` | **shipped** |
 | 19 | Recall follow-ons (Part 3e): `memory.priors` refuter wiring with emission probe; decision nodes from run artifacts; `substrate-graph.mjs --json` + primitive ingestion; gemini provider; dark-launched per-prompt hook (`FPL_MEM_PROMPT=1`); `WORK.consolidate.md` (3d's template half) | **shipped** |
 | 20 | Issues #62–#72 closed together (v1.36.0): relation gate `differential` / `bite` / `authority` / `--scan` (#62); Dafny in the counterexample ledger (#70); `ProofV1` + the `proof-audit` node in the feature campaign, `record-run` filing WEAKENED as `BLOCKED-PROOF` (#72); the `prover` role and opt-in `WORK.verified.md` (#71); the token estimate, `maxEstimatedTokens`, `cacheTtl`, effort-transition warnings and the estimate/profile instrumentation (#64–#67, the sweep itself still to run); `prompt-audit.py` as an advisory harness step (#68); the cached-prefix wording and the two thoroughness boosters retired (#69) | **shipped** |
+| 21 | Part 4 off the roadmap (v1.38.0): spec-guard parses Lean, Coq, Isabelle, TLA+ theorems plus the invariants a TLC `.cfg` names, and Kani harnesses and contracts; `--axioms` records each headline theorem's assumption set from the prover's own listing and reds on a new one; DoD `— proof: <obligation id>` tails are enforced; the attack taxonomy ships as `templates/attack-taxonomy.json`, copied to `.fluxpoint-attacks.json` by init and red per unspecified class (4d, slice 12) | **shipped** |
 
 ## Part 6 — named absences
 

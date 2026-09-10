@@ -113,12 +113,25 @@ Five rules, in order of how often they are broken:
    `assume` has an easier move: weaken the theorem. `scripts/spec-guard.py`
    hashes what is being proved — Dafny `requires`/`ensures`/`invariant`
    clauses per declaration, Aiken test and property signatures with their
-   fuzzers and their `fail` polarity — into the same baseline file, and
-   `--check` fails when a recorded obligation changed or vanished. Adding
-   obligations is free; changing one needs a Decisions row naming its
-   obligation id, or a re-recorded baseline. Neither ratchet makes
-   weakening impossible; both make it a reviewed diff instead of an
-   invisible one.
+   fuzzers and their `fail` polarity, Lean and Coq theorem statements,
+   Isabelle lemma statements, TLA+ theorems and the invariants a TLC
+   `.cfg` names, Kani harnesses and contracts — into the same baseline
+   file, and `--check` fails when a recorded obligation changed or
+   vanished. Adding obligations is free; changing one needs a Decisions
+   row naming its obligation id, or a re-recorded baseline. Neither
+   ratchet makes weakening impossible; both make it a reviewed diff
+   instead of an invisible one.
+   The same scan backs three more claims. `--baseline --axioms --headline
+   <id>` records what the prover itself says a headline theorem depends on
+   (`#print axioms`, `Print Assumptions`, `dafny audit`), and `--check` is
+   red when a new axiom enters that set even though every hatch count held
+   flat — an assumption laundered through a helper lemma is still an
+   assumption. A checked `- [x]` line in the Definition of Done whose
+   `— proof:` tail names an obligation id is red unless that obligation
+   exists and is unchanged. And an Aiken repo carrying
+   `.fluxpoint-attacks.json` is red for every attack class in it that has
+   neither a property test of that name nor a waiver with a reason, so
+   never specifying the property is a gate too.
    Two weakenings add no hatch at all, so both are counted structurally:
    `test t() { True }` is flagged as a test that cannot fail, and `fn
    check(..) -> Bool { True }` as a predicate that decides nothing — which

@@ -1,0 +1,56 @@
+{
+  "version": 1,
+  "language": "aiken",
+  "note": "The known eUTxO validator attack classes, each the name of a property test this repo must carry over aiken/fuzz. /fluxpoint:init copies this file to .fluxpoint-attacks.json; spec-guard.py --check is then red for every class with neither a test of that name nor a waiver here with a reason of at least 20 characters. The test names are spec-guard obligation ids, so once written they are hashed and may not quietly weaken.",
+  "classes": [
+    {
+      "id": "attack_double_satisfaction",
+      "applies": "spend",
+      "property": "One output cannot pay for two script inputs at once: for any transaction spending two inputs locked by this validator, the validator rejects it unless each input is matched by its own output. Count the paying outputs or the validating tokens across ALL script inputs, never only the one being validated.",
+      "fuzz": "a context with two inputs at this script's address and one output that would satisfy either alone"
+    },
+    {
+      "id": "attack_datum_hijack",
+      "applies": "spend",
+      "property": "An output that continues the contract goes to this script's address with the expected inline datum: the validator rejects any transaction whose continuing output is at another address, carries a foreign or missing datum, or names a datum hash the transaction does not resolve.",
+      "fuzz": "continuing outputs with a random address, a random datum, and a datum-by-hash the transaction does not carry"
+    },
+    {
+      "id": "attack_token_name_confusion",
+      "applies": "mint",
+      "property": "A policy that mints one named token cannot be used to mint another: for any mint under this policy id with a token name or quantity other than the one expected, the policy rejects it. Check the whole value under the policy id, never only the presence of the expected token.",
+      "fuzz": "mint fields under the policy carrying extra token names and quantities beside the expected one"
+    },
+    {
+      "id": "attack_unbounded_value",
+      "applies": "all",
+      "property": "Validation cost does not grow with attacker-supplied size: for values, datums or lists larger than the bound the contract documents, the validator rejects rather than iterating. A script that runs out of budget on a crafted input locks the funds it guards.",
+      "fuzz": "values with many token names and lists at and beyond the documented bound"
+    },
+    {
+      "id": "attack_staking_credential",
+      "applies": "spend",
+      "property": "Address checks compare the full address, not only the payment credential: for any continuing output whose payment credential matches but whose staking credential was replaced, the validator rejects it.",
+      "fuzz": "outputs with the right payment credential and a random or absent stake credential"
+    },
+    {
+      "id": "attack_foreign_utxo",
+      "applies": "spend",
+      "property": "Inputs this validator reads are its own: for any spent or reference input at another script's address carrying a datum this validator would accept, the validator rejects the transaction or restricts what that input may prove.",
+      "fuzz": "inputs at random script addresses carrying well-formed datums of the expected type"
+    },
+    {
+      "id": "attack_unbounded_validity",
+      "applies": "spend",
+      "property": "Time-dependent logic requires a bounded validity range: for any transaction with an unbounded lower or upper validity bound where the contract reasons about time, the validator rejects it.",
+      "fuzz": "validity ranges with NegativeInfinity or PositiveInfinity bounds"
+    },
+    {
+      "id": "attack_arbitrary_mint",
+      "applies": "spend",
+      "property": "A spend that expects a mint or burn checks the exact policy, name and quantity: for any transaction that mints extra tokens under other policies, or a different quantity under the expected one, the validator rejects it.",
+      "fuzz": "mint fields with extra policies and with the expected policy at the wrong quantity"
+    }
+  ],
+  "waived": {}
+}

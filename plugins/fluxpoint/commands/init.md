@@ -135,6 +135,34 @@ step; do not stop at copying files.
    not parse yet, so an unarmed corner never reads as a covered one.
    Confirm `harness.sh --full` actually invokes the prover; per-file
    checking on edit is not a Definition-of-Done gate.
+   Where the repo has headline theorems — the results everything else
+   rests on — record what the prover says they depend on, so an
+   assumption that later sneaks in through a helper lemma is a red gate
+   rather than a flat hatch count:
+   ```
+   bash "${CLAUDE_PLUGIN_ROOT}/scripts/py.sh" spec-guard.py --baseline --axioms \
+     --headline lean:Vault/Safety.lean:no_double_spend --headline dafny:*
+   ```
+   Lean (`#print axioms`), Coq (`Print Assumptions`, resolved through
+   `_CoqProject`) and Dafny (`dafny audit`) are read; the ids come from
+   `spec-guard.py --scan`, and `dafny:*` audits every tracked `.dfy`.
+   For an Aiken repo, copy `templates/attack-taxonomy.json` to
+   `.fluxpoint-attacks.json` and commit it. It names the eUTxO attack
+   classes every validator has to rule out — double satisfaction, datum
+   hijack, token-name confusion, unbounded value, staking-credential
+   substitution, foreign UTxOs, unbounded validity ranges, arbitrary
+   mints — and `spec-guard.py --check` is red for each class until the
+   repo carries a property test of that exact name over `aiken/fuzz`
+   (`test attack_double_satisfaction(n: Int via bounded_int(1, 99)) { … }`)
+   or the manifest's `waived` object gives the class a reason of at least
+   twenty characters. Write those tests now, against this repo's real
+   validators, and then arm the ratchets so their signatures are hashed.
+   A class that genuinely cannot apply is waived in the committed file,
+   where review sees it; it is never left unspecified.
+   When a Definition-of-Done line rests on a proof, say which one:
+   `- [x] withdraw never overdraws — proof: dafny:src/vault.dfy:Withdraw`.
+   `spec-guard.py --check` refuses a checked box whose obligation does not
+   exist or no longer says what was recorded.
    For Aiken repos the scaffolded harness also captures `aiken check`'s
    JSON and records any counterexample it finds to `.fluxpoint-cex.jsonl`;
    for Dafny repos it captures `dafny verify` the same way, and

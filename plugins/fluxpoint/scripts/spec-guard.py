@@ -27,11 +27,38 @@ re-recorded baseline. Both leave the weakening in a committed diff with
 someone's name on it, which is the whole point; neither pretends to make
 weakening impossible. A ratchet makes it loud, not unreachable.
 
-Coverage, stated rather than assumed: Aiken test and property signatures,
-and Dafny requires/ensures/invariant clauses per declaration. Lean, Coq,
-Isabelle and TLA+ files are NOT parsed yet — `--scan` and `--check` say so
-by name when they are present, because a guard that silently covers nothing
-is worse than one that is absent.
+Coverage, stated rather than assumed:
+
+  aiken     test and property signatures: name, fuzzer types, `fail` polarity
+  dafny     requires / ensures / invariant clauses per declaration
+  lean      theorem and lemma statements (binders and the proposition)
+  coq       Theorem / Lemma / Corollary / Proposition / Fact / Remark statements
+  isabelle  lemma / theorem / corollary / proposition statements
+  tla       THEOREM statements, and every INVARIANT / PROPERTY a TLC .cfg
+            names together with the operator definition it checks
+  kani      every Rust fn carrying a kani:: attribute — proof harnesses and
+            requires / ensures contracts — with the attributes and signature
+
+Anything else that looks like proof work (Agda, F*, Alloy) is named as NOT
+COVERED by `--scan` and `--check`, because a guard that silently covers
+nothing is worse than one that is absent.
+
+Three more checks ride on the same scan:
+
+  --axioms   the prover's own assumption audit over baselined headline
+             theorems: `#print axioms` (Lean), `Print Assumptions` (Coq),
+             `dafny audit`. A NEW axiom in a headline's dependency set is
+             red even when every hatch count is flat, which closes
+             assumption laundering through a helper lemma. Where the
+             toolchain is absent the output says NOT RUN, never clean.
+  DoD tails  a checked `- [x]` line in the work file's Definition of Done
+             with a `— proof: <obligation id>` tail is a claim; the id must
+             exist and be unchanged, or the box is red.
+  taxonomy   `.fluxpoint-attacks.json` (from templates/attack-taxonomy.json)
+             names the eUTxO attack classes an Aiken repo must specify;
+             a class with neither a property test of that name nor a
+             waiver with a reason is red — route 0 of the escape routes,
+             never specifying the property, gets a gate too.
 
 What a statement hash cannot see: a property proved about an unreachable
 state, a generator that cannot produce the interesting case, a test whose
@@ -42,17 +69,23 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 
 BASELINE = ".fluxpoint-proof-baseline.json"
+ATTACKS = ".fluxpoint-attacks.json"
+AXIOM_SCRATCH = os.path.join(".claude", "fluxpoint", "axioms")
+MIN_REASON = 20
 
-# Tools whose obligations this script can actually read. Anything else that
-# looks like proof work is reported as uncovered rather than passed over.
-COVERED = {".ak", ".dfy"}
-UNCOVERED = {
-    ".lean": "Lean", ".v": "Coq/Rocq", ".thy": "Isabelle", ".tla": "TLA+",
+# Tools whose obligations this script can actually read, by file suffix.
+COVERED = {
+    ".ak": "aiken", ".dfy": "dafny", ".lean": "lean", ".v": "coq",
+    ".thy": "isabelle", ".tla": "tla", ".cfg": "tla", ".rs": "kani",
 }
+# Proof languages this script recognises and does NOT parse. Reported by
+# name rather than passed over.
+UNCOVERED = {".agda": "Agda", ".fst": "F*", ".als": "Alloy"}
 
 # `test name(params) fail {` — the signature is the obligation. The fuzzer
 # types in the params are part of it: narrowing a generator narrows what was
@@ -72,7 +105,76 @@ DAFNY_DECL = re.compile(
 # loop invariant that loses a conjunct weakens the proof exactly as an
 # `ensures` does.
 DAFNY_CLAUSE = re.compile(r"^\s*(requires|ensures|invariant)\b(.*)$")
-COMMENT = {".ak": "//", ".dfy": "//"}
+
+# Lean 4: `theorem name binders : prop := ...`. The statement runs from the
+# name to the `:=` at bracket depth zero, or to a `| pat => ...` alternative
+# line, or to the next top-level command at column 0.
+LEAN_DECL = re.compile(
+    r"^[ \t]*(?:@\[[^\]]*\][ \t]*)*(?:(?:private|protected|noncomputable|nonrec|partial)"
+    r"[ \t]+)*(theorem|lemma)[ \t]+([^\s:({\[⟨]+)", re.M)
+LEAN_TOP = re.compile(
+    r"^(?:theorem|lemma|def|example|instance|structure|inductive|class|namespace|end|"
+    r"section|open|variable|universe|axiom|abbrev|noncomputable|private|protected|"
+    r"@\[|#|set_option|import|deriving|macro|syntax|elab|notation|infix|prefix|"
+    r"postfix|attribute|mutual|opaque|termination_by|decreasing_by)\b")
+LEAN_OPEN, LEAN_CLOSE = "([{⟨", ")]}⟩"
+
+# Coq / Rocq: a named statement command, terminated by the sentence `.`
+# (a period followed by whitespace, so `Nat.add` and `1.5` are not ends).
+COQ_DECL = re.compile(
+    r"^[ \t]*(?:#\[[^\]]*\][ \t]*)*(?:(?:Local|Global|Program)[ \t]+)?"
+    r"(Theorem|Lemma|Corollary|Proposition|Fact|Remark|Property|Example)"
+    r"[ \t]+([A-Za-z_][\w']*)", re.M)
+COQ_END = re.compile(r"\.(?=\s|$)")
+
+# Isabelle: `lemma name [attrs]: "stmt"`, with `assumes … shows …` forms; the
+# statement ends where the proof begins.
+ISA_DECL = re.compile(
+    r"^[ \t]*(lemma|theorem|corollary|proposition|schematic_goal)[ \t]+"
+    r"(?:\(in[ \t]+[\w.']+\)[ \t]+)?([A-Za-z_][\w']*)[ \t]*(?:\[[^\]]*\][ \t]*)?:", re.M)
+ISA_PROOF = re.compile(r"(?:by|proof|apply|using|unfolding|oops|sorry|done)(?![\w'])")
+ISA_TOP = re.compile(
+    r"^(?:lemma|theorem|corollary|proposition|schematic_goal|definition|fun|function|"
+    r"primrec|datatype|type_synonym|abbreviation|locale|context|end|section|subsection|"
+    r"subsubsection|paragraph|text|declare|instantiation|instance|interpretation|"
+    r"inductive|inductive_set|record|value|export_code|hide_const|hide_fact|notation|"
+    r"lemmas|named_theorems|method|ML|setup|typedecl|consts|axiomatization|theory|"
+    r"imports|begin|term|typ|thm|find_theorems|nitpick|quickcheck|sledgehammer)\b")
+
+# TLA+: `THEOREM Name == stmt`, ending at PROOF/BY/OBVIOUS/OMITTED, a proof
+# step, or the next column-0 definition. Column-0 `Name == body` definitions
+# are collected so a TLC .cfg INVARIANT can be tied to what it checks.
+TLA_THEOREM = re.compile(
+    r"^(THEOREM|LEMMA|PROPOSITION|COROLLARY)[ \t]+([A-Za-z_]\w*)[ \t]*==", re.M)
+TLA_DEF = re.compile(r"^([A-Za-z_]\w*)(?:\([^)]*\))?[ \t]*==", re.M)
+TLA_PROOF = re.compile(r"(?:PROOF|BY|OBVIOUS|OMITTED)\b|<\d+>")
+TLA_TOP = re.compile(
+    r"^(?:[A-Za-z_]\w*(?:\([^)]*\))?[ \t]*==|----|====|THEOREM\b|LEMMA\b|PROPOSITION\b|"
+    r"COROLLARY\b|ASSUME\b|ASSUMPTION\b|AXIOM\b|VARIABLES?\b|CONSTANTS?\b|INSTANCE\b|"
+    r"EXTENDS\b|LOCAL\b|RECURSIVE\b)")
+CFG_KEY = re.compile(
+    r"^[ \t]*(SPECIFICATION|INIT|NEXT|INVARIANTS?|PROPERT(?:Y|IES)|CONSTANTS?|"
+    r"CONSTRAINTS?|ACTION[-_]CONSTRAINTS?|SYMMETRY|VIEW|CHECK_DEADLOCK|ALIAS|"
+    r"POSTCONDITION)\b[ \t]*(.*)$")
+CFG_MARKS = ("SPECIFICATION", "INIT", "NEXT", "INVARIANT", "PROPERT")
+
+# Rust under Kani: any fn carrying a kani:: attribute is an obligation — a
+# `#[kani::proof]` harness, or a `#[kani::requires]` / `#[kani::ensures]`
+# contract on an ordinary function.
+RUST_FN = re.compile(
+    r"\s*(?:pub(?:\([^)]*\))?\s+)?(?:(?:const|async|unsafe|extern\s+\"[^\"]*\")\s+)*"
+    r"fn\s+([A-Za-z_]\w*)")
+
+# A checked Definition-of-Done line whose proof tail names an obligation.
+DOD_LINE = re.compile(
+    r"^\s*-\s*\[(?P<box>[ xX])\]\s*(?P<claim>.*?)\s*(?:—|--|-)\s*proof:\s*(?P<tail>.+?)\s*$")
+OBLIGATION_ID = re.compile(r"\b(?:aiken|dafny|lean|coq|isabelle|tla|kani):[^\s,;]+")
+
+DAFNY_AUDIT = re.compile(r"^(?P<file>[^\n(]+?\.dfy)\((?P<line>\d+),(?P<col>\d+)\):(?P<rest>.+)$")
+# A Lean name may itself end in a prime (`add_zero'`), so the quoted name is
+# matched lazily up to the closing quote that precedes the verb.
+LEAN_AXIOMS = re.compile(r"'(.+?)' depends on axioms: \[([^\]]*)\]")
+LEAN_NONE = re.compile(r"'(.+?)' does not depend on any axioms")
 
 
 def tracked_files(root):
@@ -82,14 +184,6 @@ def tracked_files(root):
     except Exception:  # noqa: BLE001
         return []
     return [f for f in out.splitlines() if f]
-
-
-def strip_comment(line, suffix):
-    marker = COMMENT.get(suffix)
-    if not marker:
-        return line
-    i = line.find(marker)
-    return line[:i] if i >= 0 else line
 
 
 def norm(s):
@@ -102,26 +196,67 @@ def sha(text):
     return hashlib.sha256(norm(text).encode("utf-8", "replace")).hexdigest()[:16]
 
 
-def _matching_paren(text, i):
-    """Index of the `)` closing the `(` at i, or -1."""
+def strip_line_comments(text, marker):
+    out = []
+    for line in text.split("\n"):
+        i = line.find(marker)
+        out.append(line[:i] if i >= 0 else line)
+    return "\n".join(out)
+
+
+def strip_block(text, open_, close, nested=True):
+    """Blank block comments in place; newlines survive so lines keep their numbers."""
+    out, i, depth, n = [], 0, 0, len(text)
+    while i < n:
+        if text.startswith(open_, i) and (nested or depth == 0):
+            depth += 1
+            i += len(open_)
+            continue
+        if depth and text.startswith(close, i):
+            depth -= 1
+            i += len(close)
+            continue
+        if depth:
+            if text[i] == "\n":
+                out.append("\n")
+        else:
+            out.append(text[i])
+        i += 1
+    return "".join(out)
+
+
+def _matching(text, i, open_="(", close=")"):
+    """Index of the bracket closing the one at i, or -1."""
     depth = 0
     for j in range(i, len(text)):
-        if text[j] == "(":
+        if text[j] == open_:
             depth += 1
-        elif text[j] == ")":
+        elif text[j] == close:
             depth -= 1
             if depth == 0:
                 return j
     return -1
 
 
-def scan_aiken(rel, lines):
+def _at_line_start(text, pos):
+    """True when pos is the first character of a line."""
+    return pos == 0 or text[pos - 1] == "\n"
+
+
+def obligation(tool, rel, name, statement):
+    return {"id": f"{tool}:{rel}:{name}", "tool": tool, "file": rel,
+            "name": name, "statement": norm(statement)}
+
+
+# ------------------------------------------------------------------ scanners
+
+def scan_aiken(rel, text, _ctx):
     """One obligation per test: its name, its generators, its polarity."""
-    text = "\n".join(strip_comment(l.rstrip("\n"), ".ak") for l in lines)
+    text = strip_line_comments(text, "//")
     out = []
     for m in AIKEN_TEST_HEAD.finditer(text):
         name = m.group(1)
-        close = _matching_paren(text, m.end() - 1)
+        close = _matching(text, m.end() - 1)
         if close < 0:
             continue
         rest = text[close + 1:]
@@ -130,13 +265,11 @@ def scan_aiken(rel, lines):
             continue
         params = norm(text[m.end():close])
         fail = bool(re.match(r"\s*fail\b", rest[:brace]))
-        statement = f"({params}){' fail' if fail else ''}"
-        out.append({"id": f"aiken:{rel}:{name}", "tool": "aiken", "file": rel,
-                    "name": name, "statement": statement})
+        out.append(obligation("aiken", rel, name, f"({params}){' fail' if fail else ''}"))
     return out
 
 
-def scan_dafny(rel, lines):
+def scan_dafny(rel, text, _ctx):
     """One obligation per declaration that carries a specification.
 
     Clauses are sorted, so reordering them is not a change; a declaration
@@ -147,28 +280,203 @@ def scan_dafny(rel, lines):
 
     def flush():
         if current and clauses:
-            out.append({
-                "id": f"dafny:{rel}:{current}", "tool": "dafny", "file": rel,
-                "name": current, "statement": " ; ".join(sorted(clauses)),
-            })
+            out.append(obligation("dafny", rel, current, " ; ".join(sorted(clauses))))
 
-    for raw in lines:
-        line = strip_comment(raw, ".dfy")
-        d = DAFNY_DECL.match(line)
+    for raw in strip_line_comments(text, "//").split("\n"):
+        d = DAFNY_DECL.match(raw)
         if d:
             flush()
             current, clauses = d.group(1), []
             continue
-        c = DAFNY_CLAUSE.match(line)
+        c = DAFNY_CLAUSE.match(raw)
         if c and current:
             clauses.append(norm(f"{c.group(1)} {c.group(2)}"))
     flush()
     return out
 
 
+def _lean_statement(text, start):
+    depth, i, n = 0, start, len(text)
+    while i < n:
+        c = text[i]
+        if c in LEAN_OPEN:
+            depth += 1
+        elif c in LEAN_CLOSE:
+            depth = max(0, depth - 1)
+        elif depth == 0:
+            if text.startswith(":=", i):
+                return text[start:i]
+            if c == "\n":
+                rest = text[i + 1:]
+                if rest.lstrip(" \t").startswith("|"):
+                    return text[start:i]
+                if rest[:1] not in ("", " ", "\t", "\n") and LEAN_TOP.match(rest):
+                    return text[start:i]
+        i += 1
+    return text[start:]
+
+
+def scan_lean(rel, text, _ctx):
+    text = strip_line_comments(strip_block(text, "/-", "-/"), "--")
+    return [obligation("lean", rel, m.group(2), _lean_statement(text, m.end()))
+            for m in LEAN_DECL.finditer(text)]
+
+
+def scan_coq(rel, text, _ctx):
+    text = strip_block(text, "(*", "*)")
+    out = []
+    for m in COQ_DECL.finditer(text):
+        e = COQ_END.search(text, m.end())
+        out.append(obligation("coq", rel, m.group(2),
+                              text[m.end():e.start() if e else len(text)]))
+    return out
+
+
+def _isa_statement(text, start):
+    i, n, quote, cart = start, len(text), False, 0
+    while i < n:
+        c = text[i]
+        if quote:
+            if c == '"':
+                quote = False
+        elif c == "‹" or text.startswith("\\<open>", i):
+            cart += 1
+        elif c == "›" or text.startswith("\\<close>", i):
+            cart = max(0, cart - 1)
+        elif cart == 0:
+            if c == '"':
+                quote = True
+            elif c == "\n":
+                rest = text[i + 1:]
+                if rest[:1] not in ("", " ", "\t", "\n") and ISA_TOP.match(rest):
+                    return text[start:i]
+            elif (i == start or not (text[i - 1].isalnum() or text[i - 1] in "_'")) \
+                    and ISA_PROOF.match(text, i):
+                return text[start:i]
+        i += 1
+    return text[start:]
+
+
+def scan_isabelle(rel, text, _ctx):
+    text = strip_block(text, "(*", "*)")
+    return [obligation("isabelle", rel, m.group(2), _isa_statement(text, m.end()))
+            for m in ISA_DECL.finditer(text)]
+
+
+def _tla_clean(text):
+    return strip_line_comments(strip_block(text, "(*", "*)"), "\\*")
+
+
+def _tla_body(text, start):
+    """Text from start to the end of the definition or theorem statement."""
+    pos = start
+    while True:
+        nl = text.find("\n", pos)
+        if nl < 0:
+            return text[start:]
+        rest = text[nl + 1:]
+        if TLA_PROOF.match(rest.lstrip(" \t")):
+            return text[start:nl]
+        if rest[:1] not in ("", " ", "\t", "\n") and TLA_TOP.match(rest):
+            return text[start:nl]
+        pos = nl + 1
+
+
+def tla_definitions(rel, text):
+    """{name: body} for every column-0 `Name == body` in a module."""
+    text = _tla_clean(text)
+    return {m.group(1): norm(_tla_body(text, m.end())) for m in TLA_DEF.finditer(text)}
+
+
+def scan_tla(rel, text, _ctx):
+    text = _tla_clean(text)
+    return [obligation("tla", rel, m.group(2), _tla_body(text, m.end()))
+            for m in TLA_THEOREM.finditer(text)]
+
+
+def looks_like_tlc(text):
+    return any(CFG_KEY.match(l) and CFG_KEY.match(l).group(1).upper().startswith(CFG_MARKS)
+               for l in text.split("\n"))
+
+
+def scan_tlc(rel, text, ctx):
+    """Every INVARIANT and PROPERTY a TLC config names, bound to its definition.
+
+    Deleting the line from the .cfg removes the obligation; editing the
+    operator it names changes it. Both are the moves a green model check
+    hides, so both are recorded.
+    """
+    text = _tla_clean(text)
+    kind, names = None, []
+    for line in text.split("\n"):
+        m = CFG_KEY.match(line)
+        if m:
+            key = m.group(1).upper()
+            kind = ("INVARIANT" if key.startswith("INVARIANT")
+                    else "PROPERTY" if key.startswith("PROPERT") else None)
+            tokens = m.group(2).split()
+        else:
+            tokens = line.split()
+        if kind:
+            names.extend((kind, t) for t in tokens)
+    defs = ctx.get("tla_defs", {})
+    here = os.path.dirname(rel)
+    base = os.path.splitext(os.path.basename(rel))[0]
+    out = []
+    for kind, name in names:
+        cands = defs.get(name, [])
+        # The module beside the config, then anything else tracked.
+        cands = sorted(cands, key=lambda c: (
+            0 if c[0] == os.path.join(here, base + ".tla").replace(os.sep, "/") else
+            1 if os.path.dirname(c[0]) == here else 2))
+        stmt = (f"{kind} {name} == {cands[0][1]}" if cands
+                else f"{kind} {name} (definition not found in a tracked .tla module)")
+        out.append(obligation("tla", rel, name, stmt))
+    return out
+
+
+def scan_kani(rel, text, _ctx):
+    if "kani::" not in text:
+        return []
+    text = strip_line_comments(strip_block(text, "/*", "*/"), "//")
+    out, pos = [], 0
+    while True:
+        j = text.find("#[", pos)
+        if j < 0:
+            break
+        attrs, k = [], j
+        while True:
+            m = re.match(r"\s*#\[", text[k:])
+            if not m:
+                break
+            open_i = k + m.end() - 1
+            close_i = _matching(text, open_i, "[", "]")
+            if close_i < 0:
+                break
+            attrs.append(text[open_i + 1:close_i])
+            k = close_i + 1
+        pos = max(k, j + 2)
+        fm = RUST_FN.match(text, k)
+        if not fm or not any("kani::" in a for a in attrs):
+            continue
+        name = fm.group(1)
+        ends = [x for x in (text.find("{", fm.end()), text.find(";", fm.end())) if x >= 0]
+        sig = text[fm.end():min(ends)] if ends else ""
+        kani_attrs = sorted(norm(a) for a in attrs if "kani::" in a)
+        stmt = "; ".join(f"#[{a}]" for a in kani_attrs) + f" | fn {name}{norm(sig)}"
+        out.append(obligation("kani", rel, name, stmt))
+    return out
+
+
+SCANNERS = {
+    "aiken": scan_aiken, "dafny": scan_dafny, "lean": scan_lean, "coq": scan_coq,
+    "isabelle": scan_isabelle, "kani": scan_kani,
+}
+
+
 def scan(root):
     """Return (obligations_by_id, uncovered_tools_present)."""
-    obligations, uncovered = {}, set()
+    obligations, uncovered, texts = {}, set(), {}
     for rel in tracked_files(root):
         suffix = os.path.splitext(rel)[1]
         if suffix in UNCOVERED:
@@ -178,15 +486,31 @@ def scan(root):
             continue
         try:
             with open(os.path.join(root, rel), encoding="utf-8", errors="replace") as fh:
-                lines = fh.readlines()
+                texts[rel] = fh.read()
         except OSError:
             continue
-        found = scan_aiken(rel, lines) if suffix == ".ak" else scan_dafny(rel, lines)
+    # TLC configs point at operators defined in modules, so the modules are
+    # read first.
+    ctx = {"tla_defs": {}}
+    for rel, text in texts.items():
+        if rel.endswith(".tla"):
+            for name, body in tla_definitions(rel, text).items():
+                ctx["tla_defs"].setdefault(name, []).append((rel, body))
+    for rel, text in texts.items():
+        suffix = os.path.splitext(rel)[1]
+        if suffix == ".tla":
+            found = scan_tla(rel, text, ctx)
+        elif suffix == ".cfg":
+            found = scan_tlc(rel, text, ctx) if looks_like_tlc(text) else []
+        else:
+            found = SCANNERS[COVERED[suffix]](rel, text, ctx)
         for o in found:
             o["statementSha"] = sha(o["statement"])
             obligations[o["id"]] = o
     return obligations, uncovered
 
+
+# ------------------------------------------------------------------ baseline
 
 def load_baseline(root):
     p = os.path.join(root, BASELINE)
@@ -199,14 +523,22 @@ def load_baseline(root):
         raise SystemExit(f"spec-guard: {p} is not readable JSON: {e}")
 
 
+def _save(root, doc):
+    p = os.path.join(root, BASELINE)
+    with open(p, "w", encoding="utf-8", newline="\n") as fh:
+        json.dump(doc, fh, indent=2, sort_keys=True)
+        fh.write("\n")
+    return p
+
+
 def write_baseline(root, obligations):
     """Record the spec section, preserving everything else in the file.
 
     proof-guard owns `counts` in this same file and rewrites it on its own
     `--baseline`; each script must leave the other's section alone or arming
-    one ratchet would silently disarm the other.
+    one ratchet would silently disarm the other. The `axioms` section is
+    left alone here for the same reason.
     """
-    p = os.path.join(root, BASELINE)
     doc = load_baseline(root) or {"version": 1}
     doc["spec"] = {
         "note": ("Obligation statements, hashed. spec-guard.py --check fails "
@@ -218,94 +550,404 @@ def write_baseline(root, obligations):
             for oid, o in sorted(obligations.items())
         },
     }
-    with open(p, "w", encoding="utf-8", newline="\n") as fh:
-        json.dump(doc, fh, indent=2, sort_keys=True)
-        fh.write("\n")
-    return p
+    return _save(root, doc)
+
+
+def _work_file(root):
+    for name in ("WORK.md", "LOOP.md"):
+        p = os.path.join(root, name)
+        if os.path.exists(p):
+            try:
+                with open(p, encoding="utf-8", errors="replace") as fh:
+                    return fh.read()
+            except OSError:
+                return ""
+    return ""
+
+
+def _section(root, heading):
+    m = re.search(rf"^##\s+{heading}\s*$(.*?)(?=^##\s|\Z)", _work_file(root),
+                  re.S | re.M | re.I)
+    return m.group(1) if m else ""
 
 
 def work_text(root):
     """The Decisions section of the repo's work file, if there is one."""
-    for name in ("WORK.md", "LOOP.md"):
-        p = os.path.join(root, name)
-        if not os.path.exists(p):
-            continue
-        try:
-            with open(p, encoding="utf-8", errors="replace") as fh:
-                text = fh.read()
-        except OSError:
-            continue
-        m = re.search(r"^##\s+Decisions\s*$(.*?)(?=^##\s|\Z)", text,
-                      re.S | re.M | re.I)
-        return m.group(1) if m else ""
-    return ""
+    return _section(root, "Decisions")
 
 
-def check(root):
+# ------------------------------------------------------------------ DoD tails
+
+def dod_findings(root, now, recorded):
+    """A checked box that cites an obligation is a claim the scan must back."""
+    findings, notes = [], []
+    for line in _section(root, "Definition of Done").split("\n"):
+        m = DOD_LINE.match(line)
+        if not m:
+            continue
+        ids = OBLIGATION_ID.findall(m.group("tail"))
+        if not ids or m.group("box") == " ":
+            continue
+        for oid in ids:
+            if oid not in now:
+                findings.append((oid, f"DoD CLAIM — the checked line '{m.group('claim')[:60]}' "
+                                      f"cites an obligation that does not exist"))
+            elif recorded is not None and oid not in recorded:
+                notes.append(f"DoD line cites {oid}, which is not in the baseline yet "
+                             f"(re-record to lock it in)")
+    return findings, notes
+
+
+# ------------------------------------------------------------------ taxonomy
+
+def load_attacks(root):
+    p = os.path.join(root, ATTACKS)
+    if not os.path.exists(p):
+        return None, None
+    try:
+        with open(p, encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except (OSError, json.JSONDecodeError) as e:
+        return None, f"{ATTACKS} is not readable JSON ({e})"
+    classes = doc.get("classes") if isinstance(doc, dict) else None
+    if not isinstance(classes, list) or not all(
+            isinstance(c, dict) and isinstance(c.get("id"), str) and c["id"] for c in classes):
+        return None, f"{ATTACKS} needs a 'classes' list of objects with an 'id'"
+    waived = doc.get("waived", {})
+    if not isinstance(waived, dict):
+        return None, f"{ATTACKS} 'waived' must be an object of id: reason"
+    return doc, None
+
+
+def attack_findings(root, now):
+    doc, problem = load_attacks(root)
+    if problem:
+        return [("attacks", f"UNREADABLE — {problem}; every class counts as unspecified")], []
+    if doc is None:
+        return [], []
+    findings, notes = [], []
+    by_name = {}
+    for o in now.values():
+        if o["tool"] == "aiken":
+            by_name.setdefault(o["name"], []).append(o)
+    if not any(o["tool"] == "aiken" for o in now.values()) and not any(
+            rel.endswith(".ak") for rel in tracked_files(root)):
+        notes.append(f"{ATTACKS} is present but no Aiken file is tracked — the taxonomy "
+                     f"gates nothing here")
+        return findings, notes
+    waived = doc.get("waived", {})
+    for cls in doc["classes"]:
+        cid = cls["id"]
+        if cid in waived:
+            reason = waived[cid] if isinstance(waived[cid], str) else ""
+            if len(reason.strip()) < MIN_REASON:
+                findings.append((f"attack:{cid}", f"WAIVED WITHOUT A REASON — a waiver needs "
+                                                  f"at least {MIN_REASON} characters saying why "
+                                                  f"this class cannot apply"))
+            else:
+                notes.append(f"attack class {cid} waived: {reason.strip()[:80]}")
+            continue
+        tests = by_name.get(cid)
+        if not tests:
+            prop = cls.get("property") or "(no property text in the manifest)"
+            findings.append((f"attack:{cid}", f"UNSPECIFIED — no Aiken test named `{cid}`. "
+                                              f"The property to state: {prop}"))
+            continue
+        if not any(" via " in t["statement"] for t in tests):
+            notes.append(f"attack class {cid} is a unit test, not a property over aiken/fuzz "
+                         f"(no `via` generator in its signature)")
+    return findings, notes
+
+
+# ------------------------------------------------------------------ axioms
+
+def _probe(root, name, body):
+    d = os.path.join(root, AXIOM_SCRATCH)
+    os.makedirs(d, exist_ok=True)
+    p = os.path.join(d, name)
+    with open(p, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(body)
+    return p
+
+
+def _run(cmd, root):
+    try:
+        r = subprocess.run(cmd, cwd=root, capture_output=True, text=True, timeout=900)
+    except (OSError, subprocess.SubprocessError) as e:
+        return None, str(e)
+    return r.returncode, (r.stdout or "") + (r.stderr or "")
+
+
+def audit_lean(root, o):
+    if not shutil.which("lake"):
+        return "not-run", None, "lake is not on PATH"
+    module = o["file"][:-len(".lean")].replace("/", ".")
+    probe = _probe(root, "Probe.lean", f"import {module}\n#print axioms {o['name']}\n")
+    rc, out = _run(["lake", "env", "lean", probe], root)
+    if rc is None:
+        return "unreadable", None, f"lake env lean could not run: {out}"
+    m = LEAN_AXIOMS.search(out)
+    if m:
+        return "ok", sorted(x.strip() for x in m.group(2).split(",") if x.strip()), ""
+    if LEAN_NONE.search(out):
+        return "ok", [], ""
+    return "unreadable", None, f"lake env lean exited {rc} without an axiom listing: {norm(out)[:200]}"
+
+
+def coq_project(root):
+    """[(dir, logical)] from _CoqProject -R/-Q lines, and the flags to pass on."""
+    p = os.path.join(root, "_CoqProject")
+    if not os.path.exists(p):
+        return None, []
+    maps, flags = [], []
+    with open(p, encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            toks = line.split("#", 1)[0].split()
+            i = 0
+            while i < len(toks):
+                if toks[i] in ("-R", "-Q") and i + 2 < len(toks):
+                    logical = toks[i + 2].strip('"')
+                    maps.append((toks[i + 1], logical))
+                    flags += [toks[i], toks[i + 1], logical]
+                    i += 3
+                elif toks[i] == "-I" and i + 1 < len(toks):
+                    flags += [toks[i], toks[i + 1]]
+                    i += 2
+                else:
+                    i += 1
+    return maps, flags
+
+
+def audit_coq(root, o):
+    if not shutil.which("coqc"):
+        return "not-run", None, "coqc is not on PATH"
+    maps, flags = coq_project(root)
+    if maps is None:
+        return "not-run", None, "no _CoqProject at the repo root to resolve the module path"
+    module = None
+    for d, logical in maps:
+        dn = os.path.normpath(d).replace(os.sep, "/")
+        prefix = "" if dn == "." else dn.rstrip("/") + "/"
+        if o["file"].startswith(prefix):
+            rest = o["file"][len(prefix):-2].replace("/", ".")
+            module = f"{logical}.{rest}" if logical else rest
+            break
+    if module is None:
+        return "not-run", None, f"no -R/-Q entry in _CoqProject covers {o['file']}"
+    probe = _probe(root, "Probe.v", f"Require Import {module}.\nPrint Assumptions {o['name']}.\n")
+    rc, out = _run(["coqc", "-q", *flags, probe], root)
+    if rc is None:
+        return "unreadable", None, f"coqc could not run: {out}"
+    if "Closed under the global context" in out:
+        return "ok", [], ""
+    m = re.search(r"Axioms:\n(.*)", out, re.S)
+    if rc == 0 and m:
+        names = []
+        for line in m.group(1).split("\n"):
+            if not line.strip():
+                break
+            nm = re.match(r"^(\S+)\s*:", line)
+            if nm:
+                names.append(nm.group(1))
+        return "ok", sorted(set(names)), ""
+    return "unreadable", None, f"coqc exited {rc} without an assumption listing: {norm(out)[:200]}"
+
+
+def audit_dafny(root, o):
+    if not shutil.which("dafny"):
+        return "not-run", None, "dafny is not on PATH"
+    files = ([o["file"]] if o["file"] != "*"
+             else [r for r in tracked_files(root) if r.endswith(".dfy")])
+    if not files:
+        return "not-run", None, "no tracked .dfy file to audit"
+    rc, out = _run(["dafny", "audit", "--report-format", "text", *files], root)
+    if rc is None:
+        return "unreadable", None, f"dafny audit could not run: {out}"
+    if rc != 0:
+        return "unreadable", None, f"dafny audit exited {rc}: {norm(out)[:200]}"
+    rows = []
+    for line in out.split("\n"):
+        m = DAFNY_AUDIT.match(line.strip())
+        if m:
+            # Line and column are dropped: a moved declaration is not a new
+            # assumption, a new declaration with an assumption is.
+            rows.append(norm(f"{m.group('file')}:{m.group('rest')}"))
+        elif ".dfy(" in line and "):" in line:
+            rows.append(norm(line))
+    if o["name"] != "*":
+        rows = [r for r in rows if o["name"] in r]
+    return "ok", sorted(set(rows)), ""
+
+
+AUDITS = {"lean": audit_lean, "coq": audit_coq, "dafny": audit_dafny}
+NO_AUDIT = {
+    "aiken": "Aiken has no axiom mechanism; its hatches are proof-guard's counts",
+    "kani": "Kani has no assumption listing; kani::assume is a proof-guard count",
+    "isabelle": "no batch assumption listing is wired for Isabelle yet",
+    "tla": "TLAPS has no per-theorem assumption listing this script reads",
+}
+
+
+def resolve_headline(oid, now):
+    """The obligation an axiom headline names, or a synthetic project-wide one."""
+    if oid in now:
+        return now[oid]
+    if oid == "dafny:*":
+        return {"id": oid, "tool": "dafny", "file": "*", "name": "*"}
+    return None
+
+
+def audit(root, oid, now):
+    o = resolve_headline(oid, now)
+    if o is None:
+        return "unknown", None, "is not an obligation in the current scan"
+    fn = AUDITS.get(o["tool"])
+    if fn is None:
+        return "unsupported", None, NO_AUDIT.get(o["tool"], "no audit for this tool")
+    return fn(root, o)
+
+
+def write_axioms(root, headline, recorded):
+    doc = load_baseline(root) or {"version": 1}
+    doc["axioms"] = {
+        "note": ("Assumption sets the prover itself reported for each headline "
+                 "obligation. spec-guard.py --check fails when a headline depends "
+                 "on an axiom that is not recorded here; fewer is always allowed."),
+        "headline": sorted(headline),
+        "recorded": {k: sorted(v) for k, v in sorted(recorded.items())},
+    }
+    return _save(root, doc)
+
+
+def axiom_findings(root, base, now):
+    findings, notes = [], []
+    section = (base or {}).get("axioms") or {}
+    recorded = section.get("recorded") or {}
+    for oid in section.get("headline") or []:
+        status, axioms, detail = audit(root, oid, now)
+        if status == "ok":
+            was = set(recorded.get(oid) or [])
+            new = sorted(set(axioms) - was)
+            gone = sorted(was - set(axioms))
+            if new:
+                findings.append((oid, f"NEW AXIOM — the prover reports {', '.join(new)} in "
+                                      f"this theorem's dependency set and the baseline does "
+                                      f"not (recorded: {', '.join(sorted(was)) or 'none'})"))
+            elif gone:
+                notes.append(f"{oid} no longer depends on {', '.join(gone)} (always allowed; "
+                             f"re-record to lock it in)")
+            else:
+                notes.append(f"{oid}: assumptions unchanged "
+                             f"({', '.join(sorted(was)) or 'none'})")
+        elif status == "not-run":
+            notes.append(f"AXIOM AUDIT NOT RUN for {oid}: {detail} — this headline is "
+                         f"unverified in this run, which is not the same as clean")
+        elif status == "unsupported":
+            notes.append(f"axiom audit unavailable for {oid}: {detail}")
+        else:
+            findings.append((oid, f"AXIOM AUDIT {status.upper()} — {detail}"))
+    return findings, notes
+
+
+# ------------------------------------------------------------------ check
+
+def check(root, axioms_only=False):
     """Return (findings, notes). A finding is an unjustified weakening."""
     base = load_baseline(root)
     now, uncovered = scan(root)
-    notes = []
+    notes, findings = [], []
+    if axioms_only:
+        return axiom_findings(root, base, now)
     if uncovered:
         notes.append(
             f"NOT covered by this ratchet: {', '.join(sorted(uncovered))} "
             f"file(s) are tracked but their obligations are not parsed yet")
-    if base is None or "spec" not in base:
+    recorded = (base or {}).get("spec", {}).get("obligations") if base else None
+    if recorded is None:
         if now:
             notes.append(
                 f"{len(now)} obligation(s) found but the spec ratchet is NOT "
                 f"armed. Run: spec-guard.py --baseline")
-        return [], notes
-    recorded = base["spec"].get("obligations", {})
-    justified = work_text(root)
-    findings = []
-    # A file rename moves every obligation in it. That is not a weakening, so
-    # an id that vanished while an identical statement appeared under the same
-    # name elsewhere is treated as the same obligation, relocated.
-    moved = {}
-    for oid, was in recorded.items():
-        if oid in now:
-            continue
-        for nid, o in now.items():
-            if (nid not in recorded and o["name"] == was.get("name")
-                    and o["tool"] == was.get("tool")
-                    and o["statementSha"] == was.get("statementSha")):
-                moved[oid] = nid
-                break
-    for oid, was in sorted(recorded.items()):
-        if oid in moved:
-            notes.append(f"{oid} moved to {moved[oid]} (statement unchanged)")
-            continue
-        if oid in justified:
-            notes.append(f"{oid} changed, and a Decisions row names it")
-            continue
-        if oid not in now:
-            findings.append(
-                (oid, f"REMOVED — {was.get('tool')} obligation '{was.get('name')}' "
-                      f"is gone from {was.get('file')}"))
-        elif now[oid]["statementSha"] != was.get("statementSha"):
-            findings.append(
-                (oid, f"CHANGED — the statement is not what was recorded\n"
-                      f"        now: {now[oid]['statement'][:120]}"))
-    added = [oid for oid in now if oid not in recorded and oid not in moved.values()]
-    if added:
-        notes.append(f"{len(added)} obligation(s) added since the baseline "
-                     f"(always allowed; re-record to lock them in)")
+    else:
+        justified = work_text(root)
+        # A file rename moves every obligation in it. That is not a weakening,
+        # so an id that vanished while an identical statement appeared under
+        # the same name elsewhere is treated as the same obligation, relocated.
+        moved = {}
+        for oid, was in recorded.items():
+            if oid in now:
+                continue
+            for nid, o in now.items():
+                if (nid not in recorded and o["name"] == was.get("name")
+                        and o["tool"] == was.get("tool")
+                        and o["statementSha"] == was.get("statementSha")):
+                    moved[oid] = nid
+                    break
+        for oid, was in sorted(recorded.items()):
+            if oid in moved:
+                notes.append(f"{oid} moved to {moved[oid]} (statement unchanged)")
+                continue
+            if oid in justified:
+                notes.append(f"{oid} changed, and a Decisions row names it")
+                continue
+            if oid not in now:
+                findings.append(
+                    (oid, f"REMOVED — {was.get('tool')} obligation '{was.get('name')}' "
+                          f"is gone from {was.get('file')}"))
+            elif now[oid]["statementSha"] != was.get("statementSha"):
+                findings.append(
+                    (oid, f"CHANGED — the statement is not what was recorded\n"
+                          f"        now: {now[oid]['statement'][:120]}"))
+        added = [oid for oid in now if oid not in recorded and oid not in moved.values()]
+        if added:
+            notes.append(f"{len(added)} obligation(s) added since the baseline "
+                         f"(always allowed; re-record to lock them in)")
+    f, n = dod_findings(root, now, recorded)
+    findings += f
+    notes += n
+    f, n = attack_findings(root, now)
+    findings += f
+    notes += n
+    f, n = axiom_findings(root, base, now)
+    findings += f
+    notes += n
     return findings, notes
 
+
+# ------------------------------------------------------------------ CLI
 
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--root", default=".")
+    ap.add_argument("--axioms", action="store_true",
+                    help="the prover's assumption audit over headline theorems "
+                         "(with --scan, --baseline or --check)")
+    ap.add_argument("--headline", action="append", default=[], metavar="ID",
+                    help="with --baseline --axioms: an obligation id to audit "
+                         "(repeatable; dafny:* audits every tracked .dfy)")
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--scan", action="store_true")
     g.add_argument("--baseline", action="store_true")
     g.add_argument("--check", action="store_true")
     a = ap.parse_args()
+    root = a.root
 
     if a.scan:
-        obligations, uncovered = scan(a.root)
+        obligations, uncovered = scan(root)
+        if a.axioms:
+            base = load_baseline(root) or {}
+            heads = a.headline or ((base.get("axioms") or {}).get("headline") or [])
+            if not heads:
+                print("spec-guard: no headline theorems named; pass --headline <id>")
+                return 2
+            for oid in heads:
+                status, axioms, detail = audit(root, oid, obligations)
+                if status == "ok":
+                    print(f"  {oid}: {', '.join(axioms) or 'no axioms'}")
+                else:
+                    print(f"  {oid}: {status.upper()} — {detail}")
+            return 0
         if not obligations and not uncovered:
             print("spec-guard: no obligations in a covered language — dormant")
             return 0
@@ -315,21 +957,52 @@ def main():
             print(f"      {o['statement'][:110]}")
         for tool in sorted(uncovered):
             print(f"  NOT COVERED: {tool} obligations are not parsed yet")
+        doc, problem = load_attacks(root)
+        if problem:
+            print(f"  attack taxonomy: UNREADABLE — {problem}")
+        elif doc:
+            names = {o["name"] for o in obligations.values() if o["tool"] == "aiken"}
+            for cls in doc["classes"]:
+                state = ("specified" if cls["id"] in names
+                         else "waived" if cls["id"] in doc.get("waived", {})
+                         else "UNSPECIFIED")
+                print(f"  attack class {cls['id']}: {state}")
         return 0
 
     if a.baseline:
-        obligations, uncovered = scan(a.root)
-        p = write_baseline(a.root, obligations)
+        obligations, uncovered = scan(root)
+        if a.axioms:
+            base = load_baseline(root) or {}
+            prior = (base.get("axioms") or {})
+            heads = a.headline or prior.get("headline") or []
+            if not heads:
+                print("spec-guard: name the headline theorems to audit: "
+                      "--baseline --axioms --headline <obligation id>", file=sys.stderr)
+                return 2
+            recorded = {}
+            for oid in heads:
+                status, axioms, detail = audit(root, oid, obligations)
+                if status != "ok":
+                    print(f"spec-guard: cannot record an axiom set for {oid}: "
+                          f"{status.upper()} — {detail}", file=sys.stderr)
+                    return 1
+                recorded[oid] = axioms
+                print(f"spec-guard: {oid} depends on {', '.join(axioms) or 'no axioms'}")
+            p = write_axioms(root, heads, recorded)
+            print(f"spec-guard: recorded {len(recorded)} headline assumption set(s) into {p}")
+            return 0
+        p = write_baseline(root, obligations)
         print(f"spec-guard: recorded {len(obligations)} obligation(s) into {p}")
         for tool in sorted(uncovered):
             print(f"spec-guard: NOT COVERED — {tool} obligations are not parsed yet")
         return 0
 
-    findings, notes = check(a.root)
+    findings, notes = check(root, axioms_only=a.axioms)
     for n in notes:
         print(f"spec-guard: {n}")
     if not findings:
-        print("spec-guard: green — no recorded obligation weakened")
+        print("spec-guard: green — no recorded obligation weakened"
+              if not a.axioms else "spec-guard: green — no headline gained an axiom")
         return 0
     print("\nspec-guard: RED — a proof obligation got weaker\n", file=sys.stderr)
     for oid, detail in findings:
@@ -338,7 +1011,10 @@ def main():
         "\n  A statement that changed or vanished is a weaker claim than the one\n"
         "  that was recorded, and every checker still exits 0 on it. Restore it,\n"
         "  or justify the change: add a Decisions row naming the obligation id,\n"
-        "  or re-record with --baseline so the weakening lands in a reviewed diff.",
+        "  or re-record with --baseline so the weakening lands in a reviewed diff.\n"
+        "  A DoD claim, an unspecified attack class or a new axiom is the same\n"
+        "  trade in a different place: write the test, name the waiver, or\n"
+        "  re-record — in a diff someone reads.",
         file=sys.stderr)
     return 1
 
