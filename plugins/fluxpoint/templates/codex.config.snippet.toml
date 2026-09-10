@@ -1,6 +1,6 @@
 # Codex: enable the fluxpoint plugin for every session in this repo.
 # Pair with, once per machine:
-#   codex plugin marketplace add Flux-Point-Studios/claude-plugins
+#   codex plugin marketplace add Flux-Point-Studios/fluxpoint-plugins
 # The Claude Code equivalent is templates/settings.snippet.json.
 [plugins."fluxpoint@fluxpoint"]
 enabled = true
