@@ -1,0 +1,5 @@
+interface:
+  display_name: "fluxpoint: graph-design"
+  short_description: "Turn a campaign goal into a validated WORK.md IR"
+policy:
+  allow_implicit_invocation: false

@@ -3,8 +3,10 @@ description: Adversarial review of the current diff with the red-team-reviewer a
 argument-hint: [optional focus, e.g. "the withdraw path"]
 ---
 
-Use the red-team-reviewer subagent to attack the uncommitted work in this
-repo: `git diff HEAD` plus untracked files. "$ARGUMENTS" narrows the focus
+Use the red-team-reviewer agent — Claude Code's subagent of that name; under
+Codex a subagent, or an inline pass, given
+`${CLAUDE_PLUGIN_ROOT}/agents/red-team-reviewer.md` as its instructions — to
+attack the uncommitted work in this repo: `git diff HEAD` plus untracked files. "$ARGUMENTS" narrows the focus
 if provided. Have it report only exploitable findings with a concrete
 attack path, then decide SHIP or BLOCK. If it reports BLOCK, treat the
 findings as harness-red: fix them before stopping.

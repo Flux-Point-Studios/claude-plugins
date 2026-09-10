@@ -12,7 +12,7 @@ manages or reimplement its steps — deleting a repo's work-state files is
 not something to drive from prose.
 
 Resolve the plugin root first: `${CLAUDE_PLUGIN_ROOT}`, else
-`find ~/.claude/plugins -type d -name fluxpoint | head -1`. Call it `$ROOT`.
+`find ~/.claude/plugins ~/.codex/plugins/cache -type d -name fluxpoint 2>/dev/null | head -1`. Call it `$ROOT`.
 
 1. **Plan.** `bash "$ROOT/scripts/py.sh" migrate.py --plan`
    Show the user its output verbatim. It touches nothing. If it reports

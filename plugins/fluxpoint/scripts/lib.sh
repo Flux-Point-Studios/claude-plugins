@@ -99,6 +99,69 @@ print(d if isinstance(d, str) else json.dumps(d))' "$1" 2>/dev/null
   fi
 }
 
+# fpl_edit_paths — reads a PostToolUse payload on stdin and prints one line
+# per file the tool call wrote, as "<op> <path>": A added, U updated, D
+# deleted. Two payload shapes reach the file-writing hook. Claude Code's
+# Write, Edit and MultiEdit carry tool_input.file_path, printed as-is. Codex's
+# apply_patch, which its matcher aliases fire for Write|Edit, carries the
+# whole patch in tool_input.command, so the paths are read out of the patch's
+# own headers (`*** Add File:`, `*** Update File:`, `*** Move to:`,
+# `*** Delete File:`). Those are relative to the directory the patch was
+# applied in, and by the time a caller reads them the hook has cd'd to the
+# project root, so a path that does not resolve from here is re-based from
+# the payload's cwd. Prints nothing for a payload that names no file.
+fpl_edit_paths() {
+  # The payload is on stdin, so the script rides in as an argument.
+  "$FPL_PY" -c '
+import json, os, re, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+ti = d.get("tool_input") if isinstance(d.get("tool_input"), dict) else {}
+fp = ti.get("file_path")
+if isinstance(fp, str) and fp.strip():
+    print("U " + fp.strip())
+    sys.exit(0)
+if fp is not None:
+    sys.exit(0)
+text = ""
+for key in ("command", "patch", "input"):
+    v = ti.get(key)
+    if isinstance(v, str) and "*** " in v:
+        text = v
+        break
+if not text:
+    sys.exit(0)
+cwd = d.get("cwd") if isinstance(d.get("cwd"), str) else ""
+def rebase(p):
+    if os.path.isabs(p) or os.path.lexists(p) or not cwd:
+        return p
+    joined = os.path.join(cwd, p)
+    if os.path.lexists(joined):
+        try:
+            return os.path.relpath(joined, os.getcwd())
+        except ValueError:
+            return joined
+    return p
+entries = []
+for m in re.finditer(r"^\*\*\* (Add File|Update File|Delete File|Move to): (.+?)\s*$", text, re.M):
+    kind, path = m.group(1), m.group(2).strip()
+    if kind == "Move to":
+        if entries and entries[-1][0] == "U":
+            entries[-1] = ("U", path)
+        continue
+    entries.append(({"Add File": "A", "Update File": "U", "Delete File": "D"}[kind], path))
+seen = set()
+for op, path in entries:
+    path = rebase(path)
+    if (op, path) in seen:
+        continue
+    seen.add((op, path))
+    print(op + " " + path)
+' 2>/dev/null
+}
+
 # Move to the directory a hook should act in. Returns non-zero only if it cannot
 # reach one at all.
 #

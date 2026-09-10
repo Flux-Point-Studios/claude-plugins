@@ -94,6 +94,40 @@ validate_manifests() {
 }
 check_py()   { "$FPL_PY" -m py_compile "$1"; }
 
+# Two manifest sets describe each plugin: .claude-plugin/plugin.json, which
+# Claude Code reads, and the portable plugin.json Codex reads. The validator
+# step above catches version skew inside Claude's pair; this catches it
+# across the pair the validator cannot see, and holds the Codex surface
+# complete — every command needs its Codex entry point under skills/.
+manifests_in_sync() {
+  "$FPL_PY" - "$PLUGIN" "$SUB" .claude-plugin/marketplace.json .agents/plugins/marketplace.json <<'PY'
+import json, os, sys
+fail = 0
+mk = json.load(open(sys.argv[3], encoding="utf-8"))
+cmk = json.load(open(sys.argv[4], encoding="utf-8"))
+for root in sys.argv[1:3]:
+    a = json.load(open(os.path.join(root, ".claude-plugin", "plugin.json"), encoding="utf-8"))
+    b = json.load(open(os.path.join(root, "plugin.json"), encoding="utf-8"))
+    for key in ("name", "version", "description"):
+        if a.get(key) != b.get(key):
+            print(f"{root}: {key} differs between .claude-plugin/plugin.json and plugin.json"); fail = 1
+    entry = next((e for e in mk["plugins"] if e.get("name") == a["name"]), None)
+    if not entry or entry.get("version") != a["version"]:
+        print(f"{root}: .claude-plugin/marketplace.json does not carry version {a['version']}"); fail = 1
+    if not any(e.get("name") == a["name"] for e in cmk.get("plugins", [])):
+        print(f"{root}: missing from .agents/plugins/marketplace.json"); fail = 1
+    if b.get("$schema") != "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json":
+        print(f"{root}: plugin.json is not a portable Agent Plugins manifest"); fail = 1
+    for fn in sorted(os.listdir(os.path.join(root, "commands"))):
+        if not fn.endswith(".md"):
+            continue
+        skill = os.path.join(root, "skills", f"{a['name']}-{fn[:-3]}", "SKILL.md")
+        if not os.path.isfile(skill):
+            print(f"{root}: command {fn} has no Codex entry point at {skill}"); fail = 1
+sys.exit(fail)
+PY
+}
+
 compile_templates() {
   local t n=0
   for t in "$PLUGIN"/templates/WORK*.md; do
@@ -184,10 +218,11 @@ case "${1:---full}" in
     ;;
   --full)
     echo "fluxpoint harness --full"
-    for f in .claude-plugin/marketplace.json "$PLUGIN"/.claude-plugin/plugin.json \
+    for f in .claude-plugin/marketplace.json .agents/plugins/marketplace.json \
+             "$PLUGIN"/.claude-plugin/plugin.json "$PLUGIN"/plugin.json \
              "$PLUGIN"/contracts/*.json "$PLUGIN"/hooks/hooks.json \
              "$PLUGIN"/templates/settings.snippet.json \
-             "$SUB"/.claude-plugin/plugin.json "$SUB"/hooks/hooks.json; do
+             "$SUB"/.claude-plugin/plugin.json "$SUB"/plugin.json "$SUB"/hooks/hooks.json; do
       [ -f "$f" ] && step "json: ${f#"$PLUGIN"/}" check_json "$f"
     done
     for f in "$PLUGIN"/scripts/*.sh "$PLUGIN"/templates/*.sh scripts/*.sh; do
@@ -197,6 +232,7 @@ case "${1:---full}" in
       [ -f "$f" ] && step "py_compile: $(basename "$f")" check_py "$f"
     done
     step "manifests validate" validate_manifests
+    step "manifests agree across runtimes" manifests_in_sync
     step "portable interpreter invocations" portable_invocations
     step "templates compile + emit valid JS" compile_templates
     step "compiler invariants" "$FPL_PY" "$PLUGIN/tests/compile-test.py"

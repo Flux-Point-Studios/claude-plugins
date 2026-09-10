@@ -20,27 +20,42 @@ sweep-before-build doctrine has something deterministic to sweep.
   a projection instead of parsing prose or raw manifests. Root
   resolution: `--root <dir>`, else `CLAUDE_PROJECT_DIR`, else the current
   directory.
-- `hooks/hooks.json` — `SessionStart` with no matcher, so startup, resume,
-  clear, and post-compaction all get the `--check` output. The output is
-  factual statements only; a stale manifest is reported, never commanded.
-  A second SessionStart hook runs `memory-lint.mjs` over the workspace's
-  memory files (see below).
+- `hooks/hooks.json` — one hook set for Claude Code and Codex.
+  `SessionStart` with no matcher, so startup, resume, clear, and
+  post-compaction all get the `--check` output; the output is factual
+  statements only, and a stale manifest is reported, never commanded. A
+  second `SessionStart` hook runs `memory-lint.mjs` over the workspace's
+  memory files, and a `PostToolUse` hook on file writes runs the
+  prose-smell gate (both below).
 - `commands/` — `/substrate:init` (onboard a workspace), `/substrate:status`
   (run and interpret `--check`), `/substrate:emit` (regenerate, and keep the
-  manifest edit in the same commit as the primitive it describes).
-- `templates/DOCTRINE.snippet.md` — the sweep doctrine, ready to append to a
-  workspace `CLAUDE.md`.
+  manifest edit in the same commit as the primitive it describes),
+  `/substrate:smell` (scan prose before it ships). On Codex each is reached
+  through the matching `skills/substrate-<name>/` skill.
+- `templates/` — `DOCTRINE.snippet.md`, the sweep doctrine, ready to append
+  to a workspace `CLAUDE.md` or `AGENTS.md`; `WRITING.snippet.md`, the
+  outward-prose rules a regex cannot check.
 - `tests/` — `node:test` suites over temp-dir fixture workspaces; wired into
   this repo's `scripts/harness.sh --full`.
 
 ## Install
 
+Claude Code:
+
 ```
-/plugin marketplace add flux-point-studios/claude-plugins
+/plugin marketplace add Flux-Point-Studios/claude-plugins
 /plugin install substrate@fluxpoint
 ```
 
-Then `/substrate:init <repo>` in the workspace that contains your repos.
+Codex:
+
+```
+codex plugin marketplace add Flux-Point-Studios/claude-plugins
+```
+
+then enable `substrate@fluxpoint`. Onboard with `/substrate:init <repo>`
+(Claude Code) or `$substrate-init <repo>` (Codex) in the workspace that
+contains your repos.
 
 ## Manifest schema
 
@@ -99,8 +114,8 @@ under the root — with or without a `substrate.json` — may carry a
   "deliverables": [
     {
       "id": "vendor-bundle-round-3",
-      "recipient": "Derek",
-      "artifact": "sscl-wizard-bundle-2026-08-10.zip",
+      "recipient": "Avery",
+      "artifact": "vendor-bundle-2026-08-10.zip",
       "builtAt": "2026-08-10T22:00:00Z",
       "sentAt": null
     }
@@ -127,12 +142,12 @@ sentence a future reader can audit:
 ```json
 {
   "id": "billing-preview",
-  "recipient": "Mackenzie",
+  "recipient": "Jordan",
   "builtAt": "2026-08-15T15:06:19Z",
   "sentAt": null,
   "closedAt": "2026-08-20T00:00:00Z",
   "closedReason": "superseded",
-  "closedBecause": "reshaped 8/20 into a mailbox lane she tests through; the preview-HTML send no longer exists"
+  "closedBecause": "reshaped 8/20 into a self-serve preview the recipient tests directly; the emailed preview no longer exists"
 }
 ```
 
@@ -238,7 +253,7 @@ what a config is for.
 
 - Discovery is exactly one level under the root: `root/repo/substrate.json`.
   Nested workspaces and deeper monorepo packages are not scanned.
-- Staleness is a heuristic, not a proof. It compares the manifest file's
+- Staleness is a heuristic. It compares the manifest file's
   mtime against commit times (git) or file mtimes (declared non-git), so a
   fresh clone or copy — which resets mtimes — can defer a legitimate alarm
   until the next real commit. It answers "did code move after the manifest,"

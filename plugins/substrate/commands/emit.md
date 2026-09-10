@@ -7,7 +7,7 @@ Regenerate the substrate registry.
 
 1. Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/substrate-graph.mjs" --emit`.
    If `${CLAUDE_PLUGIN_ROOT}` expands empty in your shell, locate the plugin
-   with `find ~/.claude/plugins -type d -path '*substrate/scripts' | head -1`.
+   with `find ~/.claude/plugins ~/.codex/plugins/cache -type d -path '*substrate/scripts' 2>/dev/null | head -1`.
    Add `--root <dir>` when the repos do not live under the current project
    directory.
 2. On exit 1, every `problem:` line on stderr is a manifest defect —

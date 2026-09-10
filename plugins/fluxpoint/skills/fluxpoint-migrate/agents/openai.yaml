@@ -1,0 +1,5 @@
+interface:
+  display_name: "fluxpoint: migrate"
+  short_description: "Migrate a pre-1.0 repo onto the unified WORK.md contract, via the tested migrate script"
+policy:
+  allow_implicit_invocation: false

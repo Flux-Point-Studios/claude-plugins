@@ -1,0 +1,5 @@
+interface:
+  display_name: "substrate: init"
+  short_description: "Onboard a multi-repo workspace onto the substrate registry"
+policy:
+  allow_implicit_invocation: false

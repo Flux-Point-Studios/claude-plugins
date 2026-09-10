@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Outer Ralph loop: a fresh Claude context per iteration; all state lives in
+# Outer Ralph loop: a fresh agent context per iteration; all state lives in
 # WORK.md and git. Promotion is decided by the harness, never by the agent.
 # Unattended runs belong in a sandboxed container with allow-listed egress
 # and zero reachable key material; only there is
@@ -34,8 +34,35 @@ fi
 export PYTHONIOENCODING=utf-8
 
 MAX_ITER="${MAX_ITER:-25}"
-MAX_TURNS="${MAX_TURNS:-40}"
-PERMISSION_ARGS="${PERMISSION_ARGS:---permission-mode acceptEdits}"
+# Which agent CLI drives an iteration: `claude` (Claude Code, headless) or
+# `codex` (Codex, non-interactive). Both read WORK_PROMPT.md, and neither
+# decides promotion: the harness below does.
+AGENT_CLI="${AGENT_CLI:-claude}"
+MAX_TURNS="${MAX_TURNS:-40}"                                         # claude
+PERMISSION_ARGS="${PERMISSION_ARGS:---permission-mode acceptEdits}"  # claude
+# Codex takes its approval and sandbox settings as config overrides. The
+# default edits inside the workspace without prompting, which is what a
+# non-interactive run needs. In a sandboxed container ONLY:
+#   CODEX_ARGS="--dangerously-bypass-approvals-and-sandbox"
+CODEX_ARGS="${CODEX_ARGS:--c approval_policy=never -c sandbox_mode=workspace-write}"
+case "$AGENT_CLI" in
+  claude | codex) ;;
+  *) echo "loop: AGENT_CLI must be claude or codex, got '$AGENT_CLI'" >&2; exit 2 ;;
+esac
+
+run_agent() { # $1 = log path
+  case "$AGENT_CLI" in
+    claude)
+      # shellcheck disable=SC2086
+      claude -p "$(cat WORK_PROMPT.md)" $PERMISSION_ARGS --max-turns "$MAX_TURNS" \
+        --output-format stream-json --verbose >"$1" 2>&1 ;;
+    codex)
+      # `-` reads the prompt from stdin; --json streams events like claude's
+      # stream-json does, so the two logs are read the same way.
+      # shellcheck disable=SC2086
+      codex exec $CODEX_ARGS --json - <WORK_PROMPT.md >"$1" 2>&1 ;;
+  esac
+}
 
 sd=".claude/fluxpoint"
 mkdir -p "$sd/logs"
@@ -53,11 +80,8 @@ for ((i = 1; i <= MAX_ITER; i++)); do
   # one class of pair that has no parity command to fall back on.
   # `|| true` because an unborn HEAD must not kill the runner.
   iter_base="$(git rev-parse HEAD 2>/dev/null || true)"
-  # shellcheck disable=SC2086
-  claude -p "$(cat WORK_PROMPT.md)" $PERMISSION_ARGS --max-turns "$MAX_TURNS" \
-    --output-format stream-json --verbose \
-    >"$sd/logs/iter-$i.jsonl" 2>&1 ||
-    echo "loop: claude exited non-zero on iteration $i (see logs)" >&2
+  run_agent "$sd/logs/iter-$i.jsonl" ||
+    echo "loop: $AGENT_CLI exited non-zero on iteration $i (see logs)" >&2
   git add -A
   git commit -q -m "loop: iteration $i" || true
   if FPL_PAIR_AGAINST="${FPL_PAIR_AGAINST:-$iter_base}" bash scripts/harness.sh --full \
@@ -81,11 +105,13 @@ echo "loop: iteration budget exhausted, harness red or STATUS still ACTIVE. Chec
 # one was the active install. Prefer a root the runtime already set, then the
 # marketplace copy, then the highest cached version.
 ib=""
-for _root in "${FPL_PLUGIN_ROOT:-}" "${CLAUDE_PLUGIN_ROOT:-}"; do
+for _root in "${FPL_PLUGIN_ROOT:-}" "${CLAUDE_PLUGIN_ROOT:-}" "${PLUGIN_ROOT:-}"; do
   [ -n "$_root" ] && [ -f "$_root/scripts/inbox.py" ] && { ib="$_root/scripts/inbox.py"; break; }
 done
 if [ -z "$ib" ]; then
-  _ic="$({ find "$HOME/.claude/plugins" -type f -name inbox.py 2>/dev/null || true; })"
+  # Both install roots: Claude Code's plugin cache and Codex's.
+  _ic="$({ find "$HOME/.claude/plugins" "${CODEX_HOME:-$HOME/.codex}/plugins/cache" \
+           -type f -name inbox.py 2>/dev/null || true; })"
   if [ -n "$_ic" ]; then
     ib="$(printf '%s\n' "$_ic" | grep '/marketplaces/' | head -1 || true)"
     [ -z "$ib" ] && ib="$(printf '%s\n' "$_ic" | sort -V | tail -1)"

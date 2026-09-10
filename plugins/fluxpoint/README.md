@@ -1,7 +1,8 @@
 # fluxpoint
 
-The Flux Point engineering harness for Claude Code. One Definition of Done,
-one Evidence discipline, two drivers over the same contract.
+The Flux Point engineering harness for coding agents; it loads on Claude
+Code and on Codex. One Definition of Done, one Evidence discipline, two
+drivers over the same contract.
 
 **Loop mode** makes one agent's cycle programmable: session bootstrap,
 per-edit verification, and a Stop-hook Definition-of-Done gate that blocks
@@ -17,96 +18,62 @@ does.
 
 ## Layout
 
-- `hooks/` — SessionStart state injection, PostToolUse scoped
-  verification on writes and execution attestation on Bash, Stop-hook
-  DoD gate.
-- `scripts/` — `lib.sh`, `inject-state.sh`, `verify-changed.sh`,
-  `dod-gate.sh`, `evidence.py` (loop; the gate authors its own Evidence
-  row and this writes it — it executes nothing);
-  `compile-graph.py`, `record-run.py` (graph);
-  `exec-attest.sh`, `attest.py` (hook-minted exit codes for declared
-  gates); `memory.py` (lessons a sweep leaves for the next one, and the
-  arrival count that survives supersession);
-  `recurrence-guard.py` (a lesson learned twice is a missing gate: past two
-  arrivals an identity stops being answerable by restating it and demands a
-  command from `.fluxpoint-recurrence.json` whose real exit code is the
-  lesson's verdict, executed by the harness and reported at session start);
-  `proof-guard.py` (proof-strength ratchet); `spec-guard.py` (statement
-  ratchet — what is being proved, not just how); `cex.py` (counterexample
-  ledger: a prover's shrunk failing input, pinned to a regression; one
-  parser per prover, Aiken and Dafny today, one pinning discipline);
-  `mutation-guard.py` (mutation score — whether the tests can fail, not
-  just whether they pass);
-  `seam-guard.py` (seam ratchet — whether the tests reach the code at
-  all: a mock of a module you own walls it off and asserts a contract
-  nothing verifies, so the count of module mocks may fall but never
-  rise; process-boundary stubs and partial mocks are deliberately not
-  counted);
-  `guard-guard.py` (guard ratchet: the guards that stop money moving
-  wrongly, and whether each is still held down by a test that fails
-  without it — `--verify` runs the proof intact, then disables the guard
-  and requires the same proof to break, so a proof that cannot run is
-  reported rather than counted as evidence);
-  `prompt-audit.py` (prompt hygiene: a deterministic scan of agents,
-  commands, skills and templates for the anti-patterns that hobble a
-  frontier model — shouted imperatives, thoroughness boosters,
-  verification rituals, scratchpad scaffolds, stale model ids,
-  contradictory or repeated rules — advisory in the harness, `--strict`
-  as the promotion path, suppressions on the record);
-  `plutus-budget.py` (on-chain
-  size and execution-unit limits); `pair-guard.py` (relation gate over
-  declared artifact pairs: co-change, parity, a differential over generated
-  inputs, a bite that proves the parity can fail, and `--scan` for the
-  mirror nobody declared); `ledger.py` (once-only guard for
-  irreversible nodes); `release.py`, `inbox.py`, `wake-check.sh`
-  (the park layer); `migrate.py` (pre-1.0 migration,
-  plan/apply/finalize).
-- `contracts/` — versioned named schemas (`FindingsV1`, `VerdictV1`,
+- `hooks/hooks.json` — one hook set for both runtimes: `SessionStart` state
+  injection, `UserPromptSubmit` recall (dark by default), a `PreToolUse`
+  credential gate on `Bash`, `PostToolUse` scoped verification on file
+  writes and execution attestation on `Bash`, a `PreCompact` compaction
+  gate, and the `Stop` Definition-of-Done gate.
+- `scripts/` — the hooks and what they call.
+  - Loop: `lib.sh`, `inject-state.sh`, `verify-changed.sh`, `dod-gate.sh`,
+    `precompact.sh`, `prompt-recall.sh`, `evidence.py` (the gate authors
+    its own Evidence row; this writes it and executes nothing),
+    `decision.py` (Decisions rows with the `DecisionV1` floors enforced),
+    `py.sh` (interpreter resolution and UTF-8 stdio).
+  - Gates and ratchets: `exec-attest.sh` with `attest.py` (hook-minted exit
+    codes for declared gates), `secret-guard.py` (credential gate),
+    `proof-guard.py` (escape hatches), `spec-guard.py` (statements),
+    `cex.py` (counterexample ledger for Aiken and Dafny),
+    `mutation-guard.py` (mutation score), `seam-guard.py` (module mocks),
+    `guard-guard.py` (named guards and the tests that hold them down),
+    `pair-guard.py` (relations: co-change, parity, differential, bite and
+    `--scan`), `plutus-budget.py` (on-chain size and execution units),
+    `recurrence-guard.py` (a lesson learned twice demands a gate).
+  - Graph: `compile-graph.py`, `record-run.py`, `ledger.py` (once-only
+    guard), `release.py`, `inbox.py` and `wake-check.sh` (the park layer),
+    `metrics.py` (per-campaign rates).
+  - Memory: `memory.py` (lessons), `recall.py` and `embedder.py` (the
+    derived graph and hybrid retrieval).
+  - `prompt-audit.py` (advisory prompt hygiene) and `migrate.py` (pre-1.0
+    migration: plan, apply, finalize).
+- `contracts/` — versioned schemas: `FindingsV1`, `VerdictV1`,
   `HarnessCheckV1`, `DesignV1`, `SliceV1`, `RedTeamV1`, `ProofV1`,
-  `DecisionV1`, `LessonV1`, `ExecutionV1`).
+  `DecisionV1`, `LessonV1`, `ExecutionV1`, `TreeCheckV1`.
 - `commands/` — `/fluxpoint:init`, `:status`, `:migrate`, `:red-team`,
-  `:proof-audit`, `:graph-design`, `:graph-run`, `:graph-audit`,
-  `:release`.
+  `:proof-audit`, `:recall`, `:graph-design`, `:graph-run`, `:graph-audit`,
+  `:release`. On Codex each is reached through the matching
+  `skills/fluxpoint-<name>/` skill.
 - `agents/` — `red-team-reviewer` (adversarial diff review, `RedTeamV1`),
-  `proof-auditor` (did the verification get weaker, not just greener;
-  `ProofV1`, bound as a gate node in the feature campaign), `prover`
-  (proof synthesis apart from program synthesis; `SliceV1`, a mutator),
-  `graph-auditor` (semantic review of a campaign IR; prose, and outside
-  the graph on purpose).
+  `proof-auditor` (did the verification get weaker; `ProofV1`, a gate node
+  in the feature campaign), `prover` (proof synthesis apart from program
+  synthesis; `SliceV1`, a mutator), `graph-auditor` (semantic review of a
+  campaign IR; prose, and outside the graph on purpose).
 - `skills/` — `loop-engineering` (driver selection, conditions, the gate),
   `graph-engineering` (escalation rule, primitives, tiers, shapes),
-  `secret-handling` (derive instead of read, so a credential can be worked
-  with rather than denied).
-- `templates/` — `harness.sh` contract, `WORK.md`, `WORK.feature.md`,
-  `WORK.discovery.md`, `WORK.consolidate.md`, `WORK.verified.md` (opt-in:
-  a `prover` node beside the builder), `WORK_PROMPT.md`, `loop.sh`,
-  settings snippet.
-- `tests/` — `compile-test.py` (compiler invariants), `emission-test.py`
-  (field-effect probes), `proof-verdict-test.py` (a ProofV1 verdict
-  reaches the outcome and the Evidence row, executed),
-  `gate-test.sh` (Stop-gate bypass cases),
-  `hooks-test.sh` (hooks.json command strings + PostToolUse behavior),
-  `evidence-test.sh` (gate-authored rows and the classed bootstrap),
-  `security-test.py` (codegen injection and red-team regressions),
-  `migrate-test.sh` (migration against real pre-1.0 fixtures),
-  `proof-guard-test.sh` (the ratchet, per prover), `spec-guard-test.sh`
-  (the statement ratchet and its false-positive boundary), `cex-test.sh`
-  (the counterexample ledger and every way of appearing to pin without
-  pinning, executed, for Aiken JSON and Dafny models alike), `mutation-test.sh` (the score ratchet in both
-  directions, and staleness staying loud rather than fatal),
-  `seam-guard-test.sh` (the seam ratchet end to end, including that the
-  scaffolded harness enforces it), `budget-test.sh`
-  (on-chain limits), `ledger-test.py` (the once-only guard, executed
-  rather than grepped), `attest-test.sh` (execution attestation and its
-  laundering cases, executed), `memory-test.py` (lessons across runs,
-  executed), `pair-test.sh` (relation gate), `pair-verify-test.sh` (the
-  differential tier, the bite under `--verify` with every trap it refuses,
-  and `--scan`, executed),
-  `cost-test.py` (the token estimate, its ceiling, the declared cache
-  TTL and the effort-transition warnings, executed), `prompt-audit-test.py`
-  (each prompt anti-pattern class fires on a sample and stays silent on
-  the house idiom), `unify-test.sh` (state model and compatibility). All
-  of it runs from `scripts/harness.sh --full` in CI.
+  `secret-handling` (derive from a credential's path so it can be worked
+  with and never read), and the `fluxpoint-*` Codex entry points, one per
+  command.
+- `templates/` — `harness.sh` (the repo-side contract), `WORK.md`,
+  `WORK.feature.md`, `WORK.discovery.md`, `WORK.consolidate.md`,
+  `WORK.verified.md` (opt-in: a `prover` node beside the builder),
+  `WORK_PROMPT.md`, `loop.sh`, `settings.snippet.json` for Claude Code and
+  `codex.config.snippet.toml` for Codex.
+- `tests/` — one suite per mechanism, all run by the repository's
+  `scripts/harness.sh --full`: compiler invariants and field-effect probes,
+  codegen injection, the Stop gate and hook wiring driven with both
+  runtimes' payload shapes, attestation, every ratchet, the counterexample
+  ledger, relations, the park layer, memory and recall, migration against
+  pre-1.0 fixtures, the outer loop under both CLIs, and the documented
+  claims the code has to keep.
 
 ## The two contracts
 
@@ -131,7 +98,7 @@ Evidence table both modes append to.
 - The DoD gate arms on two independent signals — the PostToolUse marker
   and dirtiness re-derived from `git` — because the marker cannot see
   source written through the Bash tool. Dirtiness is measured against the
-  commit the session started from, not HEAD, so committing work mid-session
+  commit the session started from, so committing work mid-session
   is not a way to stop being judged; the hygiene scan uses the same
   baseline. It falls back to HEAD when that commit is not an ancestor of
   the current one (a rebase or branch switch), because a gate that fires
@@ -140,7 +107,7 @@ Evidence table both modes append to.
   baselines, the gates and budget manifests, `package.json`, `Makefile` —
   are named in the green notice when this session changed any of them.
   A verdict is only as trustworthy as the contract that produced it.
-- A gate's exit code is minted by a hook, not typed by an agent. Declare
+- A gate's exit code is minted by a hook; no agent types it. Declare
   the deciding commands in `.fluxpoint-gates.json`; every run of one is
   recorded to `.claude/fluxpoint/attest.jsonl`, and `record-run.py`
   cross-checks any node that claims a gate exit. Only the exact declared
@@ -167,7 +134,7 @@ Evidence table both modes append to.
   `discovery INCOMPLETE, not exhausted` — stopping early and finishing are
   different claims.
 - The Stop gate authors its own Evidence rows (`Source: gate`) and no agent
-  writes that class. This is a review affordance, not containment — `WORK.md`
+  writes that class. This is a review affordance without containment — `WORK.md`
   is skipped by the PostToolUse hook and the hygiene scan alike, so a row can
   still be edited; what changed is that doing so is now visible in a diff and
   that the bootstrap labels asserted rows as asserted.
@@ -175,7 +142,7 @@ Evidence table both modes append to.
   prompt, never the dedup set. A re-found item is judged again rather than
   dropped, because a finding that comes back is evidence the lesson went
   stale.
-- Destructive migration is code, not prose. `migrate.py` separates
+- Destructive migration is code. `migrate.py` separates
   plan/apply/finalize so nothing is deleted before the result is checked,
   and `--finalize` refuses when `WORK.md` carries fewer Evidence rows than
   the sources did.
@@ -195,7 +162,7 @@ Evidence table both modes append to.
   output — it was a silent one. Unknown fields are compile errors for the
   same reason.
 
-## Relations, not just artifacts
+## Relations between artifacts
 
 Every gate above measures one artifact. The defects that cost the most are
 relationships between two: an on-chain predicate tightened without its
@@ -301,7 +268,7 @@ proved one.
   `aiken check` is green on a validator too large to go on chain. It reads
   `compiledCode` out of the plutus.json blueprint, folds the entries a
   multi-purpose validator repeats, and fails on the protocol's `maxTxSize`
-  unconditionally — that limit is a fact, not a preference. Headroom is the
+  unconditionally — that limit is a protocol fact. Headroom is the
   part you configure (`.fluxpoint-budget.json`), and `--params` takes real
   `cardano-cli query protocol-parameters` output so the constants here are a
   fallback rather than the authority. Execution units cannot be derived from
@@ -322,7 +289,7 @@ checked conjunction). Both catch the same trade: swapping a `todo` for
 `True` lowers `aiken.todo` to zero and looks like progress. Only
 unambiguous cases are flagged, and a pre-existing one is absorbed by the
 baseline rather than indicting the repo; a false positive would train
-people to ignore the ratchet. The ratchet remains a floor, not a ceiling: a
+people to ignore the ratchet. The ratchet remains a floor: a
 theorem that lost a conjunct, or a `fail` test that trips an earlier guard
 than the one it is named for, still needs the semantic pass.
 
@@ -335,7 +302,10 @@ then the hooks still honor `LOOP.md`, so nothing breaks mid-migration.
 Requires `git` and Python 3, reached as either `python3` or `python` — the
 latter is what a standard Windows install provides. Scripts are invoked
 through `scripts/py.sh`, which resolves the name and pins UTF-8 stdio. `jq`
-preferred, with a Python fallback built into the hooks. Graph mode
-additionally needs a Claude Code version with the Workflow tool.
+preferred, with a Python fallback built into the hooks. Graph execution
+additionally needs Claude Code's Workflow tool; design, compile checks and
+audits run on Codex as well.
 
-Full documentation lives in the repository root README.
+Installation for both runtimes, the support matrix and the tuning
+variables are in the repository README; what each runtime hands the hooks
+is in `docs/runtimes.md`.

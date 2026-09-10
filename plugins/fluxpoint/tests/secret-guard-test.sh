@@ -123,7 +123,7 @@ has "the refusal teaches the safe shape"      "$out" "Pass the PATH"
 check "the same path as an argument to python -c is PERMITTED" 0 \
   "$(v "python -c \"from x import load_wallet; print(load_wallet('D:/wallet/mnemonic.txt').address)\"")"
 check "python -m with the path is permitted" 0 \
-  "$(v 'python -m aegis.tools.derive D:/wallet/mnemonic.txt --network mainnet')"
+  "$(v 'python -m custody.tools.derive D:/wallet/mnemonic.txt --network mainnet')"
 check "an in-repo script invoked with the path is permitted" 0 \
   "$(v './scripts/restore_and_derive.py D:/wallet/mnemonic.txt')"
 check "node with the path is permitted" 0 \
@@ -171,7 +171,7 @@ check "curl -o into the declared set is permitted" 0 \
 check "cp between two declared paths is permitted" 0 \
   "$(v 'cp D:/wallet/a.txt D:/wallet/b.txt')"
 check "redirecting output INTO the secret is permitted" 0 \
-  "$(v 'python -m aegis.tools.mkseed > D:/wallet/mnemonic.txt')"
+  "$(v 'python -m custody.tools.mkseed > D:/wallet/mnemonic.txt')"
 
 # ================= 5. redirection and pipelines ==========================
 declare_two
@@ -185,7 +185,7 @@ check "cat secret | sha256sum is refused (cat already printed it)" 1 \
 check "python reading the secret on stdin is permitted" 0 \
   "$(v 'python scripts/derive.py < D:/wallet/mnemonic.txt')"
 check "a pipeline with the secret only in the safe stage is permitted" 0 \
-  "$(v 'python -m aegis.tools.derive D:/wallet/mnemonic.txt | tee derived.json')"
+  "$(v 'python -m custody.tools.derive D:/wallet/mnemonic.txt | tee derived.json')"
 
 # ================= 6. obfuscation this guard DOES defend against =========
 declare_two
@@ -399,7 +399,7 @@ check "xargs does not split the path from the dumper" 1 \
 check "nor with -I"    1 "$(v 'echo D:/wallet/mnemonic.txt | xargs -I{} cat {}')"
 check "nor via printf" 1 "$(v 'printf %s D:/wallet/mnemonic.txt | xargs cat')"
 check "xargs into a derive is still permitted" 0 \
-  "$(v 'echo D:/wallet/mnemonic.txt | xargs python -m aegis.tools.derive')"
+  "$(v 'echo D:/wallet/mnemonic.txt | xargs python -m custody.tools.derive')"
 check "find -exec is analysed as the command it is" 1 \
   "$(v 'find D:/wallet -type f -exec cat {} \;')"
 check "find without -exec prints names, not bytes" 0 "$(v 'find D:/wallet -type f')"
@@ -568,9 +568,9 @@ check "and a file under it"                  1 "$(v 'cat D:/wallet/mnemonic.txt'
 # of one used to be analysed as if its first word were a program, which
 # refused the exact SAFE shape from the docstring.
 declare_two
-DERIVE_DOC=$'python - <<\'PY\'\nfrom aegis.wallet import load_wallet\nprint(load_wallet(\'D:/wallet/mnemonic.txt\').address)\nPY'
+DERIVE_DOC=$'python - <<\'PY\'\nfrom custody.wallet import load_wallet\nprint(load_wallet(\'D:/wallet/mnemonic.txt\').address)\nPY'
 check "the documented derive, written as a heredoc, is permitted" 0 "$(v "$DERIVE_DOC")"
-CONT=$'python -m aegis.tools.derive \\\n  D:/wallet/mnemonic.txt --network mainnet'
+CONT=$'python -m custody.tools.derive \\\n  D:/wallet/mnemonic.txt --network mainnet'
 check "a backslash-continued command is one command" 0 "$(v "$CONT")"
 # A heredoc fed to a SHELL is commands, and must still be analysed as such.
 BASH_DOC=$'bash <<\'EOF\'\ncat D:/wallet/mnemonic.txt\nEOF'
@@ -596,7 +596,7 @@ check "restoring from a tar backup is permitted" 0 "$(v 'tar -xzf vault-backup.t
 check "and from a zip backup"                    0 "$(v 'unzip -d D:/wallet backup.zip')"
 check "and with 7z"                              0 "$(v '7z x b.7z -oD:/wallet')"
 check "tee INTO the declaration is a write"      0 \
-  "$(v 'python -m aegis.tools.mkseed | tee D:/wallet/mnemonic.txt')"
+  "$(v 'python -m custody.tools.mkseed | tee D:/wallet/mnemonic.txt')"
 # and the read direction stays closed
 check "archiving the vault OUT is still refused" 1 "$(v 'tar -czf out.tgz D:/wallet')"
 check "extracting the vault member to cwd is refused" 1 \

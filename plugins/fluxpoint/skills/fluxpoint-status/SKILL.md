@@ -1,0 +1,22 @@
+---
+name: fluxpoint-status
+description: Report the harness state — gate counters, last harness verdict, WORK.md progress, recorded graph runs — and recommend the single next action. Codex entry point for the fluxpoint `status` command.
+user-invocable: false
+disable-model-invocation: true
+---
+
+This skill is how Codex reaches the `status` command of the fluxpoint
+plugin; on Claude Code the same command is `/fluxpoint:status`, and the two
+Claude-only keys above keep this entry point out of that runtime's menus so
+nothing is listed twice.
+
+1. Read `../../commands/status.md`, relative to this file. Under an installed
+   plugin that is `${PLUGIN_ROOT}/commands/status.md`; Codex also sets
+   `CLAUDE_PLUGIN_ROOT` to the same directory, which is what the command's
+   own shell snippets use.
+2. Carry out its steps exactly as written, in order, and report as it says.
+   The command takes no arguments.
+3. Where the command names a subagent from `agents/`, run one with that
+   file's contents as its instructions, or perform the pass inline when no
+   subagent can be spawned. Where it names the Workflow tool, note that graph
+   execution is Claude Code only and follow the command's own fallback.

@@ -130,7 +130,7 @@ closed set, so stripping it terminates; it is not an arms race.
 
 The same night produced the finding that settles it: the file named
 `publisher_mnemonic.txt` was NOT the publisher key — it derived a RETIRED
-credential, and the live key was in `aegis_vault_clean.txt`. Any guard that
+credential, and the live key was in `vault_backup_b.txt`. Any guard that
 inferred secrecy from a filename would have protected the dead credential
 and left the live one open, while reporting full coverage. A name is not
 evidence. Only a declaration is.

@@ -1,0 +1,5 @@
+interface:
+  display_name: "substrate: emit"
+  short_description: "Regenerate SUBSTRATE.md from every repo's substrate.json manifest"
+policy:
+  allow_implicit_invocation: false

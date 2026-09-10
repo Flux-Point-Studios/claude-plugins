@@ -217,7 +217,7 @@ def rendered(exc):
 
 
 def keyfile(tmp):
-    path = os.path.join(tmp, "aegis_vault_clean.txt")
+    path = os.path.join(tmp, "vault_backup_b.txt")
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(CANARY + "\n")
     return path
@@ -320,7 +320,7 @@ def as_run(line):
     directory holding it) and `python` becomes this interpreter, so what
     executes is otherwise byte-identical to what a reader copies.
     """
-    return re.sub(r"D:/[\w/.-]+", "aegis_vault_clean.txt",
+    return re.sub(r"D:/[\w/.-]+", "vault_backup_b.txt",
                   line).replace("python ", f'"{PY}" ')
 
 
@@ -372,7 +372,7 @@ if shapes and block(src, "python secret-barrier"):
             keyfile(tmp)
             sh = pick_shell(tmp)
             os.makedirs(os.path.join(tmp, "ops"))
-            os.makedirs(os.path.join(tmp, "aegis"))
+            os.makedirs(os.path.join(tmp, "custody"))
 
             def write(rel, text):
                 with open(os.path.join(tmp, rel), "w", encoding="utf-8") as fh:
@@ -385,8 +385,8 @@ if shapes and block(src, "python secret-barrier"):
             write(os.path.join("ops", "derive.py"),
                   "from stubcardano import PaymentSigningKey, Address, Network\n"
                   + block(src, "python secret-barrier"))
-            write(os.path.join("aegis", "__init__.py"), "")
-            write(os.path.join("aegis", "wallet.py"), LOADER_SRC)
+            write(os.path.join("custody", "__init__.py"), "")
+            write(os.path.join("custody", "wallet.py"), LOADER_SRC)
 
             report("a shell can run the box", sh is not None,
                    sh or "the box's shapes are shell lines; no usable bash")
@@ -533,7 +533,7 @@ if block(src, "python secret-filter"):
         """
         return json.load(stream)
 
-    dump = 'Project: aegis-oracle\n{"PUBLISHER_MNEMONIC": "%s"}' % CANARY
+    dump = 'Project: example-oracle\n{"PUBLISHER_MNEMONIC": "%s"}' % CANARY
     report("the filter reads its stdin behind the barrier too",
            "redact_stream" in ns, "found" if "redact_stream" in ns
            else "the pipeline decodes with no barrier")

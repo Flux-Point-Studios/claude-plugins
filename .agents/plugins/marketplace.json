@@ -1,0 +1,22 @@
+{
+  "name": "fluxpoint",
+  "interface": {
+    "displayName": "Flux Point plugins"
+  },
+  "plugins": [
+    {
+      "name": "fluxpoint",
+      "source": "./plugins/fluxpoint",
+      "policy": {
+        "installation": "AVAILABLE"
+      }
+    },
+    {
+      "name": "substrate",
+      "source": "./plugins/substrate",
+      "policy": {
+        "installation": "AVAILABLE"
+      }
+    }
+  ]
+}

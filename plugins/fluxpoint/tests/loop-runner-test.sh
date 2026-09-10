@@ -123,5 +123,45 @@ case "$out" in
   *) bad "the notify block survives an absent plugins dir" "died early: ${out:0:40}" ;;
 esac
 
+# --- 4. one iteration contract, two agent CLIs ----------------------------
+# Fakes stand in for both CLIs and record what they were handed; the repo is
+# already DONE and green, so a run that reaches the harness exits 0.
+fakebin="$ROOT/bin"; mkdir -p "$fakebin"
+cat >"$fakebin/claude" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$@" >"$FAKE_LOG.args"
+exit 0
+EOF
+cat >"$fakebin/codex" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$@" >"$FAKE_LOG.args"
+cat >"$FAKE_LOG.stdin"
+exit 0
+EOF
+chmod +x "$fakebin/claude" "$fakebin/codex"
+looprepo() {
+  rm -rf "$ROOT/l"; mkdir -p "$ROOT/l/scripts"; cd "$ROOT/l" || exit 1
+  git init -q -b main; git config user.email t@t; git config user.name t
+  printf '#!/usr/bin/env bash\nexit 0\n' >scripts/harness.sh; chmod +x scripts/harness.sh
+  printf 'STATUS: DONE\n' >WORK.md
+  printf 'work the next slice\n' >WORK_PROMPT.md
+  git add -A; git commit -qm base
+}
+looprepo
+FAKE_LOG="$ROOT/claude" PATH="$fakebin:$PATH" MAX_ITER=1 bash "$PLUGIN/templates/loop.sh" >/dev/null 2>&1
+check "loop.sh: the default driver is claude; green and DONE exits 0" 0 $?
+grep -qx -- '-p' "$ROOT/claude.args" && grep -q 'work the next slice' "$ROOT/claude.args"
+check "loop.sh: claude receives the work prompt with -p" 0 $?
+looprepo
+FAKE_LOG="$ROOT/codex" PATH="$fakebin:$PATH" MAX_ITER=1 AGENT_CLI=codex bash "$PLUGIN/templates/loop.sh" >/dev/null 2>&1
+check "loop.sh: AGENT_CLI=codex drives codex exec" 0 $?
+[ "$(head -1 "$ROOT/codex.args")" = "exec" ] && grep -q 'work the next slice' "$ROOT/codex.stdin"
+check "loop.sh: codex receives the work prompt on stdin" 0 $?
+looprepo
+FAKE_LOG="$ROOT/x" PATH="$fakebin:$PATH" MAX_ITER=1 AGENT_CLI=other bash "$PLUGIN/templates/loop.sh" >/dev/null 2>&1
+check "loop.sh: an unknown AGENT_CLI is refused before anything runs" 2 $?
+[ -f "$ROOT/x.args" ] && bad "loop.sh: nothing ran for the unknown driver" "a CLI ran" \
+  || ok "loop.sh: nothing ran for the unknown driver" "nothing ran"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

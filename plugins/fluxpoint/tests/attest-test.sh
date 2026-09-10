@@ -418,5 +418,34 @@ payload_autobackground "scripts/harness.sh --full" \
 check "auto-backgrounded (backgroundTaskId) attests nothing" 0 "$(rows)"
 
 cd /; rm -rf "$ROOT"
+# --- Codex: every completed Bash call arrives as ONE string --------------
+# Header lines first (`Wall time`, `Process exited with code N`), then
+# `Output:` and the output. Passes and failures share the shape, so the exit
+# is read from the header, and only from the header.
+payload_codex() { # $1 = command, $2 = header line(s) after wall time, $3 = body
+  "$FPL_PY" - "$1" "$2" "${3:-harness: green}" <<'PY'
+import json, sys
+print(json.dumps({
+    "session_id": "s1", "cwd": ".", "hook_event_name": "PostToolUse",
+    "tool_name": "Bash", "tool_use_id": "call_c",
+    "tool_input": {"command": sys.argv[1]},
+    "tool_response": "Wall time: 0.0100 seconds\n" + sys.argv[2] + "Output:\n" + sys.argv[3] + "\n",
+}))
+PY
+}
+reccodex() { payload_codex "$@" | "$FPL_PY" "$ATTEST" --root "$ROOT/r" --record; }
+newrepo; gates
+reccodex "scripts/harness.sh --full" $'Process exited with code 0\n' >/dev/null 2>&1
+check "codex: 'Process exited with code 0' attests 0" 0 "$(field exit)"
+reccodex "scripts/harness.sh --full" $'Process exited with code 3\n' >/dev/null 2>&1
+check "codex: a red exit is recorded, not smoothed" 3 "$(field exit)"
+reccodex "scripts/harness.sh --full" $'Exit code: 2\n' >/dev/null 2>&1
+check "codex: the classic shell tool's 'Exit code: N' attests N" 2 "$(field exit)"
+n="$(rows)"
+reccodex "scripts/harness.sh --full" "" >/dev/null 2>&1
+check "codex: a header with no exit line attests nothing" "$n" "$(rows)"
+reccodex "scripts/harness.sh --full" "" $'Process exited with code 0' >/dev/null 2>&1
+check "codex: output cannot mint its own exit" "$n" "$(rows)"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

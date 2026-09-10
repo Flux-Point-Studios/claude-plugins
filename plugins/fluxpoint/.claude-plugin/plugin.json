@@ -1,8 +1,10 @@
 {
   "name": "fluxpoint",
-  "version": "1.36.0",
+  "version": "1.37.0",
   "description": "Flux Point engineering harness: one Definition of Done, one Evidence discipline, two drivers. Loop mode runs a deterministic Stop-hook DoD gate over one agent's cycle; graph mode compiles a declarative WORK.md IR into verified multi-agent campaigns. The harness decides done, never the agent.",
   "author": {
     "name": "Flux Point Studios"
-  }
+  },
+  "homepage": "https://github.com/Flux-Point-Studios/claude-plugins",
+  "repository": "https://github.com/Flux-Point-Studios/claude-plugins"
 }

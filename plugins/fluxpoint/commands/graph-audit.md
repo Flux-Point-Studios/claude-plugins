@@ -12,7 +12,10 @@ structure; this pass judges what it cannot.
    `bash "${CLAUDE_PLUGIN_ROOT}/scripts/py.sh" compile-graph.py <graph> --check`.
    If it fails, report those findings and stop: there is no point judging
    semantics of a graph that cannot compile.
-3. Launch the `graph-auditor` agent on the IR. It reports only findings
+3. Launch the `graph-auditor` agent on the IR — Claude Code's subagent of
+   that name; under Codex a subagent, or an inline pass, given
+   `${CLAUDE_PLUGIN_ROOT}/agents/graph-auditor.md` as its instructions.
+   It reports only findings
    with a concrete failure path, in its fixed table format, ending
    `VERDICT: SOUND` or `VERDICT: REWIRE`. What it judges that the
    compiler cannot:

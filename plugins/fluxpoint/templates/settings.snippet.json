@@ -1,7 +1,7 @@
 {
   "extraKnownMarketplaces": {
     "fluxpoint": {
-      "source": { "source": "github", "repo": "flux-point-studios/claude-plugins" }
+      "source": { "source": "github", "repo": "Flux-Point-Studios/claude-plugins" }
     }
   },
   "enabledPlugins": {

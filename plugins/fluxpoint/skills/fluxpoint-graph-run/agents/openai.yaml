@@ -1,0 +1,5 @@
+interface:
+  display_name: "fluxpoint: graph-run"
+  short_description: "Compile WORK.md's IR to a Workflow script, execute it, record provenance and the Evidence row"
+policy:
+  allow_implicit_invocation: false

@@ -167,7 +167,7 @@ test("a function-local import is a note, never a fatal dependency edge", () => {
     repo: "py",
     primitives: [
       prim("chain-access", { paths: ["api/chain.py"] }),
-      prim("oracle-read", { paths: ["oracles/aegis_self.py"], consumes: ["chain-access"] }),
+      prim("oracle-read", { paths: ["oracles/self_read.py"], consumes: ["chain-access"] }),
     ],
   });
   writeSources(ws, "py", {
@@ -175,9 +175,9 @@ test("a function-local import is a note, never a fatal dependency edge", () => {
       "def price():\n" +
       "    # `oracles` imports `chain`, so the import is deferred here to keep\n" +
       "    # that one way round.\n" +
-      "    from oracles.aegis_self import POLICY\n" +
+      "    from oracles.self_read import POLICY\n" +
       "    return POLICY\n",
-    "oracles/aegis_self.py": "from api.chain import price\nPOLICY = 1\n",
+    "oracles/self_read.py": "from api.chain import price\nPOLICY = 1\n",
   });
   const res = run(["--emit", "--root", ws]);
   assert.equal(res.status, 0, `deferred import must not fail the emit:\n${res.stderr}`);

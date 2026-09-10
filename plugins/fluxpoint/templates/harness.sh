@@ -72,9 +72,10 @@ run_script_if_present() {
 # versions, which is a coincidence and not a maintained property.
 plugin_script() {
   # CLAUDE_PLUGIN_ROOT is set by the runtime whenever the harness runs under a
-  # hook, and is version-correct by construction. FPL_PLUGIN_ROOT stays ahead
-  # of it as the repo's deliberate override.
-  for _root in "${FPL_PLUGIN_ROOT:-}" "${CLAUDE_PLUGIN_ROOT:-}"; do
+  # hook — Claude Code and Codex both set it, Codex as PLUGIN_ROOT too — and is
+  # version-correct by construction. FPL_PLUGIN_ROOT stays ahead of it as the
+  # repo's deliberate override.
+  for _root in "${FPL_PLUGIN_ROOT:-}" "${CLAUDE_PLUGIN_ROOT:-}" "${PLUGIN_ROOT:-}"; do
     if [ -n "$_root" ] && [ -f "$_root/scripts/$1" ]; then
       printf '%s\n' "$_root/scripts/$1"
       unset _root
@@ -87,7 +88,9 @@ plugin_script() {
   # killed --full on its first plugin lookup — in exactly the repos this
   # function exists to support, the ones carrying the harness without the
   # plugin installed. It failed with no output at all.
-  _cands="$( { find "$HOME/.claude/plugins" -type f -name "$1" 2>/dev/null || true; } )"
+  # Both install roots: Claude Code's plugin cache and Codex's.
+  _cands="$( { find "$HOME/.claude/plugins" "${CODEX_HOME:-$HOME/.codex}/plugins/cache" \
+               -type f -name "$1" 2>/dev/null || true; } )"
   [ -z "$_cands" ] && { unset _cands; return 0; }
   # A locally-installed marketplace carries no version directory and is the
   # only copy present for that install, so it wins outright. Otherwise take

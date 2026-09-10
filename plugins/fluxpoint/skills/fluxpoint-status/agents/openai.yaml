@@ -1,0 +1,3 @@
+interface:
+  display_name: "fluxpoint: status"
+  short_description: "Report the harness state"

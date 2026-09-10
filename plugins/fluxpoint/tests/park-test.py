@@ -204,7 +204,7 @@ report("the block carries its instructions",
        bool(detail) and "hardware keys" in (detail[0] or ""), str(detail)[:50])
 
 # Released: the same graph, now with the proof on hand.
-released = {"sign": {"node": "sign", "by": "nate",
+released = {"sign": {"node": "sign", "by": "operator",
                      "proof": {"exit": 0, "command": "cardano-cli", "output": "tx_ok"}}}
 summary2, calls2, _ = run(IR, {"_releases": released})
 prov2 = {p["node"]: p["status"] for p in (summary2 or {}).get("provenance", [])}
