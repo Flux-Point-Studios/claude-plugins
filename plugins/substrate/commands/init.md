@@ -56,10 +56,11 @@ step; do not stop at scaffolding files.
    `nonGitRepos` in the config, or its staleness will be skipped.
 5. Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/substrate-graph.mjs" --emit`.
    If `${CLAUDE_PLUGIN_ROOT}` expands empty in your shell, locate the plugin
-   with `find ~/.claude/plugins -type d -path '*substrate/scripts' | head -1`.
+   with `find ~/.claude/plugins ~/.codex/plugins/cache -type d -path '*substrate/scripts' 2>/dev/null | head -1`.
    Fix any `problem:` lines it prints and re-run until it exits 0.
 6. Read `${CLAUDE_PLUGIN_ROOT}/templates/DOCTRINE.snippet.md` and offer to
-   append it to the workspace's `CLAUDE.md` (create the file if absent).
+   append it to the workspace's instructions file — `CLAUDE.md` under Claude
+   Code, `AGENTS.md` under Codex — creating the file if absent.
    Summarize the doctrine either way: the sweep comes first — before any
    new build, sweep SUBSTRATE.md for the half-built thing that already
    covers part of it and name the overlap; the second occurrence of the

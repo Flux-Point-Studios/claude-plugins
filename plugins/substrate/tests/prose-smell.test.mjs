@@ -370,3 +370,37 @@ test("clean prose through the hook is silent", () => {
   assert.equal(r.status, 0);
   assert.equal(r.stderr.trim(), "");
 });
+
+// ------------------------------------------------ hook mode, Codex payloads
+// Codex fires the Write|Edit matcher for apply_patch and sends the patch text
+// in tool_input.command with no file_path; the files come from its headers.
+function runPatchHook(patch, cwd) {
+  const payload = JSON.stringify({ tool_name: "apply_patch", cwd, tool_input: { command: patch } });
+  return spawnSync("node", [SCRIPT, "--hook"], { input: payload, encoding: "utf8" });
+}
+
+test("hook mode reads the files out of a Codex apply_patch payload", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "smell-hook-"));
+  const file = path.join(dir, "note.md");
+  fs.writeFileSync(file, "Would you like me to add a summary table?\n");
+  const r = runPatchHook(`*** Begin Patch\n*** Update File: ${file}\n@@\n-a\n+b\n*** End Patch\n`, dir);
+  assert.equal(r.status, 2, r.stdout + r.stderr);
+  assert.match(r.stderr, /assistant-artifact/);
+});
+
+test("hook mode re-bases a relative apply_patch path from the payload's cwd", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "smell-hook-"));
+  fs.writeFileSync(path.join(dir, "note.md"), "I hope this helps! Reach out anytime.\n");
+  const r = runPatchHook("*** Begin Patch\n*** Add File: note.md\n+x\n*** End Patch\n", dir);
+  assert.equal(r.status, 2, r.stdout + r.stderr);
+});
+
+test("hook mode ignores a Codex patch that only deletes prose or touches code", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "smell-hook-"));
+  fs.writeFileSync(path.join(dir, "note.md"), "I hope this helps! Reach out anytime.\n");
+  fs.writeFileSync(path.join(dir, "x.mjs"), "// I hope this helps\n");
+  const r = runPatchHook(
+    `*** Begin Patch\n*** Delete File: ${path.join(dir, "note.md")}\n*** Update File: ${path.join(dir, "x.mjs")}\n@@\n-a\n+b\n*** End Patch\n`,
+    dir);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+});

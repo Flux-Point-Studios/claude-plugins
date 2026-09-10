@@ -13,9 +13,9 @@ technique is a change of shape:
 
 ```sh secret-shapes
 UNSAFE  cat D:/wallet/mnemonic.txt
-UNSAFE  python -c "from aegis.wallet import load_wallet; print(load_wallet('D:/wallet/mnemonic.txt').address)"
+UNSAFE  python -c "from custody.wallet import load_wallet; print(load_wallet('D:/wallet/mnemonic.txt').address)"
 SAFE    python -m ops.derive D:/wallet/mnemonic.txt
-SAFE    python -m ops.derive D:/backup/aegis_vault_clean.txt --equals "$LIVE_ADDRESS"
+SAFE    python -m ops.derive D:/backup/vault_backup_b.txt --equals "$LIVE_ADDRESS"
 SAFE    printf %s "$PASSPHRASE" | python -m ops.derive D:/wallet/mnemonic.txt --passphrase-stdin
 ```
 
@@ -355,7 +355,7 @@ certify at all, because the checkout it had built carried preprod constants
 while the certificate would have claimed mainnet. Then it refused
 `publisher_mnemonic.txt` — the obviously-named file — because across all
 ten indices that file derived a **retired** credential. The live key was in
-`aegis_vault_clean.txt`. A human reading the obvious file would have
+`vault_backup_b.txt`. A human reading the obvious file would have
 certified custody of a dead key and walked into an irreversible ceremony.
 
 It caught that only because it derived and compared rather than trusting a

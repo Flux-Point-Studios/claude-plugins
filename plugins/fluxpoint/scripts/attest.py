@@ -101,15 +101,21 @@ def normalize(cmd):
 
 
 EXIT_RE = re.compile(r"\A\s*Error: Exit code (\d+)")
+# Codex hands every completed Bash call to the hook as one string: a header
+# of `Wall time: …` and `Process exited with code N` (the classic shell tool
+# writes `Exit code: N`), then `Output:` and the output itself.
+CODEX_EXIT_RE = re.compile(r"^(?:Process exited with code|Exit code:) (-?\d+)\s*$", re.M)
 
 
 def exit_of(resp):
     """The exit status a PostToolUse Bash payload reports, or None.
 
-    `tool_response` has no `exit_code` field. The runtime reports the status
+    `tool_response` has no `exit_code` field. Claude Code reports the status
     in the SHAPE of the value: a success arrives as an object carrying
     `stdout`/`stderr`/`interrupted`, and a failure arrives as a plain string
-    beginning `Error: Exit code N`. Reading only for `exit_code` meant every
+    beginning `Error: Exit code N`. Codex reports it in a header line of the
+    one string it always sends, `Process exited with code N`, for passes and
+    failures alike. Reading only for `exit_code` meant every
     gate run since gates shipped was recorded as unreadable, and the tests
     did not catch it because their fixtures invent the field.
 
@@ -120,6 +126,13 @@ def exit_of(resp):
     """
     if isinstance(resp, str):
         m = EXIT_RE.match(resp)
+        if m:
+            return int(m.group(1))
+        # Codex's shape. Only the header is read — the lines before
+        # `Output:`, and never more than a few — so a command that PRINTS a
+        # line shaped like the header cannot mint its own exit.
+        head = "\n".join(resp.split("\nOutput:", 1)[0].splitlines()[:6])
+        m = CODEX_EXIT_RE.search(head)
         return int(m.group(1)) if m else None
     if not isinstance(resp, dict):
         return None

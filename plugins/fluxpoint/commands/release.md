@@ -8,7 +8,7 @@ does not halt on them — it records what would unblock each one and keeps
 working the branches that can proceed. This is how the block is cleared.
 
 Resolve the plugin root: `${CLAUDE_PLUGIN_ROOT}`, else
-`find ~/.claude/plugins -type d -name fluxpoint | head -1`. Call it `$ROOT`.
+`find ~/.claude/plugins ~/.codex/plugins/cache -type d -name fluxpoint 2>/dev/null | head -1`. Call it `$ROOT`.
 
 1. **Show what is actually waiting**, never a guess:
    `bash "$ROOT/scripts/py.sh" inbox.py --list`. With no argument, stop here —

@@ -1,0 +1,3 @@
+interface:
+  display_name: "fluxpoint: proof-audit"
+  short_description: "Check that verification got stronger, not just greener"

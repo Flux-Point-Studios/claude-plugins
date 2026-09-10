@@ -15,7 +15,7 @@ making WEAKENED harness-red structurally and `record-run.py` filing the
 verdict into the Evidence row. This command is the same audit run by hand.
 
 Resolve the plugin root: `${CLAUDE_PLUGIN_ROOT}`, else
-`find ~/.claude/plugins -type d -name fluxpoint | head -1`. Call it `$ROOT`.
+`find ~/.claude/plugins ~/.codex/plugins/cache -type d -name fluxpoint 2>/dev/null | head -1`. Call it `$ROOT`.
 
 1. **Mechanical pass — both ratchets.**
    `bash "$ROOT/scripts/py.sh" proof-guard.py --scan` to see the current escape
@@ -55,7 +55,9 @@ Resolve the plugin root: `${CLAUDE_PLUGIN_ROOT}`, else
    `maxTxSize` cannot be submitted no matter how well it is proved, and the
    prover never mentions it. Report an unmeasured `exUnits` as a gap rather
    than a pass — it is the budget most often assumed met.
-4. **Semantic pass.** Launch the `proof-auditor` agent over
+4. **Semantic pass.** Launch the `proof-auditor` agent — Claude Code's
+   subagent of that name; under Codex a subagent, or an inline pass, given
+   `${CLAUDE_PLUGIN_ROOT}/agents/proof-auditor.md` as its instructions — over
    "$ARGUMENTS" (or the working diff). It judges vacuity, specification
    drift, assumption laundering, test theatre, unproved surface, on-chain
    budgets, and solver honesty — everything a count cannot see. It ends

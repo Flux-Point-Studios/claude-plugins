@@ -1,6 +1,6 @@
 ---
 name: loop-engineering
-description: How to run Loop Engineering at Flux Point — choosing between /goal, native /loop, /schedule Routines, and the outer scripts/loop.sh runner, writing verifiable completion conditions, and working with the Stop-hook DoD gate. Use this whenever the user mentions loops, Ralph, /goal, /loop, /schedule, routines, watching or monitoring a build, deploy, or transaction, autonomous or overnight runs, "keep going until green", iteration budgets, or asks Claude to work unattended on a task, even if they never say "loop engineering".
+description: How to run Loop Engineering at Flux Point — choosing between /goal, native /loop, /schedule Routines, and the outer scripts/loop.sh runner, writing verifiable completion conditions, and working with the Stop-hook DoD gate. Use this whenever the user mentions loops, Ralph, /goal, /loop, /schedule, routines, watching or monitoring a build, deploy, or transaction, autonomous or overnight runs, "keep going until green", iteration budgets, or asks the agent to work unattended on a task, even if they never say "loop engineering".
 ---
 
 # Loop Engineering

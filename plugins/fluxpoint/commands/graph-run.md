@@ -7,7 +7,7 @@ Run the designed graph. This command is the explicit authorization the
 Workflow tool requires.
 
 1. Resolve the plugin root: try `${CLAUDE_PLUGIN_ROOT}`, else
-   `find ~/.claude/plugins -type d -name fluxpoint | head -1`.
+   `find ~/.claude/plugins ~/.codex/plugins/cache -type d -name fluxpoint 2>/dev/null | head -1`.
    The graph file is "$ARGUMENTS" if it names one, else `WORK.md`.
 2. Preflight, all deterministic — stop and report exactly what is missing
    rather than improvising around it:
@@ -88,7 +88,7 @@ Workflow tool requires.
    to fire. Never pass `confirm` because a previous run used it, because
    the campaign obviously intends it, or because the user said "go" — only
    when they have named the effect.
-5. Set `STATUS: RUNNING`. Invoke the Workflow tool with
+5. Set `STATUS: RUNNING`. Invoke the Workflow tool (Claude Code) with
    `{scriptPath: ".claude/workflows/<name>.graph.js", args: {...}}`.
    Pass args as a real JSON object, not a stringified one. Watch with
    `/workflows`; never poll with sleep.
@@ -116,7 +116,7 @@ Workflow tool requires.
    gate keeps final authority. Set `STATUS: DONE` only when the Evidence
    row shows the terminal gate green; otherwise back to `READY` with the
    repair plan in Notes.
-9. If the Workflow tool is unavailable, degrade per the graph-engineering
-   skill: run the compiled script's nodes as parallel subagent calls with
+9. If the Workflow tool is unavailable — Codex has no equivalent, and older
+   Claude Code builds lack it — degrade per the graph-engineering skill: run the compiled script's nodes as parallel subagent calls with
    the same contracts, then record with `--executor degraded-subagents` so
    the Evidence row says which executor ran the graph.

@@ -1,0 +1,5 @@
+interface:
+  display_name: "fluxpoint: release"
+  short_description: "Release a node parked on a human or a third party"
+policy:
+  allow_implicit_invocation: false

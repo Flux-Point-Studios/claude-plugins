@@ -1,0 +1,5 @@
+interface:
+  display_name: "fluxpoint: init"
+  short_description: "Scaffold the Flux Point harness into the current repo"
+policy:
+  allow_implicit_invocation: false

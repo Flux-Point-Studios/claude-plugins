@@ -1,0 +1,3 @@
+interface:
+  display_name: "fluxpoint: graph-audit"
+  short_description: "Adversarial semantic pass over the WORK.md IR"

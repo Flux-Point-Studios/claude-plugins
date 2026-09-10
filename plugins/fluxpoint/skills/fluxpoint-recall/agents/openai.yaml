@@ -1,0 +1,3 @@
+interface:
+  display_name: "fluxpoint: recall"
+  short_description: "Search the recall graph"

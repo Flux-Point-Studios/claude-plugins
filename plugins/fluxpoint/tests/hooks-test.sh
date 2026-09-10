@@ -103,7 +103,7 @@ done
 newrepo 0
 out="$(post_input src/app.py | eval "$(hook_cmd SessionStart)" 2>&1)"; rc=$?
 check "SessionStart: runs via its hooks.json command" 0 "$rc"
-case "$out" in *"Flux Point work context"*) ok "SessionStart: injects context" "yes" ;;
+case "$out" in *"fluxpoint work context"*) ok "SessionStart: injects context" "yes" ;;
   *) bad "SessionStart: injects context" "no" ;; esac
 
 # --- 3. PostToolUse matchers cover the file-writing tools, then Bash ---
@@ -256,6 +256,70 @@ case "$err" in *"harness --changed RED"*) ok "verify-changed: red output names t
 # from by never touching Write again.
 [ -f .claude/fluxpoint/s.dirty ] && ok "verify-changed: arms the gate even when red" "marker written" \
   || bad "verify-changed: arms the gate even when red" "no marker"
+
+# --- 4a. Codex shapes: apply_patch carries the paths in the patch text ---
+# Codex fires this same group for apply_patch (its matcher aliases cover
+# Edit|Write) with no file_path at all: tool_input.command is the patch.
+patch_input() { # $1 = header kind, $2 = path
+  "$FPL_PY" - "$ROOT/r" "$1" "$2" <<'PY'
+import json, sys
+body = "*** Begin Patch\n*** %s: %s\n@@\n-x = 1\n+x = 2\n*** End Patch\n" % (sys.argv[2], sys.argv[3])
+print(json.dumps({"session_id": "s", "cwd": sys.argv[1], "hook_event_name": "PostToolUse",
+                  "tool_name": "apply_patch", "tool_use_id": "call_x",
+                  "tool_input": {"command": body}, "tool_response": {"ok": True}}))
+PY
+}
+newrepo 0
+printf 'y = 2\n' >>src/app.py
+patch_input "Update File" src/app.py | eval "$(hook_cmd PostToolUse)" >/dev/null 2>&1
+check "apply_patch: green harness exits 0" 0 "$?"
+[ -f .claude/fluxpoint/s.dirty ] && ok "apply_patch: marks the session dirty" "marker written" \
+  || bad "apply_patch: marks the session dirty" "no marker"
+
+newrepo 1
+printf 'y = 2\n' >>src/app.py
+err="$(patch_input "Update File" src/app.py | eval "$(hook_cmd PostToolUse)" 2>&1 >/dev/null)"; rc=$?
+check "apply_patch: red harness exits 2" 2 "$rc"
+case "$err" in *"harness --changed RED for src/app.py"*) ok "apply_patch: red output names the patched file" "yes" ;;
+  *) bad "apply_patch: red output names the patched file" "got: ${err:0:60}" ;; esac
+
+# A deletion changes the tree, so it arms the gate, but there is nothing left
+# to check and a missing file must not read as a red check.
+newrepo 1
+rm -f src/app.py
+patch_input "Delete File" src/app.py | eval "$(hook_cmd PostToolUse)" >/dev/null 2>&1
+rc=$?
+if [ "$rc" -eq 0 ] && [ -f .claude/fluxpoint/s.dirty ]; then
+  ok "apply_patch: a deletion arms the gate without a red check" "armed, exit 0"
+else
+  bad "apply_patch: a deletion arms the gate without a red check" "rc=$rc"
+fi
+
+newrepo 1
+printf 'notes\n' >README.md
+patch_input "Update File" README.md | eval "$(hook_cmd PostToolUse)" >/dev/null 2>&1
+rc=$?
+if [ "$rc" -eq 0 ] && [ ! -f .claude/fluxpoint/s.dirty ]; then
+  ok "apply_patch: a docs-only patch does not arm the gate" "no run, no marker"
+else
+  bad "apply_patch: a docs-only patch does not arm the gate" "rc=$rc"
+fi
+
+# The Bash attestation reads Codex's string-shaped response too.
+newrepo 0
+printf '{"version":1,"gates":{"harness":"scripts/harness.sh --full"}}' >.fluxpoint-gates.json
+"$FPL_PY" - "$ROOT/r" <<'PY' | eval "$(hook_cmd PostToolUse 1)" >/dev/null 2>&1
+import json, sys
+print(json.dumps({"session_id": "s", "cwd": sys.argv[1], "hook_event_name": "PostToolUse",
+                  "tool_name": "Bash", "tool_use_id": "call_y",
+                  "tool_input": {"command": "scripts/harness.sh --full"},
+                  "tool_response": "Wall time: 0.0200 seconds\nProcess exited with code 1\nOutput:\nharness: RED\n"}))
+PY
+if [ -f .claude/fluxpoint/attest.jsonl ] && grep -q '"exit": 1' .claude/fluxpoint/attest.jsonl; then
+  ok "exec-attest: reads Codex's string-shaped exit" "exit 1 recorded"
+else
+  bad "exec-attest: reads Codex's string-shaped exit" "not recorded"
+fi
 
 # --- 5. skipped paths do not arm the gate or run the harness ---
 for skip in README.md .claude/settings.json docs/notes.md; do

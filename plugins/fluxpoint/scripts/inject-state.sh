@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SessionStart hook. Stdout is injected as context Claude can read; content
+# SessionStart hook. Stdout is injected as context the agent can read; content
 # is phrased as factual statements because imperative "system command"
 # phrasing can trip prompt-injection defenses and surface the text to the
 # user instead. Runs on startup, resume, clear, and post-compaction.
@@ -93,7 +93,7 @@ git rev-parse --is-inside-work-tree >/dev/null 2>&1 || exit 0
 branch="$(git branch --show-current 2>/dev/null)"
 dirtyn="$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
 
-echo "Flux Point work context, generated $(date -u +%FT%TZ):"
+echo "fluxpoint work context, generated $(date -u +%FT%TZ):"
 echo "- Branch: ${branch:-detached}; uncommitted changes: ${dirtyn} path(s)."
 
 verdict=""

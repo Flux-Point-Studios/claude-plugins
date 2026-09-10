@@ -1,0 +1,3 @@
+interface:
+  display_name: "substrate: smell"
+  short_description: "Scan a file (or all staged deliverables) for AI-writing smell before it ships"

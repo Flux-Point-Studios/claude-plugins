@@ -1,289 +1,149 @@
-# Flux Point Claude Plugins
+# Flux Point plugins
 
-Private Claude Code plugin marketplace for Flux Point Studios. Two plugins:
-**fluxpoint**, the engineering harness (below), and **substrate**, a
-multi-repo primitive registry (see [The substrate
-plugin](#the-substrate-plugin)). fluxpoint has two drivers over one
-contract:
+Two plugins for coding agents, packaged for Claude Code and Codex from one
+repository.
 
-- **Loop mode** makes one agent's cycle programmable — every session,
-  interactive or autonomous, runs against a deterministic
-  Definition-of-Done gate instead of the agent's self-report.
-- **Graph mode** makes the *organization* of agents programmable —
-  campaigns declared as an IR and compiled, deterministically, into
-  verified multi-agent Workflow scripts.
+- **fluxpoint** is an engineering harness. It makes "done" a deterministic
+  check: every session runs against a Definition-of-Done gate, the gate
+  decides, and the agent's self-report carries no weight.
+- **substrate** is a registry for multi-repo workspaces. Each repo declares
+  its reusable primitives, a generator compiles them into one graph, and
+  every session starts with that graph and its staleness alarms in context.
 
-Both share one work-state file (`WORK.md`), one Definition of Done, one
-Evidence table, and one authority on done: `scripts/harness.sh`.
+Both plugins load unchanged on Claude Code and on Codex. The two runtimes
+share the hook contract, the skill format and the plugin layout, so one tree
+serves both. The differences are listed under [Runtime support](#runtime-support)
+and explained in [docs/runtimes.md](docs/runtimes.md).
 
-## What loop mode enforces
+## Requirements
 
-| Layer | Mechanism | Behavior |
-|---|---|---|
-| Bootstrap | `SessionStart` hook | Injects branch state, last harness verdict, gate status, and the head of `WORK.md` at every session start, resume, clear, and post-compaction. |
-| Inner loop | `PostToolUse` hook on `Write\|Edit\|MultiEdit` | Runs `scripts/harness.sh --changed <file>`; failures feed straight back to Claude for immediate correction. |
-| Gate-authored evidence | `Stop` hook → `scripts/evidence.py` | The gate records its own verdict as a `Source: gate` Evidence row — exit code, commit, a hash of the working tree, dirty-path count, and a hash of the log. Nobody writes that class by hand, so a `gate` row with no gate run behind it is a reviewable anomaly, and SessionStart shows witnessed rows separately from asserted ones instead of letting agent prose evict them. |
-| DoD gate | `Stop` hook | When files changed this session — measured against the commit the session started from, so committing work mid-session does not hide it — runs `scripts/harness.sh --full` plus a hygiene scan of uncommitted/new code (TODO, FIXME, XXX, "for now", `.unwrap()`, skipped or focused tests, empty `catch {}`). Red blocks the stop with the failures as the work list, up to `FPL_MAX_BLOCKS` (default 3) consecutive times, then yields with a checkpoint notice: three failed paths is a user checkpoint, not a retreat. |
-| Proof ratchets | `proof-guard.py` (bodies), `spec-guard.py` (statements) | A checker exits 0 on an assumed lemma exactly as on a proved one, so escape-hatch counts may fall but never rise — and because the easier move is to weaken the theorem instead, the obligations themselves are hashed too: a dropped `ensures` conjunct, a deleted or renamed property test, a flipped `fail` test, or a narrowed fuzzer is red unless a Decisions row names it. Both share one committed baseline. |
-| Mutation score | `scripts/mutation-guard.py` | Every other gate asks whether the tests pass; this asks whether they can fail — break the implementation on purpose and count what the suite notices. `--measure` carries the ratchet (red when the score falls *or* the survivor count rises, since a ratio can hold flat while coverage shrinks) and runs off-session; `--check` is cheap enough for `--full` and only asks whether a measurement exists and still describes this tree. Staleness is named and raised in the inbox, fatal only if the repo asks. |
-| Seam ratchet | `scripts/seam-guard.py` | Mutation asks whether the tests can fail; this asks whether they reach the code at all. `vi.mock('@/services/x')` asserts what the author believed that module does, and nothing ever checks the belief — a mutant behind that wall reports the same green either way. The count of module mocks (first-party and third-party tracked apart) may fall but never rise against a committed baseline shared with the proof ratchets. Process-boundary stubs and partial mocks via `importActual`/`importOriginal` are deliberately not counted: they are the fix, not the disease. |
-| Counterexamples | `scripts/cex.py`, `.fluxpoint-cex.jsonl` | A prover's shrunk failing input is the most reusable thing it produces and it lives in a log the next command overwrites. `aiken check`'s JSON and `dafny verify`'s counterexample model are captured, each failure recorded, and a fix pinned to a regression test — accepted only when the recorded value is physically in that test's body, outside comments and strings, in a test that neither inverts nor disables its oracle (`fail`-annotated, `{:verify false}`, an `assume`) and is not hollow. Losing a pinned test is red; releasing one costs a reason and a Decisions row. |
-| Decisions | `scripts/decision.py`, `PreCompact` hook | A choice with more than one defensible answer is recorded against `DecisionV1` — the options, the best case against each including the winner, the rationale — so it survives the context that made it; `--none` makes silence a statement. At compaction the hook records whether anything reached the disk, and SessionStart tells the next context when the reasoning behind the current diff is gone. `FPL_DISTILL=1` makes the Stop gate ask for one; off by default. |
-| Attestation | `PostToolUse` hook on `Bash` | For a declared command that succeeds, records the runtime's own exit code to `.claude/fluxpoint/attest.jsonl`, so a green stops depending on an agent typing it back. PostToolUse has been measured not to fire when a Bash call fails, so the log binds passes and is silent about reds. Dormant in a repo that declares no gates. |
-| Proved gates | `verify: "prove:<gate>"`, `ExecutionV1` | A node can declare that its verdict must match the hook's record. The gate name resolves at compile time, so a tier naming nothing refuses to compile; at record time a citation that does not exist or disagrees files the run `TAMPERED-EXECUTION`, and citing nothing files it `INCOMPLETE`. Where a repo declares gates, an `irreversible` node's guard must be prove-gated — an effect nobody can undo may not rest on a self-reported exit code. |
-| Review | `red-team-reviewer` agent, `/fluxpoint:red-team`; `proof-auditor` agent, `/fluxpoint:proof-audit` | Adversarial pass over the diff: eUTxO, oracle, authority, numeric, off-chain, and infra attack surface. Ends `VERDICT: SHIP` or `VERDICT: BLOCK`. The proof-auditor asks whether verification got weaker while the checker stayed green and ends `SOUND`, `WEAKENED`, `UNPROVEN` (no checker ran) or `NOT-APPLICABLE` (no proof surface). Both are typed contracts (`RedTeamV1`, `ProofV1`) and both are gate nodes in the feature campaign. |
-| Drivers | `loop-engineering` skill + templates | `/goal` for interactive convergence, native `/loop` (self-paced) for in-session grinding, `/schedule` Routines for cloud standing guardrails, `scripts/loop.sh` for multi-hour outer Ralph runs with fresh context per iteration. |
-
-The repo-side contract is a single file: `scripts/harness.sh` supporting
-`--changed <file>` (fast, scoped) and `--full` (everything the DoD
-requires), exit 0 = green. The gate stays dormant in repos that lack it.
-
-## What graph mode adds
-
-Graph Engineering is the layer above the loop: loop mode makes one agent's
-cycle programmable (state file, deterministic harness, driver); graph mode
-makes the organization of agents programmable. A campaign
-is a graph — nodes are single-responsibility agents with typed contracts,
-edges are deterministic code, verification is named per edge — compiled to
-a Claude Code Workflow script and repaired by targeted resume instead of
-restarts.
-
-| Piece | Mechanism | Behavior |
-|---|---|---|
-| Spec | ```json graph-ir block in `WORK.md` | The single source of truth: nodes with named contracts, `foreach`/`after` edges, a verification tier per node, budget ceiling, failure policy. Prose explains intent; the IR decides what runs. |
-| Compiler | `scripts/compile-graph.py` (python3, stdlib) | Compiles the IR to a Workflow script **deterministically — no model transcribes it**, so spec and executor cannot drift. Rejects unsound graphs at compile time: missing/unknown contracts, even panels, `verifyOver` that is not a contract field, dangling `after`/`foreach`/`role`, `{{prev}}` without an edge, a discovery loop with no dry rule/ceiling/dedup key, planned fan-out over `budget.maxNodes` (rounds priced in), and any mutator with no independent node verifying it. Unknown fields are errors too, at every level, so a misspelled `verifyOver` fails loudly instead of silently disabling verification. It also warns (without blocking) on shapes that compile but disappoint — a discovery ceiling too tight for its dry rule to ever fire, a sweep with no verification tier, an effort transition between consecutive nodes (a cold prefill each), or a fan-out with no declared prompt-cache TTL. Every graph is priced in cold-input-token equivalents from effort, model and the declared `cacheTtl`, and `budget.maxEstimatedTokens` is a ceiling on that estimate, because agent-call count is the wrong unit for the bill. |
-| Executor | Claude Code Workflow tool | `/fluxpoint:graph-run` compiles, runs, and records. Generated code carries the guarantees: input normalization, worktree isolation for mutators, refuter panels that attack rather than confirm, a budget floor that logs whatever it leaves unverified. On partial failure, `resumeFromRunId` re-runs only the repaired node onward. |
-| Reducers | `reduce` IR nodes, `{{prev.<field>}}` projection | Deterministic code between agents — dedupe, rank, cut, or project one contract field — compiled to plain JS with zero spawns, every cut named in the log. Models for ambiguity, code for plumbing: the synthesis node judges a shortlist, not a landfill. |
-| Metrics | structured provenance, `scripts/metrics.py`, `/fluxpoint:status` | Every summary records agent calls spawned vs planned and the runtime's token meter; discovery rounds carry found/new/kept tallies with per-worker unique-new counts; reduces carry before/after. `metrics.py` folds runs, lessons, and inbox into per-campaign rates — death and skip rates, sweep endings split dry/ceiling/truncated/halted, panel kill rate — so campaigns are tuned against numbers, not vibes. |
-| Memory | `memory` IR field, `scripts/memory.py`, `LessonV1` | A sweep's judged items — survivors *and* the panel's kills with the objection that killed them — are filed as lessons keyed by the IR's own dedupe fields, and the next run seeds from the same tag. Run two opens where run one stopped instead of re-arguing it. Seeds are advisory: they reach a prompt, never the dedup set, so a re-found item is still judged rather than silently dropped. |
-| Recall | `scripts/recall.py`, `scripts/embedder.py`, `/fluxpoint:recall` | The hybrid retrieval layer over lessons, run decisions, counterexample ledger entries, and declared primitives (see [Hybrid memory recall](#hybrid-memory-recall-graph--embeddings)): a deterministic knowledge graph plus BM25 plus optional API embeddings, fused with weighted reciprocal-rank fusion, so prior context surfaces by meaning and graph proximity instead of exact tag match. Seed maps come back relevance-ordered in the same shape `memory.py --load` prints; SessionStart injects the top indexed context for the work at hand. |
-| Evidence | `scripts/record-run.py`, `/fluxpoint:status` | Provenance is a build artifact: `runs/<runId>.json` plus an auto-appended Evidence row (outcome, nodes OK/dead, findings, harness exit, red-team verdict). Nothing is remembered by hand. Every claimed gate exit is cross-checked against the attestation log and filed `ATTESTED`, `UNATTESTED`, or `MISMATCH` — a node claiming green over an attested red raises an inbox item and says so in the row. |
-| Review | `graph-auditor` agent, `/fluxpoint:graph-audit` | Semantic adversarial pass — stakes-vs-tier mismatches, vacuous contracts, context packets that paste transcripts, hidden coupling, ceilings that are not ceilings. Structure is the compiler's job. Ends `VERDICT: SOUND` or `VERDICT: REWIRE`. |
-| Method | `graph-engineering` skill + templates | Loop-vs-graph rule, five primitives → bindings, tier selection by stakes, canonical shapes: fan-out/verify (`WORK.md`), council → build → independently gated (`WORK.feature.md`), loop-until-dry discovery (`WORK.discovery.md`), advisor–orchestrator, zone defense. |
-| Composition | shares the loop contract | Mutating nodes work loop slices; `scripts/harness.sh` and the Stop-hook DoD gate keep final authority. Graph green ≠ done — campaigns still exit through the ship pipeline. |
-
-The invariant worth naming: **a node that writes to the tree may not
-certify its own work.** Mark it `mutates: true` and some later node with
-`independent: true` must re-derive the verdict by running the harness
-itself. The compiler refuses to build a graph that breaks this — it
-shipped as a real bug in v0.1, so it is now unexpressible.
-
-## Hybrid memory recall (graph + embeddings)
-
-`memory.jsonl` remembers what campaigns established; until v1.26 the only
-way back in was an exact `tag|dedupeKey` match, so a lesson about
-beacon-prefix derivation was invisible to a session working on two-way
-asset beacons. `scripts/recall.py` closes that gap with the architecture
-the research points at — Graphiti's read path without its write path —
-while adding **no store, no writer, no dependency, and no daemon**:
-
-- **The graph is a projection, not a store.** `recall.py --build` compiles
-  a typed knowledge graph deterministically from the stores that already
-  exist — lessons, run artifacts, decisions (keyed by the import id the
-  compiler already resolves), counterexample ledger entries, and the repo's own
-  `substrate.json` primitives (sanitized as hostile input; consumes-edges
-  kept walkable across the repo boundary) — into gitignored
-  `.claude/fluxpoint/index/`. Every relation is schema-native (provenance,
-  supersession, kill events, path components inside dedupe keys, campaign
-  membership), so there is no LLM extraction step to pay for or to
-  hallucinate: the evidence (LazyGraphRAG, HippoRAG 2's ablations,
-  verbatim-beats-extracted) says extraction subtracts value when the data
-  is already typed. Identical sources build byte-identical indexes, and a
-  malformed line in a *source* store is still a hard error while a damaged
-  *index* file is deleted and rebuilt out loud.
-- **Bi-temporal by derivation.** Each lesson identity carries its full
-  append chain, so recall serves the current version by default,
-  `--as-of <ts>` serves the version that held then, and a kill stays a
-  permanently valid `KILLED_BY` edge even though the claim it killed is
-  not — kills are priors, never suppressors. A killed lesson whose touched
-  file changed after the kill is marked `stale: <file> changed since`
-  at build time — annotated, never dropped, because a finding that comes
-  back after the code moved is exactly the regression a sweep exists to
-  catch.
-- **Hybrid retrieval, evidence-shaped.** Up to four legs — BM25 over an
-  identifier-aware tokenization of the query, BM25 over path tokens from
-  files touched, cosine against API embeddings, and personalized PageRank
-  from tag/file/campaign seeds with hub-resistant specificity weights —
-  fused with weighted reciprocal-rank fusion (k=60), then boosted by
-  re-establishment count (a lesson filed by many runs outranks a one-off)
-  and gentle recency decay on lessons only.
-- **The embedder is quarantined.** `scripts/embedder.py` is a closed
-  provider registry — `voyage` (default `voyage-code-3` at 256 dims;
-  Anthropic's documented embeddings partner, and its code-tuned models
-  lead code retrieval), `openai` (`text-embedding-3-small` at 512),
-  `gemini` (`gemini-embedding-001` at 768), or `none` — resolved by key
-  presence (`VOYAGE_API_KEY`, then `OPENAI_API_KEY`, then
-  `GEMINI_API_KEY`) or forced with `FPL_EMBEDDER`; an unknown value is a
-  hard error, never a silent fallback, and
-  `FPL_EMBED_MODEL`/`FPL_EMBED_DIMS` tune the model.
-  Vectors are cached by content hash (rebuilds re-embed only what
-  changed), stored unit-normalized one file per model, and compared by
-  brute-force dot product — at this corpus size a vector database would
-  be a dependency, not a speedup. The API is the **single sanctioned
-  non-deterministic input** in the memory layer, and it can only ever
-  reorder advisory output: nothing embedded is stored as truth, gates
-  anything, or suppresses anything. Keyless is a fully supported mode —
-  BM25 + graph serve, and every result names the absent leg.
-- **Injection is budgeted per site.** SessionStart injects the top 5
-  lessons ranked against the work file and the session's touched paths —
-  offline, never rebuilding, capped at 1200 bytes, elisions named,
-  `FPL_RECALL_INJECT=0` to demote. `/fluxpoint:graph-run` seeds sweeps
-  through `recall.py --format seedmap`, which emits exactly the shape
-  `memory.py --load` prints with keys relevance-ordered — the compiled
-  graph's advisory-seed contract is untouched. A node declaring
-  `memory: {priors: true}` additionally hands its refuters the seed tag's
-  killed claims with the objections that killed them (5 items, 400 chars
-  each), framed as priors the panel may overturn — the panel stops paying
-  to rediscover arguments the store already holds, and the finder's
-  prompt stays clean. `/fluxpoint:recall` serves humans. A per-prompt
-  UserPromptSubmit hook exists but ships **dark** behind
-  `FPL_MEM_PROMPT=1`: offline, 3 items, 1200 bytes, and a precision floor
-  — two independent retrieval legs, or a lexical match on at least two
-  informative query tokens; the graph leg never corroborates, because its
-  seeds come from the lexical top ranks — off by default because the
-  strongest external result says wrongly retrieved memories cost more
-  than none.
-- **Curation is a campaign, not a daemon.** `templates/WORK.consolidate.md`
-  reads the store, proposes merges and restatements as findings, has a
-  skeptic attack each one with the killed priors in hand, and lets
-  `record-run.py` file the survivors through the same single-writer path —
-  supersession by append, never deletion. Run it by hand or from a
-  scheduled Routine.
-
-What it refuses, on purpose: LLM extraction or reranking anywhere in the
-write or rank path; any new dependency (no numpy, faiss, sqlite-vec, or
-local models); graph databases, bundled MCP servers, daemons; new writers
-to `memory.jsonl`; and retrieval-driven suppression of any kind — ranking
-decides what reaches a prompt first, never what gets judged.
-
-Requires a Python 3 interpreter reachable as `python3` or `python`, and a
-Claude Code version with the Workflow tool
-(`/workflows` resolves); where absent, runs degrade to parallel subagent
-fan-out with the same contracts, recorded as `degraded-subagents` in
-Evidence.
+- `git`, and Python 3 reachable as `python3` or `python`.
+- Node 18 or newer for substrate.
+- `jq` when available; the hooks fall back to Python without it.
+- Claude Code with plugin support, or Codex with plugin support.
+- Graph execution (`/fluxpoint:graph-run`) needs Claude Code's Workflow tool.
 
 ## Install
 
-Publish this repo (see below), then either path:
+Once per machine.
 
-**One-time, per developer**
+Claude Code:
 
 ```
-/plugin marketplace add flux-point-studios/claude-plugins
+/plugin marketplace add Flux-Point-Studios/claude-plugins
 /plugin install fluxpoint@fluxpoint
+/plugin install substrate@fluxpoint
 ```
 
-**Automatic, per repo** — commit this to each repo's
-`.claude/settings.json` (it is `templates/settings.snippet.json`):
-
-```json
-{
-  "extraKnownMarketplaces": {
-    "fluxpoint": {
-      "source": { "source": "github", "repo": "flux-point-studios/claude-plugins" }
-    }
-  },
-  "enabledPlugins": {
-    "fluxpoint@fluxpoint": true
-  }
-}
-```
-
-Anyone who trusts the repo folder gets prompted to install; every session
-in that repo then boots with the loop context injected and the gate armed.
-For CI and containers, use `forcedPlugins` in managed settings so the
-install needs no interaction.
-
-## Onboard a repo
+Codex:
 
 ```
-/fluxpoint:init <one-line goal>
+codex plugin marketplace add Flux-Point-Studios/claude-plugins
 ```
 
-This copies the harness contract, `WORK.md`, `WORK_PROMPT.md`, and
-`scripts/loop.sh` into the repo, wires `.gitignore` and settings, then
-tailors `harness.sh` to the repo's real stack and iterates until `--full`
-exits 0.
+Then enable `fluxpoint@fluxpoint` and `substrate@fluxpoint` from
+`codex /plugins`, or per repository as below.
 
-Set `MODE: graph` (or `both`) in `WORK.md` when the work meets the
-escalation rule, and fill the Campaign section's `graph-ir` block. Drive
-a campaign with `/fluxpoint:graph-design <goal>` (author the IR;
-compile-check clean, then audited to `VERDICT: SOUND`) followed by
-`/fluxpoint:graph-run` (compile, execute, record). Check in any time
-with `/fluxpoint:status`.
+Once per repository, so every session loads the plugin without a prompt:
+commit `templates/settings.snippet.json` into `.claude/settings.json` for
+Claude Code, and `templates/codex.config.snippet.toml` into
+`.codex/config.toml` for Codex. `/fluxpoint:init` writes whichever the
+running agent needs. On Claude Code, `forcedPlugins` in managed settings
+covers CI and containers.
 
-Compiled `.graph.js` files land in `.claude/workflows/` and are build
-output — never hand-edit them; edit the IR and recompile.
+## Quick start
+
+```
+/fluxpoint:init <one-line goal>      # Claude Code
+$fluxpoint-init <one-line goal>      # Codex
+```
+
+This copies the harness contract, `WORK.md`, `WORK_PROMPT.md` and
+`scripts/loop.sh` into the repo, wires the ignore file and the runtime's
+settings, then tailors `scripts/harness.sh` to the repo's stack and iterates
+until `--full` exits 0.
+
+From then on every session boots with the branch state, the last harness
+verdict and the head of `WORK.md` in context, every edit runs the scoped
+checks, and no session ends while the harness is red.
+
+The repo-side contract is one file, `scripts/harness.sh`, with two modes:
+`--changed <file>` for fast scoped checks and `--full` for everything the
+Definition of Done requires. Exit 0 is green. A repo without the file leaves
+the gate dormant.
+
+## What fluxpoint enforces
+
+| Layer | Hook | What happens |
+|---|---|---|
+| Bootstrap | `SessionStart` | Injects branch state, the last harness verdict, open blockers, recalled context and the head of `WORK.md` on every start, resume, clear and compaction. |
+| Per-edit checks | `PostToolUse` on file writes | Runs `scripts/harness.sh --changed <file>`; a red result is fed back for correction at the edit. |
+| Credential gate | `PreToolUse` on `Bash` | Refuses a command whose output would be a declared credential file, and permits the same path handed to code that emits public derivations. Dormant without `.fluxpoint-secrets.json`. |
+| Attestation | `PostToolUse` on `Bash` | Records the runtime's own exit code for every command declared in `.fluxpoint-gates.json`, so a gate result cannot be typed by an agent. |
+| Definition-of-Done gate | `Stop` | When code changed this session, runs `scripts/harness.sh --full` plus a hygiene scan for TODO, FIXME, skipped tests and similar markers. Red blocks the stop, up to `FPL_MAX_BLOCKS` times, then yields with a checkpoint notice. The gate records its own Evidence row. |
+| Compaction gate | `PreCompact` | Blocks one compaction when code changed and nothing durable was written, so the reasoning gets written down before the transcript is summarized. |
+| Ratchets | inside `--full` | Proof escape hatches, theorem statements, mutation score, module mocks and named guards may only move in the safe direction against committed baselines. |
+| Counterexamples | inside `--full` | Shrunk failing inputs from `aiken check` and `dafny verify` are recorded, and each must be pinned to a regression test. |
+| Relations | inside `--full` | Declared artifact pairs are checked for co-change, parity and differential agreement. |
+| Review | agents | `red-team-reviewer`, `proof-auditor` and `graph-auditor` end in a typed verdict that the gate consumes. |
+
+The mechanisms behind each row, the invariants they hold and their
+limitations are documented in
+[plugins/fluxpoint/README.md](plugins/fluxpoint/README.md).
+
+## Graph mode
+
+A campaign is declared as a `graph-ir` block in `WORK.md`: nodes with named
+contracts, edges, a verification tier per node and a budget ceiling.
+`scripts/compile-graph.py` compiles it deterministically into a Workflow
+script and rejects unsound graphs at compile time, including any node that
+writes to the tree and certifies its own work. `/fluxpoint:graph-design`
+authors and audits the IR; `/fluxpoint:graph-run` compiles, executes and
+records provenance. Execution needs Claude Code's Workflow tool. Design,
+compile checks and audits run on either runtime.
 
 ## Drive a loop
 
-Interactive convergence (evaluator-checked, gate as deterministic backstop):
+Interactive convergence on Claude Code uses `/goal`; in-session grinding
+uses `/loop`. The unattended outer loop runs a fresh agent context per
+iteration on either runtime:
 
 ```
-/goal scripts/harness.sh --full exits 0 and the run is shown; no test
-deleted or skipped; or stop after 30 turns and summarize gaps
-```
-
-In-session grinding (native `/loop`, self-paced — re-fires when the session
-goes idle, ends itself once the stop condition provably holds; requires
-Claude Code v2.1.72+, self-ending v2.1.202+; Esc cancels):
-
-```
-/loop work the next slice per LOOP_PROMPT.md; stop only when
-scripts/harness.sh --full exits 0 and WORK.md reads STATUS: DONE
-```
-
-Every driver runs the same per-slice contract from `LOOP_PROMPT.md`, and
-a slice ends merged-and-cleaned or explicitly parked — never at "PR
-opened". Merge authority is decided once per repo in WORK.md's Merge
-policy; the deterministic form is `harness.sh --full` as a required CI
-check plus the red-team verdict, then
-`gh pr merge --auto --squash --delete-branch`, so GitHub — not the agent's
-self-report — executes "merge if green".
-
-Standing guardrails (cloud Routines — run with the laptop closed; fresh
-clone per run, pushes only to `claude/`-prefixed branches; cron floor one
-hour, daily run caps by plan; create conversationally in-session, add API
-or GitHub triggers at claude.ai/code/routines):
-
-```
-/schedule nightly at 02:00, run scripts/harness.sh --full; if it exits
-non-zero, open an issue titled "DoD drift" with the last 40 log lines;
-if green, end without output
-```
-
-A GitHub-triggered routine fits the red-team pass: on every opened PR,
-review the diff against the adversarial checklist and post a review ending
-`VERDICT: SHIP` or `VERDICT: BLOCK`. Validate the routine environment's
-setup script can install the repo's toolchain before trusting a routine to
-run the harness. For pure in-session watching (CI, a preview-net tx), ask
-Claude to watch it and it may use the Monitor tool — a background script
-streaming output into the session — instead of interval polling.
-
-Outer Ralph, fresh context per iteration:
-
-```
-scripts/loop.sh                       # attended, acceptEdits
+scripts/loop.sh                                   # Claude Code, attended
+AGENT_CLI=codex scripts/loop.sh                   # Codex
 MAX_ITER=50 PERMISSION_ARGS="--dangerously-skip-permissions" scripts/loop.sh
-                                      # sandboxed container ONLY
+                                                  # sandboxed container only
 ```
 
-Halt an outer loop any time: `touch .claude/fluxpoint/STOP`
+Halt an outer loop at any time with `touch .claude/fluxpoint/STOP`. Every
+driver works the per-slice contract in `WORK_PROMPT.md`, and a slice ends
+merged and cleaned, or explicitly parked. Merge authority is decided once
+per repo in the Merge policy section of `WORK.md`.
 
-## Migrating from the split plugins
+On Claude Code, cloud Routines can hold standing guardrails such as a nightly
+`harness.sh --full` that opens an issue on red. Routines run under your
+identity, so keep them to guardrail jobs with no key material.
 
-Repos onboarded before 1.0 carry `LOOP.md`, `GRAPH.md`, and two state
-directories. Run:
+## Runtime support
 
-```
-/fluxpoint:migrate
-```
+| Capability | Claude Code | Codex |
+|---|---|---|
+| Install | `/plugin marketplace add` and `/plugin install` | `codex plugin marketplace add`, then enable |
+| Per-repo enablement | `.claude/settings.json` | `.codex/config.toml` |
+| Session bootstrap, per-edit checks, Stop gate, compaction gate, credential gate | yes | yes |
+| Attestation of gate runs | passes only; the runtime's PostToolUse does not fire on failure | passes and failures |
+| Commands | `/fluxpoint:<name>`, `/substrate:<name>` | `$fluxpoint-<name>`, `$substrate-<name>` |
+| Skills | yes | yes |
+| Review agents | native subagents | the agent file is handed to a Codex subagent, or run inline |
+| Graph execution | Workflow tool | not available; design, compile-check and audit work |
+| Outer loop | `claude -p` | `codex exec` |
+| In-session drivers (`/goal`, `/loop`, Routines) | yes | no equivalent |
+| Memory lint (substrate) | reads the Claude Code memory directory | silent; Codex keeps no such directory |
 
-It folds both files into one `WORK.md` (carrying every Evidence row
-across), moves local state under `.claude/fluxpoint/`, rewires
-`.gitignore` and `enabledPlugins`, and verifies the harness is still green
-and the IR still compiles before removing anything. Until it runs, the
-hooks still honor `LOOP.md`, so a half-migrated repo keeps working.
+The hook scripts, state directory (`.claude/fluxpoint/`) and manifests are
+identical on both runtimes. [docs/runtimes.md](docs/runtimes.md) records
+what each runtime hands the hooks and how the adapter handles the
+differences.
 
 ## Tuning
 
@@ -291,220 +151,101 @@ hooks still honor `LOOP.md`, so a half-migrated repo keeps working.
 |---|---|---|
 | `FPL_DISABLE=1` | off | Kill switch: every hook becomes a no-op. |
 | `FPL_MAX_BLOCKS` | 3 | Consecutive Stop blocks before the gate yields with a checkpoint. |
-| `FPL_ALLOW_MISSING_GATES=1` | off | Accept, on purpose, that a gate your manifest declares is not installed. Without it the harness is RED when a declared gate's script cannot be found — a check that does not run must not read as a check that passed. A repo declaring no gates is unaffected and stays runnable without the plugin. |
-| `CLAUDE_PLUGIN_ROOT` | set by the runtime | Where the harness resolves gate scripts from. Version-correct by construction; `FPL_PLUGIN_ROOT` overrides it. Without either, the fallback prefers a marketplace install, then the highest cached version. |
-| `.fluxpoint-hygiene-ignore` | absent | One glob per line, `#` for comments. Excludes a path from the **hygiene scan only** — for an untracked file you intend to commit later, which `.gitignore` is the wrong lever for. Deliberately not read by the predicate that arms the gate, so it can narrow what the scan reads and never switch the gate off. It is in the trust base, so widening the blind spot is reported on a green run. |
-| `MAX_ITER` / `MAX_TURNS` | 25 / 40 | Outer loop budgets. |
-| `PERMISSION_ARGS` | `--permission-mode acceptEdits` | Outer loop permission flags. |
+| `FPL_GATE_TIMEOUT` | 540 | Seconds the Stop gate gives the harness. The hook ceiling is 600. |
+| `FPL_HARNESS_ARGS` | `--full` | The harness invocation the Stop gate runs, for repos whose full suite cannot finish inside the ceiling. |
+| `FPL_ALLOW_MISSING_GATES=1` | off | Accept a declared gate whose script is not installed. Without it the harness is red, because a check that did not run must not read as one that passed. |
+| `FPL_COMPACT_BLOCK=0` | on | Demote the compaction gate to a warning. |
+| `FPL_DISTILL=1` | off | The Stop gate also asks for a Decisions row when code changed and nothing was written down. |
+| `FPL_RECALL_INJECT=0` | on | Drop the recalled-context section from the session bootstrap. |
+| `FPL_MEM_PROMPT=1` | off | Per-prompt recall on `UserPromptSubmit`. |
+| `FPL_EMBEDDER`, `FPL_EMBED_MODEL`, `FPL_EMBED_DIMS` | by API key | Embedding provider for recall: `voyage`, `openai`, `gemini` or `none`. Keyless is a supported mode. |
+| `FPL_MEMORY_INDEX=0`, `FPL_MEMORY_EMBED=0` | on | Skip the index rebuild, or only the embedding step, after a recorded run. |
+| `FPL_PLUGIN_ROOT` | unset | Where the harness resolves gate scripts from. The runtime's own `CLAUDE_PLUGIN_ROOT` is used otherwise, then the install caches. |
+| `FPL_PY` | auto | The Python interpreter to use. |
+| `FPL_AIKEN_SEED` | 1 | Fuzzer seed for `aiken check` in the scaffolded harness, so a counterexample shrinks the same way each run. |
+| `FPL_DAFNY_ARGS` | empty | Extra arguments for `dafny verify`, such as `--extract-counterexample`. |
+| `FPL_PROTOCOL_PARAMS` | unset | A `cardano-cli query protocol-parameters` file for the on-chain budget gate. |
+| `FPL_PAIR_SEED`, `FPL_PAIR_CASES` | from the manifest | Seed and case count for a relation's differential generator. |
+| `FPL_PAIR_AGAINST` | session base | The commit the co-change tier diffs against. |
+| `.fluxpoint-hygiene-ignore` | absent | One glob per line, excluded from the hygiene scan only. |
+| `AGENT_CLI` | `claude` | Outer loop driver: `claude` or `codex`. |
+| `MAX_ITER`, `MAX_TURNS` | 25, 40 | Outer loop budgets; `MAX_TURNS` applies to Claude Code. |
+| `PERMISSION_ARGS`, `CODEX_ARGS` | see `loop.sh` | Outer loop permission flags per driver. |
 
-Dependencies: `git` required; `jq` preferred with a Python fallback
-built into the hooks.
+## Memory recall
 
-## This repo gates itself
+Lessons, decisions, counterexamples and declared primitives are compiled
+into a derived knowledge graph and served through hybrid retrieval: BM25,
+optional API embeddings and personalized PageRank, fused by reciprocal rank.
+The session bootstrap injects the top results for the work at hand;
+`/fluxpoint:recall` serves people. The index is a projection of stores that
+already exist, with no new dependency and no daemon. The design, its
+evidence and what it refuses to do are in
+[docs/memory-recall.md](docs/memory-recall.md).
 
-`scripts/harness.sh --full` is the same contract `/fluxpoint:init` scaffolds
-into any other repo, and `.github/workflows/harness.yml` runs it on every
-push to `main`, every pull request, and on demand. It checks every manifest and contract, syntax-checks
-every script, validates the plugin, compiles all campaign templates and
-`node --check`s the generated JavaScript, then runs every suite in
-`plugins/fluxpoint/tests/` (39 today), among them: compiler
-invariants, field-effect probes, codegen-injection regressions, Stop-gate
-regression cases, hook wiring and PostToolUse behavior, migration against
-real pre-1.0 fixtures, the proof-strength ratchet across seven provers, and
-unified-state compatibility.
+## Verified work
 
-One step is advisory on purpose. `plugins/fluxpoint/scripts/prompt-audit.py`
-scans the prompt-bearing surface — agents, commands, skills, templates —
-for the anti-patterns that hobble a frontier model (shouted imperatives,
-thoroughness boosters, verification rituals, scratchpad scaffolds, stale
-model ids, contradictory or repeated rules) and prints the trend without
-flipping the verdict, because the house style is deliberately dense prose
-and a gate that starts by failing on idiom gets routed around. Suppressions
-are on the record (an inline marker, or `.fluxpoint-prompt-audit.json`,
-whose spent entries are reported), and `--strict` is the promotion path
-once the false-positive rate is known. CI runs the same scan on its own
-line.
+A prover exits 0 on an assumed lemma exactly as on a proved one, so the
+scaffolded harness runs the prover in `--full` and three ratchets hold the
+proof surface: escape hatches, theorem statements and the on-chain budget
+for Cardano validators. `/fluxpoint:proof-audit` adds the semantic pass a
+counter cannot do. Supported provers and the details are in
+[plugins/fluxpoint/README.md](plugins/fluxpoint/README.md#verified-work).
 
-The field-effect suite exists because of the defect that kept recurring
-here: not a wrong output, a *silent* one. `verify: harness` was accepted,
-documented, priced into the budget, and emitted nothing; `haltWhen` on a
-fan-out node compiled clean and could never fire. Reviewing for that is
-unreliable, so the suite sets every field the IR accepts to a non-default
-value and fails if the compiler's output does not change. A field added to
-the registry without a probe fails the run.
+## Security
+
+- Plugins execute code with the user's privileges through hooks. Treat this
+  repository as production infrastructure: protected default branch,
+  required review, signed commits.
+- Unattended loops belong in a sandboxed container with allow-listed egress
+  and no path to key material. Harness exercises settle on preview or
+  preprod networks.
+- The hygiene scan covers uncommitted and untracked code. Committed history
+  is CI's job; run the same harness there.
+- A green produced while `scripts/harness.sh` or a baseline file was itself
+  modified is reported as such, because a verdict is only as trustworthy as
+  the contract that produced it.
+
+Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
 
 ## Migrating from the split plugins
 
-`/fluxpoint:migrate` drives `scripts/migrate.py`, which is tested against
-built pre-1.0 fixtures (a v0.1 loop-only repo, a v0.2 loop+graph repo, and a
-pre-0.2 repo whose GRAPH.md is prose). It runs in three phases — `--plan`
-touches nothing, `--apply` writes `WORK.md` and rewires config while leaving
-the sources in place, `--finalize` deletes them — and refuses to finalize if
-`WORK.md` carries fewer Evidence rows than the sources did. The one thing it
-will not do is invent a `graph-ir` block for a pre-0.2 prose campaign; it
-flags that for a human instead.
+Repos onboarded before 1.0 carry `LOOP.md`, `GRAPH.md` and two state
+directories. `/fluxpoint:migrate` folds them into one `WORK.md`, keeping
+every Evidence row, and verifies the harness is still green before removing
+anything. Until it runs, the hooks still honor `LOOP.md`.
 
-## Verified work (Aiken, Dafny, Lean, Coq, Verus, Isabelle, TLA+)
-
-A prover is the ideal thing to put behind a Definition-of-Done gate,
-because it answers with an exit code rather than an opinion. The catch is
-that exit 0 does not mean what it looks like: every proof assistant ships a
-way to make a goal go away without proving it, and an agent told to "make
-it pass" will find it.
-
-Four mechanisms, in `scripts/harness.sh`, `scripts/proof-guard.py` and
-`scripts/plutus-budget.py`:
-
-1. The scaffolded harness invokes the prover in **`--full`**, not only in
-   the per-file `--changed` path. A gate that decides "done" without
-   calling the prover is not a gate.
-2. **The proof-strength ratchet.** `proof-guard.py --baseline` records every
-   escape hatch — `todo`/`expect` in Aiken, `assume`/`{:axiom}` in Dafny,
-   `sorry` in Lean and Isabelle, `Admitted` in Coq,
-   `#[verifier::external_body]` in Verus, `ASSUME` in TLA+, and
-   `--skip-tests`/`--no-verify` anywhere — into a committed
-   `.fluxpoint-proof-baseline.json`. `--check` fails when any category
-   rises. Proving something you previously assumed lowers the count and is
-   always welcome; raising one becomes a diff a human has to justify.
-3. **The on-chain budget gate (Cardano).** `plutus-budget.py` runs after
-   `aiken build` and measures `compiledCode` out of the plutus.json
-   blueprint, because correct and submittable are different properties and
-   only one of them has a prover. The protocol `maxTxSize` fails
-   unconditionally — a script that exceeds it cannot go on chain no matter
-   how well it is proved — while headroom is yours to set in
-   `.fluxpoint-budget.json`, and `--params` reads real `cardano-cli query
-   protocol-parameters` output so the constants in the script are a
-   fallback, not the authority. Execution units are a property of
-   evaluating a script against a transaction, not of the artifact, so
-   measured values live in the same file and an absent one is reported
-   unmeasured rather than passed.
-4. **`/fluxpoint:proof-audit`** adds the semantic pass a counter cannot do,
-   via the `proof-auditor` agent: a theorem whose statement lost a
-   conjunct, a property proved about an unreachable state, an Aiken `test`
-   that cannot fail, a negative test that trips an earlier guard than the
-   one it is named for, a validator with no test at all, a solver `unknown`
-   read as success. When the prover is not installed it says so and caps
-   its verdict at `UNPROVEN` rather than reporting a static read as sound.
-
-Two weakenings add no escape hatch, so both are counted structurally
-rather than by line match: Aiken tests that cannot fail (a bare boolean
-body, a self-comparison, an empty body) and predicates that decide nothing
-(`fn credential_matches(..) -> Bool { True }`, where the call site still
-reads as a checked conjunction). They cover the same trade — replacing a
-`todo` with `True` drives `aiken.todo` to zero and looks like progress.
-False positives are treated as worse than misses, and a constant that
-predates the baseline is absorbed rather than held against the repo.
-
-The ratchet is still deliberately a floor. A theorem that lost a conjunct,
-a property proved about an unreachable state, or a `fail` test that trips
-an earlier guard than the one it is named for — `cannot_underpay` built
-with the wrong signer fails on the signature check and covers nothing —
-leave every count unchanged, which is why the second pass exists.
-
-## Treating WORK.md as untrusted input
-
-The compiler generates JavaScript that is then executed, so every value
-interpolated from `WORK.md` is an injection surface — including one that
-arrives from a legacy `GRAPH.md` during migration. An adversarial review of
-v1.3.0 drove two fields to real code execution: `haltReason` was pasted
-straight into a template literal, and a `lists` key was emitted as a bare JS
-identifier. Both passed `--check` and a fully green harness.
-
-The rule now, enforced by `tests/security-test.py`, which compiles real
-payloads and runs the output to prove they stay inert:
-
-- free text (prompts, reasons, list values) is emitted through `js_str` or
-  `js_template`, which escape backticks, `${`, and backslashes;
-- anything emitted as a JS *identifier* — node ids, `lists` keys — is
-  constrained by `IDENT` at validation time, because escaping does not
-  apply to an identifier position;
-- halt literals are re-emitted from their parsed value, never pasted from
-  the matched source text.
-
-## Security posture
-
-- Plugins execute arbitrary code with user privileges. Treat THIS repo as
-  production infrastructure: protected default branch, required review,
-  signed commits.
-- Unattended loops run in a sandboxed container with allow-listed egress.
-  No path from that environment to mainnet key material, ever. Harness
-  exercises settle on preview/preprod; the resulting tx hash is the
-  evidence artifact the DoD demands.
-- Routines run on Anthropic-managed cloud under your identity — commits
-  and posts appear as you. Guardrail jobs only: no key material, no
-  mainnet paths, and repos under external data-governance constraints stay
-  on the self-hosted outer loop.
-- The hygiene scan covers uncommitted and untracked code only; committed
-  history is CI's job. Run the same harness script in CI.
-- The DoD gate arms on two independent signals: the PostToolUse marker
-  (`Write|Edit|MultiEdit`) and dirtiness re-derived from `git` at Stop
-  time. The second exists because the first cannot see source written
-  through the Bash tool (`cat >`, `sed -i`, `git apply`) — before v0.1.3
-  such a session could stop with the harness never run.
-  `plugins/fluxpoint/tests/gate-test.sh` pins all ten cases.
-- A green produced by a working tree in which `scripts/harness.sh` itself
-  is modified or untracked is reported, not swallowed: the verdict is only
-  as trustworthy as the contract that produced it.
-
-## Publishing this repo
-
-1. Create the GitHub repo (private is fine) — the snippet above assumes
-   `flux-point-studios/claude-plugins`; edit both the snippet and this
-   README if the org or name differs.
-2. Push, then validate locally: `claude plugin validate .` As of v0.1.1
-   the hooks are invoked via `bash`, so a stripped exec bit (GitHub web
-   uploads and Windows checkouts drop it) can no longer disarm the gate;
-   still, keep the bits correct for direct runs:
-   `git update-index --chmod=+x $(git ls-files '*.sh')` and commit.
-3. Smoke it end to end in a scratch repo:
-   `/plugin marketplace add <org>/claude-plugins`, install, run
-   `/fluxpoint:init`, make an edit containing `FIXME`, try to
-   stop, and watch the gate block.
-
-## The substrate plugin
-
-The second plugin in this marketplace, **substrate**, answers a different
-question than the harness: not "is this done" but "does this already
-exist". Each repo in a multi-repo workspace declares its reusable
-primitives in a `substrate.json` manifest; a zero-dependency Node script
-compiles every manifest into one generated `SUBSTRATE.md` graph — nodes,
-consumes-edges, orphans (dormant value to activate), hubs (harden first) —
-and a matcher-less `SessionStart` hook injects the compact summary plus
-staleness alarms into every session, post-compaction included. A manifest
-that lags its repo's commits is reported as a fact, and a re-commit
-touching only the manifest is deliberately not drift. Install with
-`/plugin install substrate@fluxpoint`, onboard a workspace with
-`/substrate:init`; the manifest schema, config reference, staleness
-semantics, and honest limitations live in
-[`plugins/substrate/README.md`](plugins/substrate/README.md). Its
-`node:test` suites run as part of `scripts/harness.sh --full`.
-
-## Layout
+## Repository layout
 
 ```
-.claude-plugin/marketplace.json
-plugins/substrate/
-├── .claude-plugin/plugin.json
-├── hooks/hooks.json
-├── scripts/            substrate-graph.mjs, memory-lint.mjs, prose-smell.mjs
-├── commands/           init.md, status.md, emit.md, smell.md
-├── templates/          DOCTRINE.snippet.md, WRITING.snippet.md
-└── tests/              graph.test.mjs, staleness.test.mjs
+.claude-plugin/marketplace.json     Claude Code marketplace
+.agents/plugins/marketplace.json    Codex marketplace
+docs/                               runtimes.md, memory-recall.md
+scripts/harness.sh                  this repo's own Definition of Done
 plugins/fluxpoint/
-├── .claude-plugin/plugin.json
-├── hooks/hooks.json
-├── scripts/            lib.sh, inject-state.sh, verify-changed.sh, dod-gate.sh,
-│                       compile-graph.py, record-run.py, recall.py, embedder.py,
-│                       prompt-recall.sh
-├── contracts/          FindingsV1, VerdictV1, HarnessCheckV1, DesignV1, SliceV1, RedTeamV1,
-│                       ProofV1, DecisionV1, LessonV1, ExecutionV1, TreeCheckV1
-├── commands/           init.md, status.md, migrate.md, red-team.md, proof-audit.md, recall.md,
-│                       graph-design.md, graph-run.md, graph-audit.md, release.md
-├── agents/             red-team-reviewer.md, proof-auditor.md, prover.md, graph-auditor.md
-├── skills/             loop-engineering/SKILL.md, graph-engineering/SKILL.md, secret-handling/SKILL.md
-├── templates/          harness.sh, WORK.md, WORK.feature.md, WORK.discovery.md,
-│                       WORK.consolidate.md, WORK.verified.md, WORK_PROMPT.md, loop.sh,
-│                       settings.snippet.json
-├── tests/              gate-test.sh, compile-test.py, unify-test.sh
-└── DESIGN-NOTES.md
+├── .claude-plugin/plugin.json      Claude Code manifest
+├── plugin.json                     portable manifest (Codex)
+├── hooks/hooks.json                one hook set for both runtimes
+├── scripts/                        hook scripts, compiler, ratchets, recall
+├── contracts/                      versioned JSON schemas
+├── commands/                       /fluxpoint:* commands
+├── skills/                         loop-engineering, graph-engineering,
+│                                   secret-handling, and fluxpoint-* Codex
+│                                   entry points for each command
+├── agents/                         review and prover agents
+├── templates/                      harness.sh, WORK*.md, loop.sh, settings
+├── tests/                          the suites scripts/harness.sh runs
+├── README.md, DESIGN-NOTES.md, ROADMAP.md
+plugins/substrate/                  same shape: scripts/, commands/, skills/,
+                                    templates/, tests/, README.md
 ```
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE).
+
+## Contributing
+
+`scripts/harness.sh --full` is the Definition of Done for this repository,
+and CI runs it on every push and pull request. [CONTRIBUTING.md](CONTRIBUTING.md)
+covers the checks, versioning and the conventions the tree follows.

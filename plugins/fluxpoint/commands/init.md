@@ -8,7 +8,7 @@ step; do not stop at copying files.
 
 1. Locate the plugin templates. Try `${CLAUDE_PLUGIN_ROOT}/templates`
    first; if that expands empty in your shell, find them with
-   `find ~/.claude/plugins -type d -path '*fluxpoint/templates' | head -1`.
+   `find ~/.claude/plugins ~/.codex/plugins/cache -type d -path '*fluxpoint/templates' 2>/dev/null | head -1`.
 2. Copy, without overwriting anything that already exists:
    - `templates/harness.sh` → `scripts/harness.sh` (then `chmod +x`)
    - `templates/loop.sh` → `scripts/loop.sh` (then `chmod +x`)
@@ -22,9 +22,15 @@ step; do not stop at copying files.
    matters as soon as any campaign has a `mutates` node: those run in
    isolated trees under `.claude/worktrees/`, which must never be
    committed.
-4. Merge the keys from `templates/settings.snippet.json` into
-   `.claude/settings.json`, creating the file if absent and preserving
-   every existing key.
+4. Wire the plugin to load in every session of this repo, for the runtime
+   in use (both, when the team runs both):
+   - Claude Code: merge the keys from `templates/settings.snippet.json`
+     into `.claude/settings.json`, creating the file if absent and
+     preserving every existing key.
+   - Codex: append `templates/codex.config.snippet.toml` to
+     `.codex/config.toml`, creating the file if absent. It enables
+     `fluxpoint@fluxpoint` once the marketplace has been added with
+     `codex plugin marketplace add Flux-Point-Studios/claude-plugins`.
 5. Tailor `scripts/harness.sh`: inspect the repo's real stack and replace
    the auto-detection floor with the exact commands the Definition of Done
    requires (build, unit and property tests, lint, typecheck, formal

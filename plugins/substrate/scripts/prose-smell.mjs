@@ -381,6 +381,35 @@ function scanFile(fp) {
   return report(fp, scan(fs.readFileSync(fp, "utf8"), config));
 }
 
+// The files a PostToolUse payload wrote. Claude Code's Write and Edit carry
+// tool_input.file_path. Codex's apply_patch, which its matcher aliases fire
+// for Write|Edit, carries the patch text in tool_input.command, whose headers
+// name the files; a relative path that does not resolve from here is re-based
+// from the payload's cwd, the directory the patch was applied in. Deleted
+// files are skipped: nothing to scan. A non-string file_path stays silent.
+function hookFiles(payload) {
+  const ti = payload && typeof payload.tool_input === "object" && payload.tool_input
+    ? payload.tool_input : {};
+  if (typeof ti.file_path === "string" && ti.file_path) return [ti.file_path];
+  if (ti.file_path !== undefined) return [];
+  const text = ["command", "patch", "input"].map((k) => ti[k])
+    .find((v) => typeof v === "string" && v.includes("*** "));
+  if (!text) return [];
+  const cwd = typeof payload.cwd === "string" ? payload.cwd : "";
+  const out = [];
+  const re = /^\*\*\* (Add File|Update File|Move to): (.+?)\s*$/gm;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    let p = m[2].trim();
+    if (!path.isAbsolute(p) && cwd && !fs.existsSync(p) && fs.existsSync(path.join(cwd, p))) {
+      p = path.join(cwd, p);
+    }
+    if (m[1] === "Move to" && out.length) out[out.length - 1] = p;
+    else out.push(p);
+  }
+  return [...new Set(out)];
+}
+
 function main() {
   const args = process.argv.slice(2);
   if (args[0] === "--hook") {
@@ -389,11 +418,14 @@ function main() {
     // gate must never break an unrelated write.
     let raw = "";
     try { raw = fs.readFileSync(0, "utf8"); } catch { process.exit(0); }
-    let fp = "";
-    try { fp = (JSON.parse(raw).tool_input || {}).file_path || ""; } catch { process.exit(0); }
-    if (typeof fp !== "string" || !isProseFile(fp) || !fs.existsSync(fp)) process.exit(0);
+    let files = [];
+    try { files = hookFiles(JSON.parse(raw)); } catch { process.exit(0); }
+    files = files.filter((fp) => typeof fp === "string" && isProseFile(fp) && fs.existsSync(fp));
+    if (files.length === 0) process.exit(0);
     let highs = 0;
-    try { highs = scanFile(fp); } catch { process.exit(0); }
+    for (const fp of files) {
+      try { highs += scanFile(fp); } catch { /* unreadable is not a finding */ }
+    }
     if (highs > 0) {
       process.stderr.write(
         "prose-smell: the flagged frames read as generated text — rewrite them "

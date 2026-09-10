@@ -27,7 +27,7 @@ test("an unsent deliverable alarms at --check, sent ones stay silent", () => {
   writeManifest(ws, "repoA", { repo: "repoA", primitives: [prim("a-core")] });
   writeLedger(ws, "repoA", {
     deliverables: [
-      { id: "vendor-bundle", recipient: "Derek", artifact: "bundle-2026-08-10.zip",
+      { id: "vendor-bundle", recipient: "Avery", artifact: "bundle-2026-08-10.zip",
         builtAt: new Date(Date.now() - 26 * HOUR).toISOString() },
       { id: "sarah-reply", recipient: "Sarah",
         builtAt: new Date(Date.now() - 30 * HOUR).toISOString(),
@@ -36,7 +36,7 @@ test("an unsent deliverable alarms at --check, sent ones stay silent", () => {
   });
   const res = run(["--check", "--root", ws]);
   assert.equal(res.status, 0);
-  has(res.stdout, "ALARM: UNSENT deliverable: repoA/vendor-bundle for Derek — built 26h ago (bundle-2026-08-10.zip)");
+  has(res.stdout, "ALARM: UNSENT deliverable: repoA/vendor-bundle for Avery — built 26h ago (bundle-2026-08-10.zip)");
   assert.ok(!res.stdout.includes("sarah-reply"), `sent deliverables are not obligations:\n${res.stdout}`);
 });
 
@@ -96,7 +96,7 @@ test("an obligation that ended without a send closes on its reason, not on a fak
   const ws = makeWorkspace();
   writeLedger(ws, "repoC", {
     deliverables: [
-      { id: "reshaped-preview", recipient: "Mackenzie", artifact: "preview.html",
+      { id: "reshaped-preview", recipient: "Jordan", artifact: "preview.html",
         builtAt: new Date(Date.now() - 10 * 24 * HOUR).toISOString(),
         sentAt: null,
         closedAt: "2026-08-20T00:00:00Z",
