@@ -240,6 +240,10 @@ plugins/substrate/                  same shape: scripts/, commands/, skills/,
                                     templates/, tests/, README.md
 ```
 
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE).
+
 ## Contributing
 
 `scripts/harness.sh --full` is the Definition of Done for this repository,

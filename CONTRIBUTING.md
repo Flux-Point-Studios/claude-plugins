@@ -22,6 +22,9 @@ prints the trend without failing the run.
 `scripts/harness.sh --changed <file>` runs the scoped checks for one file,
 which is what the plugin's own per-edit hook calls.
 
+Contributions are accepted under the repository's Apache-2.0 license, on
+the terms in section 5 of [LICENSE](LICENSE).
+
 ## Conventions
 
 - **Versioning.** Each plugin carries its version in three places:
