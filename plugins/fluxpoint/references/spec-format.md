@@ -2,7 +2,14 @@
 
 The canonical files are `.fluxpoint-spec.json` and `.fluxpoint-spec-lock.json`
 in the consuming repository. `specification.py --lock` creates the lock;
-never invent its digest. The JSON packet has these fields:
+never invent its digest.
+
+WORK.md declares the runner with `SPEC: .fluxpoint-spec.json` on one line.
+ASCII spaces and tabs after the colon or at the line end are optional; LF
+and CRLF are supported. The filename is literal. A line break between the
+colon and filename is not a declaration.
+
+The JSON packet has these fields:
 
 | Field | Required content |
 |---|---|

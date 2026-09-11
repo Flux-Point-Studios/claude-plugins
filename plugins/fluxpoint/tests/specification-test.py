@@ -342,6 +342,26 @@ const agent = async (prompt) => {prompts.push(prompt); return {exit: 0, branch: 
         self.assertNotEqual(r.returncode, 0)
         self.assertIn('spec', r.stderr)
 
+    def test_spec_marker_parsers_agree_without_installed_runner(self):
+        (self.root / '.fluxpoint-spec.json').unlink()
+        env = dict(os.environ, FPL_PLUGIN_ROOT='', CLAUDE_PLUGIN_ROOT='', PLUGIN_ROOT='',
+                   FPL_PY=Path(sys.executable).as_posix(), PYTHONIOENCODING='utf-8')
+        bash = 'C:/Program Files/Git/bin/bash.exe' if os.name == 'nt' else 'bash'
+        command = 'function find() { return 1; }; export -f find; bash "$1" --full'
+        cases = [(f'SPEC:{gap}.fluxpoint-spec.json\n', 1) for gap in ('', ' ', '  ', '\t')]
+        cases += [('SPEC: .fluxpoint-spec.json \t\n', 1),
+                  ('SPEC:\t.fluxpoint-spec.json\r\n', 1),
+                  ('SPEC:\n.fluxpoint-spec.json\n', 0),
+                  ('SPEC: xfluxpoint-specxjson\n', 0)]
+        for marker, expected in cases:
+            with self.subTest(marker=marker):
+                (self.root / 'WORK.md').write_bytes(marker.encode('utf-8'))
+                runner = self.run_cli('--run', '--if-present')
+                harness = subprocess.run([bash, '-c', command, 'probe', (PLUGIN / 'templates/harness.sh').as_posix()],
+                                         cwd=self.root, env=env, capture_output=True, timeout=30)
+                self.assertEqual(runner.returncode, expected, runner.stderr)
+                self.assertEqual(harness.returncode, expected, harness.stderr)
+
     def test_unavailable_dafny_cannot_pass_full_harness(self):
         subprocess.run(['git', 'init', '-q'], cwd=self.root, check=True)
         (self.root / 'proof.dfy').write_text('method Positive() returns (x: int)\n ensures x > 0\n{ x := 0; }\n')

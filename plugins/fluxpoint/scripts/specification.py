@@ -162,7 +162,7 @@ def required(root):
     root = Path(root)
     work = root / 'WORK.md'
     return ((root / SPEC).exists() or (root / LOCK).exists()
-            or (work.exists() and re.search(r'^SPEC:\s*\.fluxpoint-spec\.json\s*$',
+            or (work.exists() and re.search(r'^SPEC:[ \t]*\.fluxpoint-spec\.json[ \t]*$',
                                            work.read_text(encoding='utf-8'), re.M)))
 
 
