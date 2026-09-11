@@ -27,7 +27,7 @@ another layer's missing input:
 | 2 | Discovery seen-sets → the next sweep | ~~`emit_repeat`'s seen-set is an in-run local.~~ **Closed**: `memory: {seed, emit}` carries the frontier across runs; run two opens where run one stopped. | — |
 | 3 | Loop-mode work → Evidence | **Partly closed**: the Stop gate now writes its own `Source: gate` rows and SessionStart labels agent-written rows as assertions (Part 2, slice 6). Still open: `WORK.md` itself is unguarded — `verify-changed.sh` and the hygiene scan both skip `*.md` — so a row can still be edited after the fact, and nothing re-executes a Proof cell. | A forged row is now a *visible* anomaly rather than an invisible one; making it impossible needs the work file guarded. |
 | 4 | Loop-mode work → Decisions | **Closed**: `decision.py --record`/`--none` gives loop mode the bus with the `DecisionV1` floors enforced, and a PreCompact hook plus SessionStart tell the post-compaction context when reasoning was lost (Part 3c, slice 8). | — |
-| 5 | Prover output → anywhere | ~~The shrunk counterexample from `aiken check` (or any prover) lives in `full.log`, clobbered per run.~~ **Closed for Aiken and Dafny**: `cex.py` records the shrunk input (Aiken's JSON, Dafny's counterexample model), pins it to a regression test that must physically carry the literals, and ratchets on it in `--full` (Part 3b). Kani and Apalache remain unparsed. | — |
+| 5 | Prover output → anywhere | ~~The shrunk counterexample from `aiken check` (or any prover) lives in `full.log`, clobbered per run.~~ **Closed for Aiken, Dafny, Kani and Apalache**: `cex.py` records the shrunk input (Aiken's JSON, Dafny's counterexample model, Kani's concrete playback, Apalache's ITF trace), pins it to a regression test that must physically carry the literals, and ratchets on it in `--full` (Part 3b). | — |
 | 6 | Frozen decisions → the next campaign | ~~`imports` resolved by the orchestrating agent by hand; the emitted guard checked key presence only.~~ **Closed**: the compiler resolves `imports` from recorded runs and embeds the records (see Part 2, slice 1). | — |
 | 7 | Real exit codes → claimed exit codes | ~~A gate node typed its own `{"exit": 0}` and nothing could contradict it.~~ **Closed in warn mode**: a PostToolUse hook mints the runtime's exit for declared gates and `record-run.py` cross-checks every claim (see Part 2, slice 2). | — |
 | 8 | Red-team / proof-audit verdicts → the gate | ~~`proof-auditor`'s `SOUND/WEAKENED` is prose.~~ **Half closed (issue #72)**: `ProofV1` types the verdict (SOUND / WEAKENED / UNPROVEN / NOT-APPLICABLE plus the surface reviewed), the feature campaign binds `proof-auditor` as a gate node halting on WEAKENED, and `record-run.py` files WEAKENED as `BLOCKED-PROOF`, UNPROVEN as INCOMPLETE, and a SOUND over an empty surface as vacuous. Still open: neither verdict reaches `dod-gate.sh` in loop mode. | "Treat WEAKENED as harness-red" is mechanism in graph mode and policy in loop mode. |
@@ -323,6 +323,34 @@ tracked `.dfy` declaration carrying the literals in order, refused when it is
 harness captures `dafny verify` the way it captures `aiken check`, with
 `FPL_DAFNY_ARGS` carrying `--extract-counterexample`.
 
+*Kani and Apalache landed in slice 21.* `cargo kani` output is read per
+harness — the FAILURE checks with their locations, the `Failed Checks`
+summary, and the concrete-playback block's interpreted values in harness
+order, with the byte-vector form kept beside them so Kani's own
+`--concrete-playback=inplace` test is a legal pin once it is renamed to
+carry the cexId and tracked. A build error records nothing and says so; a
+summary counting failures the parser could not extract is INGEST-FAILED.
+Apalache's ITF trace is read from the path its stdout names or directly,
+every state rendered in TLA+ spelling (`#bigint`, `#set`, `#map`, `#tup`,
+records), the first state being what a pin must carry — an `Init`
+operator the invariant can be re-checked from — and an `ASSUME` refused
+as inverted. The scaffolded harness runs `cargo kani` when the crate
+declares a harness and `cargo-kani` is installed (`FPL_KANI_ARGS` carries
+the playback flags), and `apalache-mc check` only when `FPL_APALACHE_ARGS`
+names the spec and invariant. Both fixtures are captured from real runs
+(Kani 0.67.0 on CBMC 6.8.0, Apalache 0.47.2, 2026-09-11) and both provers
+were driven through the scaffolded harness on real installs. The captures
+corrected the documentation in three places: Apalache names its trace
+files `violation1.*`, its ITF `#meta` carries no `source` (the spec name
+now comes from the `_apalache-out/<Spec.tla>/` directory, so the same
+trace dedupes across timestamped runs), and Dafny 4.9.1's `dafny verify`
+prints ` Related counterexample:` with the literal left of the `==`, which
+the Dafny parser had read as a bare assertion until the real output became
+the fixture. The same session found that `dafny verify .` is refused by
+the real CLI and that a `**/*.dfy` arm glob saw one directory level, so
+the harness template now hands the prover its project file or the tracked
+`.dfy` files.
+
 The original design, for reference. `cex.py --ingest` parses prover
 output tee'd from the harness (aiken's shrunk counterexample block first;
 Dafny models second, shipped; Kani traces and Apalache ITF later — parser
@@ -501,11 +529,33 @@ into the `spec` section of `.fluxpoint-proof-baseline.json` (each guard now
 preserves the other's section, or arming one would disarm the other).
 `--check` reds on a changed or removed obligation unless a Decisions row
 names its id; additions are free; reformatting, clause reordering, and file
-moves are not weakenings and stay green. Lean, Coq, Isabelle and TLA+ are
-reported `NOT COVERED` by name rather than passed over — that surface
-remains the proof-auditor's alone. Not yet built: `--axioms`, the DoD
-`— proof: <tool>:<id>` tails, and the Aiken attack-taxonomy scaffolding
-(slice 12).
+moves are not weakenings and stay green.
+
+*Slice 21 closed the rest of 4a.* Lean and Coq theorem statements, Isabelle
+lemma statements, TLA+ `THEOREM`s together with every `INVARIANT` and
+`PROPERTY` a TLC `.cfg` names (bound to the operator definition it checks,
+so deleting the config line and editing the operator are both visible),
+and every Rust fn carrying a `kani::` attribute are parsed; what remains
+uncovered (Agda, F*, Alloy) is still named. `--axioms` records the
+prover's own assumption listing for headline theorems — `#print axioms`
+through `lake env lean`, `Print Assumptions` through `coqc` with the
+module path resolved from `_CoqProject`, `dafny audit --report-format
+text` with line numbers dropped so a moved declaration is not a new
+assumption — and `--check` reds on a new axiom in a headline's set while
+fewer is always allowed; a missing toolchain prints NOT RUN by name and
+never reads clean, and a listing the parser cannot read is red. The DoD
+`— proof: <obligation id>` tail is enforced: a checked box whose obligation
+does not exist is red, and one whose obligation changed is caught by the
+statement hash. The plugin's own harness runs without the provers, so
+the audit parsers are pinned through shims — but the shims print what
+Lean 4.15.0, Coq 8.18.0 and Dafny 4.9.1 printed on 2026-09-11, and each
+audit was driven against the real install through the scaffolded harness,
+including a red the moment a `sorry` entered a green Lean theorem. The
+real runs corrected two guesses: Dafny 4.9.1 spells the report format
+`txt` and prints its ordinary warnings beside the finding rows, which are
+now told apart by the `file(l,c):Name:` shape; and a Dafny declaration
+carrying an attribute (`lemma {:axiom} Helper`) was invisible to the
+statement scanner, which folded its clauses into the previous method.
 
 Building it surfaced a live bug in the sibling guard, now fixed with
 regression cases: `proof-guard.py` matched Aiken parameter lists with a
@@ -634,6 +684,23 @@ the attested chain (statement hash → prover exit → mutation score →
 Evidence row) is reconstructible certification evidence rather than a
 vibe.
 
+*Shipped in slice 21, as a manifest rather than generated Aiken.* A
+scaffolded `.ak` file that does not compile would drop a red file into a
+tree that was merely unspecified, and nothing here can compile Aiken to
+prove otherwise, so the taxonomy ships as data: `templates/attack-taxonomy.json`
+names eight classes (double satisfaction, datum hijack, token-name
+confusion, unbounded value, staking-credential substitution, foreign
+UTxOs, unbounded validity, arbitrary mint), each with the property to
+state and the generator to fuzz it with. `/fluxpoint:init` copies it to
+`.fluxpoint-attacks.json`, and `spec-guard.py --check` is red for every
+class that has neither an Aiken test of that exact name nor a waiver in
+the manifest's `waived` object with a reason of at least twenty
+characters; a class specified as a unit test rather than a property over a
+generator is noted. The manifest arms the gate on its own, without a
+baseline, so an onboarded Aiken repo cannot report green with the
+taxonomy unspecified. Once written, the tests are spec-guard obligations
+and their signatures ratchet like any other.
+
 **Spec-first campaign shape.** A canonical `WORK.verified.md`: a spec node
 authors obligations (frozen via spec-guard, adversarially refuted by a
 panel — once implementation cannot move the target, the spec *is* the
@@ -675,7 +742,7 @@ existing harness and each is independently shippable.
 | 9 | `mutation-guard.py` wrapping cargo-mutants, floor + staleness stamp | **shipped** |
 | 10 | `ExecutionV1` + `verify: "prove:<gate>"` tier + TAMPERED-EXECUTION enforcement | **shipped** |
 | 11 | `WORK.consolidate.md` + consolidation Routine; evidence `--replay` + graded injection | |
-| 12 | Attack-taxonomy scaffolding in `/fluxpoint:init` for Aiken repos; `WORK.verified.md` | template shipped as an opt-in prototype in slice 20; taxonomy scaffolding open |
+| 12 | Attack-taxonomy scaffolding in `/fluxpoint:init` for Aiken repos; `WORK.verified.md` | **shipped**: the template as an opt-in prototype in slice 20, the taxonomy as `.fluxpoint-attacks.json` enforced by spec-guard in slice 21 |
 | 13 | Cross-repo federation (`.fluxpoint-federation.json`, org-scope lessons) | |
 | 14 | `{{prev.<field>}}` projection (validated single-hop, bracket-emitted; the compile-clean/launch-dead trap closed) + `reduce` nodes (deterministic dedupe/rank/cut between agents, zero spawns, cuts named) | **shipped** |
 | 15 | `onRed` as a closed registry, enforced on fan-out and discovery (a dead worker can halt; a round that lost any worker never reads as dry; a ceiling-declined spawn files SKIPPED and halts as BUDGET-EXHAUSTED, never NODE-DEAD) | **shipped** |
@@ -684,6 +751,7 @@ existing harness and each is independently shippable.
 | 18 | Hybrid recall (Part 3e): derived memory graph + pluggable embeddings + BM25 + PPR fused with weighted RRF; bi-temporal serving, stale-kill marks, relevance-ordered seed maps, SessionStart recall section, `/fluxpoint:recall` | **shipped** |
 | 19 | Recall follow-ons (Part 3e): `memory.priors` refuter wiring with emission probe; decision nodes from run artifacts; `substrate-graph.mjs --json` + primitive ingestion; gemini provider; dark-launched per-prompt hook (`FPL_MEM_PROMPT=1`); `WORK.consolidate.md` (3d's template half) | **shipped** |
 | 20 | Issues #62–#72 closed together (v1.36.0): relation gate `differential` / `bite` / `authority` / `--scan` (#62); Dafny in the counterexample ledger (#70); `ProofV1` + the `proof-audit` node in the feature campaign, `record-run` filing WEAKENED as `BLOCKED-PROOF` (#72); the `prover` role and opt-in `WORK.verified.md` (#71); the token estimate, `maxEstimatedTokens`, `cacheTtl`, effort-transition warnings and the estimate/profile instrumentation (#64–#67, the sweep itself still to run); `prompt-audit.py` as an advisory harness step (#68); the cached-prefix wording and the two thoroughness boosters retired (#69) | **shipped** |
+| 21 | Part 4 off the roadmap (v1.38.0): spec-guard parses Lean, Coq, Isabelle, TLA+ theorems plus the invariants a TLC `.cfg` names, and Kani harnesses and contracts; `--axioms` records each headline theorem's assumption set from the prover's own listing and reds on a new one; DoD `— proof: <obligation id>` tails are enforced; the attack taxonomy ships as `templates/attack-taxonomy.json`, copied to `.fluxpoint-attacks.json` by init and red per unspecified class (4d, slice 12); Kani concrete playback and Apalache ITF traces join the counterexample ledger under the same pin discipline (3b); every new parser verified against the real toolchain (Lean 4.15.0, Coq 8.18.0, Dafny 4.9.1, Kani 0.67.0, Apalache 0.47.2) and the fixtures captured from those runs | **shipped** |
 
 ## Part 6 — named absences
 

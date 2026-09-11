@@ -350,7 +350,9 @@ case "$err" in *"is not valid JSON"*) ok "a corrupted store fails hard on read" 
 # the INGEST-FAILED row are shared; only the parser is per prover. Fixtures
 # are the literal shape `dafny verify --extract-counterexample` prints
 # (Dafny 3: `name : type = value` state blocks; Dafny 4: the same model as
-# `assume` statements), captured from a real run, never from documentation.
+# `assume` statements; Dafny 4.9.1: ` Related counterexample:` with the
+# literal on the left), each captured from a real run, never from
+# documentation.
 mkdafny() {
   mkrepo
   mkdir -p "$R/src" "$R/test"
@@ -441,6 +443,95 @@ r = json.loads(open(sys.argv[1]).readline())
 assert r["input"] == "n == 1237, j == 196, k == 1236", r["input"]
 PY2
 
+# Dafny 4.9.1, captured 2026-09-11 (`dafny verify --extract-counterexample`
+# on the module below, exit 4): the heading is ` Related counterexample:`
+# under the Error line, a WARNING about model consistency follows it, the
+# state lines are indented, and the literal sits LEFT of the `==`. A parser
+# written to the two earlier shapes read this run as a bare assertion and
+# lost the model, which is why the real output is the fixture.
+mkdafny49() {
+  mkrepo
+  mkdir -p "$R/src" "$R/test"
+  cat >"$R/src/vault.dfy" <<'EOF'
+module Vault {
+  method Withdraw(bal: int, amt: int) returns (out: int)
+    requires amt > 0
+    ensures out == bal - amt
+    ensures out >= 0
+  {
+    out := bal - amt;
+  }
+
+  lemma {:axiom} Helper(x: int)
+    ensures x * x >= 0
+
+  method {:verify false} Skipped(n: int) returns (r: int)
+    ensures r > n
+  {
+    r := n;
+  }
+
+  method UsesAssume(n: int) returns (r: int)
+    ensures r > 0
+  {
+    assume n > 0;
+    r := n;
+  }
+}
+EOF
+  git -C "$R" add -A; git -C "$R" -c user.email=t@t -c user.name=t commit -qm dafny49
+}
+dafny49() {
+  cat <<'EOF'
+src/vault.dfy(13,25): Warning: The {:verify false} attribute should only be used during development. Consider using a bodyless method together with the {:axiom} attribute instead
+   |
+13 |   method {:verify false} Skipped(n: int) returns (r: int)
+   |                          ^^^^^^^
+
+src/vault.dfy(22,4): Warning: assume statement has no {:axiom} annotation
+   |
+22 |     assume n > 0;
+   |     ^^^^^^^^^^^^^
+
+src/vault.dfy(6,2): Error: a postcondition could not be proved on this return path
+ Related counterexample:
+ WARNING: the following counterexample may be inconsistent or invalid. See dafny.org/dafny/DafnyRef/DafnyRef#sec-counterexamples
+ src/vault.dfy(6,2): initial state:
+ assume 0 == bal && 1 == amt;
+ src/vault.dfy(7,20):
+ assume 0 == bal && 1 == amt && -1 == out;
+ 
+  |
+6 |   {
+  |   ^
+
+src/vault.dfy(5,12): Related location: this is the postcondition that could not be proved
+  |
+5 |     ensures out >= 0
+  |             ^^^^^^^^
+
+
+Dafny program verifier finished with 1 verified, 1 error
+EOF
+}
+mkdafny49
+dafny49 | dcex --exit 4 >/dev/null 2>&1
+check "a dafny 4.9 'Related counterexample' records the model" 1 "$(rows)"
+"$FPL_PY" - "$R/.fluxpoint-cex.jsonl" <<'PY2' && ok "with the literal-left conjuncts read as name == value" "bal == 0, amt == 1" \
+  || bad "with the literal-left conjuncts read as name == value" "wrong payload"
+import json, sys
+r = json.loads(open(sys.argv[1]).readline())
+assert r["input"] == "bal == 0, amt == 1", r["input"]
+assert r["signature"] == "counterexample" and r["modelState"] == "initial state", r
+assert r["title"] == "Withdraw" and r["selector"] == "src/vault.dfy:Withdraw", r["selector"]
+PY2
+DID="$(dcexid)"
+printf 'include "../src/vault.dfy"\n\nmethod {:test} %s() {\n  var r := Vault.Withdraw(0, 1); expect r == -1;\n}\n' "$DID" >"$R/test/reg.dfy"
+commit p >/dev/null
+check "and a test calling the method with those values pins" 0 \
+  "$(rc_of --pin "$DID" --file test/reg.dfy --test-name "$DID")"
+
+
 # ----- what a dafny pin has to survive
 dpin() { # $1 = body
   printf 'include "../src/example.dfy"\n\nmethod {:test} %s() {\n  %s\n}\n' "$DID" "$1" >"$R/test/reg.dfy"
@@ -512,15 +603,26 @@ check "output with no Error line and no summary is a parser break" 1 \
 out="$("$FPL_PY" "$INBOX" --root "$R" --list 2>/dev/null || cat "$R/.claude/fluxpoint/inbox.jsonl")"
 case "$out" in *"dafny"*) ok "the inbox row names the prover that drifted" "named" ;;
   *) bad "the inbox row names the prover that drifted" "${out:0:60}" ;; esac
-check "an unknown tool is refused" 1 "$(printf 'x\n' | cex --ingest --tool kani --exit 1 >/dev/null 2>&1; echo $?)"
+check "an unknown tool is refused" 1 "$(printf 'x\n' | cex --ingest --tool nosuch --exit 1 >/dev/null 2>&1; echo $?)"
 
 # ----- the scaffolded harness captures dafny the way it captures aiken
 mkdafny
 mkdir -p "$R/scripts" "$R/bin"
 cp "$PLUGIN/templates/harness.sh" "$R/scripts/harness.sh"; chmod +x "$R/scripts/harness.sh"
-printf '#!/usr/bin/env bash\nif [ "$1" = "--version" ]; then echo "Dafny 4.9.0"; exit 0; fi\ncat <<'"'"'EOF'"'"'\n%s\nEOF\nexit 4\n' "$(dafny3)" >"$R/bin/dafny"
+dafny3 >"$R/bin/dafny.out"
+# The shim holds the harness to what Dafny 4.9.1 accepts: a project file or
+# the .dfy files themselves, never a bare `.` (which the real CLI refused
+# with exactly this line, and which a `**/*.dfy` arm glob had hidden).
+cat >"$R/bin/dafny" <<'EOF'
+#!/usr/bin/env bash
+if [ "$1" = "--version" ]; then echo "4.9.1"; exit 0; fi
+for a; do
+  [ "$a" = "." ] && { echo "CLI: Error: command-line argument '.' is neither a recognized option nor a Dafny input file (.dfy, .doo, or .toml)."; exit 1; }
+done
+case " $*" in *.dfy*|*dfyconfig.toml*) ;; *) echo "shim: no Dafny input file among: $*" >&2; exit 2 ;; esac
+cat "$(dirname "$0")/dafny.out"; exit 4
+EOF
 chmod +x "$R/bin/dafny"
-cp "$R/src/example.dfy" "$R/example.dfy"   # the template globs one level down
 git -C "$R" add -A; git -C "$R" -c user.email=t@t -c user.name=t commit -qm shim
 ( cd "$R" && env -u CLAUDE_PLUGIN_ROOT PATH="$R/bin:$PATH" FPL_PLUGIN_ROOT="$PLUGIN" \
     bash scripts/harness.sh --full >"$ROOT/harness.log" 2>&1 ); hrc=$?
@@ -528,6 +630,813 @@ git -C "$R" add -A; git -C "$R" -c user.email=t@t -c user.name=t commit -qm shim
   || bad "the harness still fails on the prover's exit" "rc=0"
 check "and the counterexample was recorded on the way" 1 "$(rows)"
 [ "$(rows)" = 1 ] || { echo "      harness output:"; tail -15 "$ROOT/harness.log" | sed 's/^/      /'; }
+
+# ================= 10. a third prover: kani ==============================
+# Captured from a real run, 2026-09-11: Kani 0.67.0 (cargo plugin, CBMC
+# 6.8.0) on the crate below, `cargo kani -Z concrete-playback
+# --concrete-playback=print`, exit 1. Three harnesses: `fine` verifies,
+# `div_is_total` fails on a division by zero with a two-value playback,
+# `bump_never_overflows` fails on an overflow with a one-value playback.
+# The only edit is the crate path. The green fixture is the same run's
+# `fine` section with the closing summary in the form Kani prints it.
+mkkani() {
+  mkrepo
+  mkdir -p "$R/src" "$R/tests"
+  printf '[package]\nname = "vault"\nversion = "0.1.0"\nedition = "2021"\n' >"$R/Cargo.toml"
+  cat >"$R/src/lib.rs" <<'EOF'
+pub fn bump(x: u8) -> u8 { x + 1 }
+pub fn safe_div(a: u32, b: u32) -> u32 { a / b }
+
+#[cfg(kani)]
+mod verification {
+    use super::*;
+    #[kani::proof]
+    fn bump_never_overflows() {
+        let x: u8 = kani::any();
+        let y = bump(x);
+        assert!(y > x);
+    }
+    #[kani::proof]
+    #[kani::unwind(2)]
+    fn div_is_total() {
+        let a: u32 = kani::any();
+        let b: u32 = kani::any();
+        kani::assume(a < 10);
+        let _ = safe_div(a, b);
+    }
+    #[kani::proof]
+    fn fine() {
+        let x: u8 = kani::any();
+        kani::assume(x < 200);
+        assert!(bump(x) > x);
+    }
+}
+EOF
+  git -C "$R" add -A; git -C "$R" -c user.email=t@t -c user.name=t commit -qm kani
+}
+kani_fail() {
+  cat <<'EOF'
+Kani Rust Verifier 0.67.0 (cargo plugin)
+   Compiling vault v0.1.0 (/work/vault)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.12s
+Checking harness verification::fine...
+CBMC 6.8.0 (cbmc-6.8.0)
+CBMC version 6.8.0 (cbmc-6.8.0) 64-bit x86_64 linux
+Reading GOTO program from file /work/vault/target/kani/x86_64-unknown-linux-gnu/debug/deps/vault-fbaffb161a6495d2__RNvNtCs3Wmn5sT4Q3D_5vault12verification4fine.out
+Generating GOTO Program
+Adding CPROVER library (x86_64)
+Removal of function pointers and virtual functions
+Generic Property Instrumentation
+Running with 16 object bits, 48 offset bits (user-specified)
+Starting Bounded Model Checking
+Runtime Symex: 0.00185952s
+size of program expression: 132 steps
+simple slicing removed 4 assignments
+Generated 4 VCC(s), 4 remaining after simplification
+Runtime Postprocess Equation: 1.7325e-05s
+Passing problem to propositional reduction
+converting SSA
+Runtime Convert SSA: 0.000401488s
+Running propositional reduction
+Post-processing
+Runtime Post-process: 8.278e-06s
+Solving with CaDiCaL 2.0.0
+221 variables, 134 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.000125766s
+Runtime decision procedure: 0.000591431s
+Running propositional reduction
+Solving with CaDiCaL 2.0.0
+222 variables, 135 clauses
+SAT checker: instance is UNSATISFIABLE
+Runtime Solver: 8.0674e-05s
+Runtime decision procedure: 0.000120791s
+
+RESULTS:
+Check 1: bump.assertion.1
+	 - Status: SUCCESS
+	 - Description: "attempt to add with overflow"
+	 - Location: src/lib.rs:1:28 in function bump
+
+Check 2: verification::fine.assertion.1
+	 - Status: SUCCESS
+	 - Description: "assertion failed: bump(x) > x"
+	 - Location: src/lib.rs:25:9 in function verification::fine
+
+
+SUMMARY:
+ ** 0 of 2 failed
+
+VERIFICATION:- SUCCESSFUL
+Verification Time: 0.04398764s
+
+WARNING: Kani could not produce a concrete playback for `verification::fine` because there were no failing panic checks or satisfiable cover statements.
+Checking harness verification::div_is_total...
+CBMC 6.8.0 (cbmc-6.8.0)
+CBMC version 6.8.0 (cbmc-6.8.0) 64-bit x86_64 linux
+Reading GOTO program from file /work/vault/target/kani/x86_64-unknown-linux-gnu/debug/deps/vault-fbaffb161a6495d2__RNvNtCs3Wmn5sT4Q3D_5vault12verification12div_is_total.out
+Generating GOTO Program
+Adding CPROVER library (x86_64)
+Removal of function pointers and virtual functions
+Generic Property Instrumentation
+Running with 16 object bits, 48 offset bits (user-specified)
+Starting Bounded Model Checking
+Runtime Symex: 0.00119103s
+size of program expression: 81 steps
+simple slicing removed 8 assignments
+Generated 4 VCC(s), 4 remaining after simplification
+Runtime Postprocess Equation: 1.423e-05s
+Passing problem to propositional reduction
+converting SSA
+Runtime Convert SSA: 0.000407966s
+Running propositional reduction
+Post-processing
+Runtime Post-process: 6.863e-06s
+Solving with CaDiCaL 2.0.0
+540 variables, 247 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 7.7401e-05s
+Runtime decision procedure: 0.000546957s
+Running propositional reduction
+Solving with CaDiCaL 2.0.0
+541 variables, 248 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 6.7224e-05s
+Runtime decision procedure: 0.000112819s
+Running propositional reduction
+Solving with CaDiCaL 2.0.0
+542 variables, 249 clauses
+SAT checker: instance is UNSATISFIABLE
+Runtime Solver: 1.8032e-05s
+Runtime decision procedure: 4.239e-05s
+
+RESULTS:
+Check 1: safe_div.assertion.1
+	 - Status: FAILURE
+	 - Description: "attempt to divide by zero"
+	 - Location: src/lib.rs:2:42 in function safe_div
+
+Check 2: safe_div.arithmetic_overflow.1
+	 - Status: SUCCESS
+	 - Description: "attempt to divide by zero"
+	 - Location: src/lib.rs:2:42 in function safe_div
+
+Check 3: safe_div.division-by-zero.1
+	 - Status: SUCCESS
+	 - Description: "division by zero"
+	 - Location: src/lib.rs:2:42 in function safe_div
+
+
+SUMMARY:
+ ** 1 of 3 failed
+Failed Checks: attempt to divide by zero
+ File: "src/lib.rs", line 2, in safe_div
+
+VERIFICATION:- FAILED
+Verification Time: 0.0251693s
+
+Concrete playback unit test for `verification::div_is_total`:
+```
+/// Test generated for harness `verification::div_is_total` 
+///
+/// Check for `assertion`: "attempt to divide by zero"
+
+#[test]
+fn kani_concrete_playback_div_is_total_7808176011615954438() {
+    let concrete_vals: Vec<Vec<u8>> = vec![
+        // 8
+        vec![8, 0, 0, 0],
+        // 0
+        vec![0, 0, 0, 0],
+    ];
+    kani::concrete_playback_run(concrete_vals, div_is_total);
+}
+```
+INFO: To automatically add the concrete playback unit test(s) to the src code, run Kani with `--concrete-playback=inplace`.
+Checking harness verification::bump_never_overflows...
+CBMC 6.8.0 (cbmc-6.8.0)
+CBMC version 6.8.0 (cbmc-6.8.0) 64-bit x86_64 linux
+Reading GOTO program from file /work/vault/target/kani/x86_64-unknown-linux-gnu/debug/deps/vault-fbaffb161a6495d2__RNvNtCs3Wmn5sT4Q3D_5vault12verification20bump_never_overflows.out
+Generating GOTO Program
+Adding CPROVER library (x86_64)
+Removal of function pointers and virtual functions
+Generic Property Instrumentation
+Running with 16 object bits, 48 offset bits (user-specified)
+Starting Bounded Model Checking
+Runtime Symex: 0.00154564s
+size of program expression: 116 steps
+simple slicing removed 4 assignments
+Generated 4 VCC(s), 4 remaining after simplification
+Runtime Postprocess Equation: 3.0981e-05s
+Passing problem to propositional reduction
+converting SSA
+Runtime Convert SSA: 0.000309627s
+Running propositional reduction
+Post-processing
+Runtime Post-process: 6.178e-06s
+Solving with CaDiCaL 2.0.0
+201 variables, 108 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 5.4463e-05s
+Runtime decision procedure: 0.000415933s
+Running propositional reduction
+Solving with CaDiCaL 2.0.0
+202 variables, 109 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 4.5938e-05s
+Runtime decision procedure: 7.6684e-05s
+Running propositional reduction
+Solving with CaDiCaL 2.0.0
+203 variables, 110 clauses
+SAT checker: instance is UNSATISFIABLE
+Runtime Solver: 5.2796e-05s
+Runtime decision procedure: 8.0448e-05s
+
+RESULTS:
+Check 1: verification::bump_never_overflows.assertion.1
+	 - Status: SUCCESS
+	 - Description: "assertion failed: y > x"
+	 - Location: src/lib.rs:11:9 in function verification::bump_never_overflows
+
+Check 2: bump.assertion.1
+	 - Status: FAILURE
+	 - Description: "attempt to add with overflow"
+	 - Location: src/lib.rs:1:28 in function bump
+
+
+SUMMARY:
+ ** 1 of 2 failed
+Failed Checks: attempt to add with overflow
+ File: "src/lib.rs", line 1, in bump
+
+VERIFICATION:- FAILED
+Verification Time: 0.02676706s
+
+Concrete playback unit test for `verification::bump_never_overflows`:
+```
+/// Test generated for harness `verification::bump_never_overflows` 
+///
+/// Check for `assertion`: "attempt to add with overflow"
+
+#[test]
+fn kani_concrete_playback_bump_never_overflows_1923147272287585563() {
+    let concrete_vals: Vec<Vec<u8>> = vec![
+        // 255
+        vec![255],
+    ];
+    kani::concrete_playback_run(concrete_vals, bump_never_overflows);
+}
+```
+INFO: To automatically add the concrete playback unit test(s) to the src code, run Kani with `--concrete-playback=inplace`.
+Manual Harness Summary:
+Verification failed for - verification::div_is_total
+Verification failed for - verification::bump_never_overflows
+Complete - 1 successfully verified harnesses, 2 failures, 3 total.
+EOF
+}
+kani_green() {
+  cat <<'EOF'
+Kani Rust Verifier 0.67.0 (cargo plugin)
+   Compiling vault v0.1.0 (/work/vault)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.12s
+Checking harness verification::fine...
+CBMC 6.8.0 (cbmc-6.8.0)
+CBMC version 6.8.0 (cbmc-6.8.0) 64-bit x86_64 linux
+Reading GOTO program from file /work/vault/target/kani/x86_64-unknown-linux-gnu/debug/deps/vault-fbaffb161a6495d2__RNvNtCs3Wmn5sT4Q3D_5vault12verification4fine.out
+Generating GOTO Program
+Adding CPROVER library (x86_64)
+Removal of function pointers and virtual functions
+Generic Property Instrumentation
+Running with 16 object bits, 48 offset bits (user-specified)
+Starting Bounded Model Checking
+Runtime Symex: 0.00185952s
+size of program expression: 132 steps
+simple slicing removed 4 assignments
+Generated 4 VCC(s), 4 remaining after simplification
+Runtime Postprocess Equation: 1.7325e-05s
+Passing problem to propositional reduction
+converting SSA
+Runtime Convert SSA: 0.000401488s
+Running propositional reduction
+Post-processing
+Runtime Post-process: 8.278e-06s
+Solving with CaDiCaL 2.0.0
+221 variables, 134 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.000125766s
+Runtime decision procedure: 0.000591431s
+Running propositional reduction
+Solving with CaDiCaL 2.0.0
+222 variables, 135 clauses
+SAT checker: instance is UNSATISFIABLE
+Runtime Solver: 8.0674e-05s
+Runtime decision procedure: 0.000120791s
+
+RESULTS:
+Check 1: bump.assertion.1
+	 - Status: SUCCESS
+	 - Description: "attempt to add with overflow"
+	 - Location: src/lib.rs:1:28 in function bump
+
+Check 2: verification::fine.assertion.1
+	 - Status: SUCCESS
+	 - Description: "assertion failed: bump(x) > x"
+	 - Location: src/lib.rs:25:9 in function verification::fine
+
+
+SUMMARY:
+ ** 0 of 2 failed
+
+VERIFICATION:- SUCCESSFUL
+Verification Time: 0.04398764s
+
+WARNING: Kani could not produce a concrete playback for `verification::fine` because there were no failing panic checks or satisfiable cover statements.
+Manual Harness Summary:
+Complete - 1 successfully verified harnesses, 0 failures, 1 total.
+EOF
+}
+# The same run without `-Z concrete-playback`: checks and locations, no values.
+kani_noplay() { kani_fail | sed '/^Concrete playback unit test/,/^INFO:/d'; }
+kcex() { cex --ingest --tool kani "$@"; }
+kcexid() { # $1 = a substring of the harness name
+  "$FPL_PY" - "$R/.fluxpoint-cex.jsonl" "$1" <<'PY2'
+import json, sys
+for l in open(sys.argv[1]):
+    r = json.loads(l)
+    if r["tool"] == "kani" and sys.argv[2] in r["title"]: print(r["cexId"]); break
+PY2
+}
+
+mkkani
+kani_green | kcex --exit 0 >/dev/null 2>&1
+check "a green kani run records nothing" 0 "$(rows)"
+kani_fail | kcex --exit 0 >/dev/null 2>&1
+check "exit 0 records nothing whatever was printed" 0 "$(rows)"
+kani_fail | kcex --exit 1 >/dev/null 2>&1
+check "two failing harnesses record two counterexamples, the green one none" 2 "$(rows)"
+out="$(cex --list)"
+case "$out" in *"[kani] src/lib.rs:verification::div_is_total"*) ok "a row names the tool, the file and the harness" "selector" ;;
+  *) bad "a row names the tool, the file and the harness" "${out:0:80}" ;; esac
+"$FPL_PY" - "$R/.fluxpoint-cex.jsonl" <<'PY2' && ok "the playback comment values are the recorded input, in harness order" "8, 0 / 255" \
+  || bad "the playback comment values are the recorded input, in harness order" "wrong payload"
+import json, sys
+rows = {json.loads(l)["title"]: json.loads(l) for l in open(sys.argv[1])}
+d, b = rows["verification::div_is_total"], rows["verification::bump_never_overflows"]
+# Kani does not name its inputs: the `// value` lines above each byte
+# vector, in harness order, are the record. The raw bytes ride along as the
+# prover's own second spelling of the same values.
+assert d["input"] == "8, 0" and d["containment"] == "8, 0", d["input"]
+assert d["containmentAlt"] == "vec![8, 0, 0, 0], vec![0, 0, 0, 0]", d["containmentAlt"]
+assert b["input"] == "255" and b["containmentAlt"] == "vec![255]", b
+for r in (d, b):
+    assert r["signature"] == "counterexample" and r["inputForm"] == "kani-concrete-playback"
+    assert r["kind"] == "harness" and r["module"] == "src/lib.rs"
+assert "attempt to divide by zero" in d["assertion"] and "src/lib.rs:2:42" in d["assertion"], d["assertion"]
+assert "attempt to add with overflow" in b["assertion"] and "src/lib.rs:1:28" in b["assertion"], b["assertion"]
+PY2
+kani_fail | kcex --exit 1 >/dev/null 2>&1
+check "re-ingesting the same run appends nothing" 2 "$(rows)"
+
+# ----- what a kani pin has to survive
+kpin() { # $1 = attribute lines above #[test] (may be empty), $2 = body
+  printf 'use vault::*;\n\n%s#[test]\nfn %s() {\n  %s\n}\n' "$1" "$KID" "$2" >"$R/tests/reg.rs"
+  commit p >/dev/null
+}
+mkkani; kani_fail | kcex --exit 1 >/dev/null 2>&1; KID="$(kcexid bump)"
+cex --pin "$KID" >/dev/null 2>&1
+[ -f "$R/.claude/fluxpoint/cex/$KID.rs.draft" ] \
+  && ok "the draft carries the prover's own extension" "rs" \
+  || bad "the draft carries the prover's own extension" "missing"
+kpin '' 'assert!(std::panic::catch_unwind(|| bump(255)).is_err());'
+check "a tracked #[test] carrying the value pins" 0 \
+  "$(rc_of --pin "$KID" --file tests/reg.rs --test-name "$KID")"
+check "and --check is green" 0 "$(rc_of --check)"
+
+mkkani; kani_fail | kcex --exit 1 >/dev/null 2>&1; KID="$(kcexid bump)"
+kpin $'#[should_panic]\n' 'assert!(bump(255) > 0);'
+check "#[should_panic] is refused (it inverts the oracle)" 1 \
+  "$(rc_of --pin "$KID" --file tests/reg.rs --test-name "$KID")"
+kpin $'#[ignore]\n' 'assert!(std::panic::catch_unwind(|| bump(255)).is_err());'
+check "#[ignore] is refused (it never runs)" 1 \
+  "$(rc_of --pin "$KID" --file tests/reg.rs --test-name "$KID")"
+printf 'use vault::*;\n\nfn %s() {\n  assert!(std::panic::catch_unwind(|| bump(255)).is_err());\n}\n' "$KID" >"$R/tests/reg.rs"; commit plain >/dev/null
+check "a plain fn with neither #[test] nor #[kani::proof] is refused" 1 \
+  "$(rc_of --pin "$KID" --file tests/reg.rs --test-name "$KID")"
+kpin '' 'assert!(true);'
+check "an assert!(true) body is refused" 1 \
+  "$(rc_of --pin "$KID" --file tests/reg.rs --test-name "$KID")"
+kpin '' 'let x: u8 = 255;'
+check "a body that binds the value and calls nothing is refused" 1 \
+  "$(rc_of --pin "$KID" --file tests/reg.rs --test-name "$KID")"
+kpin '' '// bump(255)
+  assert!(bump(2) > 2);'
+check "the value in a COMMENT is refused" 1 \
+  "$(rc_of --pin "$KID" --file tests/reg.rs --test-name "$KID")"
+kpin '' 'let s = "255"; assert!(!s.is_empty());'
+check "the value in a STRING literal is refused" 1 \
+  "$(rc_of --pin "$KID" --file tests/reg.rs --test-name "$KID")"
+kpin '' 'assert!(std::panic::catch_unwind(|| bump(254)).is_err());'
+check "a retyped value is refused" 1 \
+  "$(rc_of --pin "$KID" --file tests/reg.rs --test-name "$KID")"
+printf 'method {:test} %s() {\n  expect bump(255) == 0;\n}\n' "$KID" >"$R/tests/reg.dfy"; commit dfy >/dev/null
+check "a pin in another prover's language is refused" 1 \
+  "$(rc_of --pin "$KID" --file tests/reg.dfy --test-name "$KID")"
+
+# A proof harness is as legal a pin as a unit test: cargo kani runs it.
+printf '\n#[cfg(kani)]\n#[kani::proof]\n#[kani::unwind(3)]\nfn %s() {\n    assert!(bump(255) > 0);\n}\n' "$KID" >>"$R/src/lib.rs"
+commit proof >/dev/null
+check "a #[kani::proof] harness carrying the value pins" 0 \
+  "$(rc_of --pin "$KID" --file src/lib.rs --test-name "$KID")"
+
+# The test Kani itself writes under --concrete-playback=inplace, renamed to
+# carry the cexId: the value is in a `// value` comment (stripped) AND in
+# the byte vector, which is the prover's own second spelling.
+mkkani; kani_fail | kcex --exit 1 >/dev/null 2>&1; KID="$(kcexid bump)"
+kani_fail | sed -n '/^\/\/\/ Test generated for harness `verification::bump_never_overflows`/,/^}$/p' \
+  | sed "s/kani_concrete_playback_bump_never_overflows_[0-9]*/$KID/" >"$R/tests/reg.rs"; commit inplace >/dev/null
+check "Kani's own inplace playback test pins" 0 \
+  "$(rc_of --pin "$KID" --file tests/reg.rs --test-name "$KID")"
+# The two-value harness: u32 inputs, so each `// value` sits above a
+# four-byte vector. Either spelling pins; the bytes only as the whole
+# vectors Kani wrote, never as bare leaves.
+KID="$(kcexid div)"
+kpin '' 'assert!(std::panic::catch_unwind(|| safe_div(8, 0)).is_err());'
+check "the interpreted values pin" 0 "$(rc_of --pin "$KID" --file tests/reg.rs --test-name "$KID")"
+kpin '' 'kani::concrete_playback_run(vec![vec![8, 0, 0, 0], vec![0, 0, 0, 0]], div_is_total);'
+check "so do the byte vectors Kani wrote" 0 "$(rc_of --pin "$KID" --file tests/reg.rs --test-name "$KID")"
+kpin '' 'assert!(std::panic::catch_unwind(|| safe_div(8, 1)).is_err());'
+check "a body missing one value is refused" 1 "$(rc_of --pin "$KID" --file tests/reg.rs --test-name "$KID")"
+kpin '' 'assert!(std::panic::catch_unwind(|| safe_div(0, 8)).is_err());'
+check "the values out of harness order are refused" 1 "$(rc_of --pin "$KID" --file tests/reg.rs --test-name "$KID")"
+
+# ----- failures without values, and runs that record nothing
+mkkani
+kani_noplay | kcex --exit 1 >/dev/null 2>&1
+check "failures without playback values are recorded as assertions" 2 "$(rows)"
+KID="$(kcexid bump)"
+check "and stay open rather than failing --check" 0 "$(rc_of --check)"
+kpin '' 'assert!(std::panic::catch_unwind(|| bump(255)).is_err());'
+err="$(cex --pin "$KID" --file tests/reg.rs --test-name "$KID" 2>&1 >/dev/null)"
+case "$err" in *"no literal"*) ok "one cannot be pinned mechanically, and says so" "refused" ;;
+  *) bad "one cannot be pinned mechanically, and says so" "${err:0:60}" ;; esac
+mkkani
+printf 'error[E0425]: cannot find value `z` in this scope\n --> src/lib.rs:9:5\n\nerror: could not compile `vault` (lib) due to 1 previous error\n' \
+  | kcex --exit 1 >/dev/null 2>&1
+check "a build error is not a counterexample" 0 "$(rows)"
+check "and files nothing" 0 "$("$FPL_PY" "$INBOX" --root "$R" --count)"
+
+# ----- drift is loud and never red
+mkkani
+check "a summary counting a failure the parser could not extract exits 0" 0 \
+  "$(kani_fail | sed 's/2 failures, 3 total/3 failures, 4 total/' | kcex --exit 1 >/dev/null 2>&1; echo $?)"
+check "and files INGEST-FAILED" 1 "$("$FPL_PY" "$INBOX" --root "$R" --count)"
+mkkani
+printf 'RESULTS:\nVERIFICATION:- FAILED\n' | kcex --exit 1 >/dev/null 2>&1
+check "a FAILED verdict with no harness name is a parser break" 1 \
+  "$("$FPL_PY" "$INBOX" --root "$R" --count)"
+mkkani
+printf 'thread main panicked at kani-driver\n' | kcex --exit 101 >/dev/null 2>&1
+check "output with no verdict and no rustc error is a parser break" 1 \
+  "$("$FPL_PY" "$INBOX" --root "$R" --count)"
+out="$("$FPL_PY" "$INBOX" --root "$R" --list 2>/dev/null || cat "$R/.claude/fluxpoint/inbox.jsonl")"
+case "$out" in *"kani"*) ok "the inbox row names the prover that drifted" "named" ;;
+  *) bad "the inbox row names the prover that drifted" "${out:0:60}" ;; esac
+
+# ----- --check: red on real weakening
+mkkani; kani_fail | kcex --exit 1 >/dev/null 2>&1; KID="$(kcexid bump)"
+kpin '' 'assert!(std::panic::catch_unwind(|| bump(255)).is_err());'
+cex --pin "$KID" --file tests/reg.rs --test-name "$KID" >/dev/null 2>&1
+git -C "$R" rm -q tests/reg.rs; commit rm >/dev/null
+check "a deleted kani regression is red" 1 "$(rc_of --check)"
+
+# ----- the scaffolded harness captures kani the way it captures dafny
+mkkani
+mkdir -p "$R/scripts" "$R/bin"
+cp "$PLUGIN/templates/harness.sh" "$R/scripts/harness.sh"; chmod +x "$R/scripts/harness.sh"
+kani_fail >"$R/bin/kani.out"
+# `cargo` stands in for the whole toolchain: fmt passes, clippy is absent
+# (its --version fails, so the harness skips it), test passes, and `kani`
+# prints the captured run and exits 1 the way the real plugin did.
+cat >"$R/bin/cargo" <<'EOF'
+#!/usr/bin/env bash
+case "$1" in
+  fmt) exit 0 ;;
+  clippy) exit 1 ;;
+  test) exit 0 ;;
+  kani) cat "$(dirname "$0")/kani.out"; exit 1 ;;
+  *) echo "cargo shim: unexpected $*" >&2; exit 2 ;;
+esac
+EOF
+printf '#!/usr/bin/env bash\necho "cargo-kani 0.67.0"\nexit 0\n' >"$R/bin/cargo-kani"
+chmod +x "$R/bin/cargo" "$R/bin/cargo-kani"
+git -C "$R" add -A; git -C "$R" -c user.email=t@t -c user.name=t commit -qm shim
+( cd "$R" && env -u CLAUDE_PLUGIN_ROOT PATH="$R/bin:$PATH" FPL_PLUGIN_ROOT="$PLUGIN" \
+    bash scripts/harness.sh --full >"$ROOT/harness.log" 2>&1 ); hrc=$?
+check "the harness fails with the prover's exit" 1 "$hrc"
+check "and both counterexamples were recorded on the way" 2 "$(rows)"
+[ "$(rows)" = 2 ] || { echo "      harness output:"; tail -15 "$ROOT/harness.log" | sed 's/^/      /'; }
+
+# ================= 11. a fourth prover: apalache =========================
+# Captured from a real run, 2026-09-11: Apalache 0.47.2 on the module
+# below, `apalache-mc check --inv=Inv --length=5 Counter.tla`, exit 12 —
+# the stdout (paths edited to /work/spec), the ITF trace it wrote, and the
+# type error the same run printed before the variables carried @type
+# annotations. Two things the documentation had wrong: the files are
+# violation1.* (not counterexample1.*), and the ITF's #meta carries
+# format, varTypes and description but no source, so the spec name is read
+# from the _apalache-out/<Spec.tla>/ directory. Only itf_rich is assembled,
+# from the ITF format description (ADR-015), to exercise the encodings this
+# spec does not produce.
+mkapalache() {
+  mkrepo
+  cat >"$R/Counter.tla" <<'EOF'
+---- MODULE Counter ----
+EXTENDS Integers
+VARIABLES
+  \* @type: Int;
+  x,
+  \* @type: Set(Str);
+  names
+Init == x = 0 /\ names = {"a"}
+Next == x' = x + 1 /\ names' = names \union {"b"}
+Inv == x < 2
+====
+EOF
+  git -C "$R" add -A; git -C "$R" -c user.email=t@t -c user.name=t commit -qm tla
+}
+itf_fixture() {
+  cat <<'EOF'
+{
+  "#meta": {
+    "format": "ITF",
+    "varTypes": {
+      "names": "Set(Str)",
+      "x": "Int"
+    },
+    "format-description": "https://apalache-mc.org/docs/adr/015adr-trace.html",
+    "description": "Created by Apalache on Fri Sep 11 00:20:54 UTC 2026"
+  },
+  "vars": [
+    "names",
+    "x"
+  ],
+  "states": [
+    {
+      "#meta": {
+        "index": 0
+      },
+      "names": {
+        "#set": [
+          "a"
+        ]
+      },
+      "x": {
+        "#bigint": "0"
+      }
+    },
+    {
+      "#meta": {
+        "index": 1
+      },
+      "names": {
+        "#set": [
+          "a",
+          "b"
+        ]
+      },
+      "x": {
+        "#bigint": "1"
+      }
+    },
+    {
+      "#meta": {
+        "index": 2
+      },
+      "names": {
+        "#set": [
+          "a",
+          "b"
+        ]
+      },
+      "x": {
+        "#bigint": "2"
+      }
+    }
+  ]
+}
+EOF
+}
+# Every documented value encoding in one state, for the renderer.
+itf_rich() {
+  cat <<'EOF'
+{
+  "#meta": { "format": "ITF", "source": "Rich.tla" },
+  "vars": [ "n", "s", "b", "r", "t", "m", "u", "q" ],
+  "states": [
+    { "#meta": { "index": 0 }, "n": { "#bigint": "-5" }, "s": "abc", "b": true,
+      "r": { "a": 1, "b": "x" }, "t": { "#tup": [ 1, 2 ] },
+      "m": { "#map": [ [ 1, "a" ], [ 2, "b" ] ] }, "u": { "#unserializable": "Nat" },
+      "q": [ 7, 8 ] }
+  ]
+}
+EOF
+}
+AP_DIR="_apalache-out/Counter.tla/2026-09-11T00-20-52_330647260225453583"
+apalache_out() { # $1 = the run directory as the checker prints it
+  local d="$1"
+  cat <<EOF
+PASS #13: BoundedChecker                                          I@00:20:53.785
+State 0: Checking 1 state invariants                              I@00:20:54.142
+State 0: state invariant 0 holds.                                 I@00:20:54.144
+Step 0: picking a transition out of 1 transition(s)               I@00:20:54.147
+State 1: Checking 1 state invariants                              I@00:20:54.162
+State 1: state invariant 0 holds.                                 I@00:20:54.163
+Step 1: picking a transition out of 1 transition(s)               I@00:20:54.163
+State 2: Checking 1 state invariants                              I@00:20:54.169
+Check the trace in: $d/violation1.tla, $d/MCviolation1.out, $d/violation1.json, $d/violation1.itf.json I@00:20:54.308
+State 2: state invariant 0 violated.                              I@00:20:54.308
+Found 1 error(s)                                                  I@00:20:54.309
+The outcome is: Error                                             I@00:20:54.313
+Checker has found an error                                        I@00:20:54.318
+It took me 0 days  0 hours  0 min  1 sec                          I@00:20:54.318
+Total time: 1.352 sec                                             I@00:20:54.318
+EXITCODE: ERROR (12)
+EOF
+}
+write_itf() { mkdir -p "$R/$AP_DIR"; itf_fixture >"$R/$AP_DIR/violation1.itf.json"; }
+acex() { cex --ingest --tool apalache "$@"; }
+acexid() { "$FPL_PY" - "$R/.fluxpoint-cex.jsonl" <<'PY2'
+import json, sys
+for l in open(sys.argv[1]):
+    r = json.loads(l)
+    if r["tool"] == "apalache": print(r["cexId"]); break
+PY2
+}
+
+mkapalache
+printf 'Checker reports no error up to computation length 5        I@00:21:00.100\nThe outcome is: NoError                                           I@00:21:00.101\nIt took me 0 days  0 hours  0 min  1 sec                          I@00:21:00.102\nEXITCODE: OK\n' | acex --exit 0 >/dev/null 2>&1
+check "a green apalache run records nothing" 0 "$(rows)"
+write_itf
+apalache_out "$R/$AP_DIR" | acex --exit 0 >/dev/null 2>&1
+check "exit 0 records nothing whatever was printed" 0 "$(rows)"
+apalache_out "$R/$AP_DIR" | acex --exit 12 >/dev/null 2>&1
+check "a violated invariant records one trace" 1 "$(rows)"
+out="$(cex --list)"
+case "$out" in *"[apalache] Counter.tla:3-state-trace"*) ok "the row names the tool, the spec and the trace length" "selector" ;;
+  *) bad "the row names the tool, the spec and the trace length" "${out:0:80}" ;; esac
+"$FPL_PY" - "$R/.fluxpoint-cex.jsonl" <<'PY2' && ok "every state is rendered in order; the first is what a pin must carry" 'names = {"a"}, x = 0' \
+  || bad "every state is rendered in order; the first is what a pin must carry" "wrong payload"
+import json, sys
+r = json.loads(open(sys.argv[1]).readline())
+assert r["input"] == 'names = {"a"}, x = 0 ; names = {"a", "b"}, x = 1 ; names = {"a", "b"}, x = 2', r["input"]
+assert r["containment"] == 'names = {"a"}, x = 0', r["containment"]
+assert r["signature"] == "counterexample" and r["inputForm"] == "itf"
+# The spec name comes from the run directory: the ITF names no source, and
+# a key carrying the timestamped directory would file the same trace as new
+# on every run.
+assert r["kind"] == "trace" and r["module"] == "Counter.tla" and r["title"] == "Counter (3 states)", r
+assert r["assertion"] == "invariant violated after 2 transition(s)", r["assertion"]
+assert r["trace"].endswith("violation1.itf.json"), r["trace"]
+PY2
+apalache_out "$AP_DIR" | acex --exit 12 >/dev/null 2>&1
+check "a relative trace path resolves against the root, and dedupes" 1 "$(rows)"
+mkdir -p "$R/_apalache-out/Counter.tla/2026-09-11T09-00-00_1"; itf_fixture >"$R/_apalache-out/Counter.tla/2026-09-11T09-00-00_1/violation1.itf.json"
+apalache_out "$R/_apalache-out/Counter.tla/2026-09-11T09-00-00_1" | acex --exit 12 >/dev/null 2>&1
+check "the same trace from a later run directory dedupes too" 1 "$(rows)"
+
+mkapalache
+itf_rich >"$R/rich.itf.json"
+acex --from "$R/rich.itf.json" --exit 12 >/dev/null 2>&1
+check "--from pointed at the ITF file itself is read as the trace" 1 "$(rows)"
+"$FPL_PY" - "$R/.fluxpoint-cex.jsonl" <<'PY2' && ok "bigint, set, map, tuple, record, sequence and unserializable all render" "TLA-ish" \
+  || bad "bigint, set, map, tuple, record, sequence and unserializable all render" "wrong rendering"
+import json, sys
+r = json.loads(open(sys.argv[1]).readline())
+assert r["input"] == ('n = -5, s = "abc", b = TRUE, r = [a |-> 1, b |-> "x"], t = <<1, 2>>, '
+                      'm = SetAsFun({<<1, "a">>, <<2, "b">>}), u = Nat, q = <<7, 8>>'), r["input"]
+assert r["module"] == "Rich.tla" and r["selector"] == "Rich.tla:1-state-trace", r["selector"]
+assert r["assertion"] == "invariant violated after 0 transition(s)"
+PY2
+
+# ----- what an apalache pin has to survive
+apin() { # $1 = the definition text (may span lines)
+  printf -- '---- MODULE Reg ----\nEXTENDS Integers\nVARIABLES x, names\n\n%s\n====\n' "$1" >"$R/Reg.tla"
+  commit p >/dev/null
+}
+mkapalache; write_itf; apalache_out "$AP_DIR" | acex --exit 12 >/dev/null 2>&1; AID="$(acexid)"
+cex --pin "$AID" >/dev/null 2>&1
+[ -f "$R/.claude/fluxpoint/cex/$AID.tla.draft" ] \
+  && ok "the draft carries the prover's own extension" "tla" \
+  || bad "the draft carries the prover's own extension" "missing"
+case "$(head -1 "$R/.claude/fluxpoint/cex/$AID.tla.draft")" in '\*'*) ok "and speaks TLA+ down to its comment marker" '\*' ;;
+  *) bad "and speaks TLA+ down to its comment marker" "$(head -c 20 "$R/.claude/fluxpoint/cex/$AID.tla.draft")" ;; esac
+apin "$AID == names = {\"a\"} /\\ x = 0"
+check "a tracked .tla operator carrying the first state pins" 0 \
+  "$(rc_of --pin "$AID" --file Reg.tla --test-name "$AID")"
+check "and --check is green" 0 "$(rc_of --check)"
+apin "$AID ==
+  /\\ names = {\"a\"}
+  /\\ x = 0
+
+Other == x = 0"
+check "a bulleted multi-line body pins, and stops at the next definition" 0 \
+  "$(rc_of --pin "$AID" --file Reg.tla --test-name "$AID")"
+
+mkapalache; write_itf; apalache_out "$AP_DIR" | acex --exit 12 >/dev/null 2>&1; AID="$(acexid)"
+apin "ASSUME $AID == names = {\"a\"} /\\ x = 0"
+check "an ASSUME is refused (the checker takes it as given)" 1 \
+  "$(rc_of --pin "$AID" --file Reg.tla --test-name "$AID")"
+apin "$AID == TRUE"
+check "a TRUE body is refused" 1 "$(rc_of --pin "$AID" --file Reg.tla --test-name "$AID")"
+apin "$AID == x = 0
+
+Other == names = {\"a\"}"
+check "a body missing a literal is refused, even with it in the NEXT definition" 1 \
+  "$(rc_of --pin "$AID" --file Reg.tla --test-name "$AID")"
+apin "$AID == names = {\"b\"} /\\ x = 0"
+check "a retyped value is refused" 1 "$(rc_of --pin "$AID" --file Reg.tla --test-name "$AID")"
+apin "$AID == \\* names = {\"a\"} /\\ x = 0
+  x = 1"
+check "the values in a line COMMENT are refused" 1 "$(rc_of --pin "$AID" --file Reg.tla --test-name "$AID")"
+apin "$AID == (* names = {\"a\"} /\\ x = 0 *) x = 1"
+check "the values in a block COMMENT are refused" 1 "$(rc_of --pin "$AID" --file Reg.tla --test-name "$AID")"
+apin "$AID == s = \"names = {a} /\\ x = 0\""
+check "the values in a STRING are refused" 1 "$(rc_of --pin "$AID" --file Reg.tla --test-name "$AID")"
+printf '#[test]\nfn %s() { assert!(f("a", 0)); }\n' "$AID" >"$R/reg.rs"; commit rs >/dev/null
+check "a pin in another prover's language is refused" 1 \
+  "$(rc_of --pin "$AID" --file reg.rs --test-name "$AID")"
+
+# A string-valued state is pinnable: string literals are digested rather
+# than blanked, so `"abc"` matches `"abc"` and nothing else can hide in one.
+mkapalache; itf_rich >"$R/rich.itf.json"; acex --from "$R/rich.itf.json" --exit 12 >/dev/null 2>&1
+AID="$(acexid)"; cex --pin "$AID" >/dev/null 2>&1
+apin "$AID ==
+  $(tail -1 "$R/.claude/fluxpoint/cex/$AID.tla.draft")"
+check "the draft's first-state conjunction, pasted into a tracked module, pins" 0 \
+  "$(rc_of --pin "$AID" --file Reg.tla --test-name "$AID")"
+apin "$AID == n = -5 /\\ s = \"abd\" /\\ b = TRUE /\\ r = [a |-> 1, b |-> \"x\"] /\\ t = <<1, 2>> /\\ m = SetAsFun({<<1, \"a\">>, <<2, \"b\">>}) /\\ u = Nat /\\ q = <<7, 8>>"
+check "with one string retyped it is refused" 1 "$(rc_of --pin "$AID" --file Reg.tla --test-name "$AID")"
+
+# ----- runs that record nothing, and drift that is loud but never red
+mkapalache
+printf 'PASS #1: TypeCheckerSnowcat                                       I@00:20:29.600\n > Running Snowcat .::.                                           I@00:20:29.600\nCounter.tla:3:11-3:11: type input error: Expected a type annotation for VARIABLE x E@00:20:29.631\nIt took me 0 days  0 hours  0 min  0 sec                          I@00:20:29.632\nTotal time: 0.601 sec                                             I@00:20:29.632\nEXITCODE: ERROR (255)\n' \
+  | acex --exit 255 >/dev/null 2>&1
+check "a type error is not a counterexample" 0 "$(rows)"
+check "and files nothing" 0 "$("$FPL_PY" "$INBOX" --root "$R" --count)"
+mkapalache
+check "a named trace file that does not exist exits 0" 0 \
+  "$(apalache_out "$AP_DIR" | acex --exit 12 >/dev/null 2>&1; echo $?)"
+check "and files INGEST-FAILED" 1 "$("$FPL_PY" "$INBOX" --root "$R" --count)"
+mkapalache
+printf 'State 2: state invariant 0 violated.                              I@00:20:54.308\nEXITCODE: ERROR (12)\n' | acex --exit 12 >/dev/null 2>&1
+check "a violation naming no .itf.json trace is a parser break" 1 \
+  "$("$FPL_PY" "$INBOX" --root "$R" --count)"
+mkapalache; mkdir -p "$R/$AP_DIR"; printf '{"vars": ["x"]}\n' >"$R/$AP_DIR/violation1.itf.json"
+apalache_out "$AP_DIR" | acex --exit 12 >/dev/null 2>&1
+check "a trace file with no states is a parser break" 1 "$("$FPL_PY" "$INBOX" --root "$R" --count)"
+mkapalache
+printf 'java.lang.OutOfMemoryError: Java heap space\n' | acex --exit 1 >/dev/null 2>&1
+check "output with no EXITCODE and no trace is a parser break" 1 \
+  "$("$FPL_PY" "$INBOX" --root "$R" --count)"
+out="$("$FPL_PY" "$INBOX" --root "$R" --list 2>/dev/null || cat "$R/.claude/fluxpoint/inbox.jsonl")"
+case "$out" in *"apalache"*) ok "the inbox row names the prover that drifted" "named" ;;
+  *) bad "the inbox row names the prover that drifted" "${out:0:60}" ;; esac
+
+# ----- --check: red on real weakening
+mkapalache; write_itf; apalache_out "$AP_DIR" | acex --exit 12 >/dev/null 2>&1; AID="$(acexid)"
+apin "$AID == names = {\"a\"} /\\ x = 0"
+cex --pin "$AID" --file Reg.tla --test-name "$AID" >/dev/null 2>&1
+git -C "$R" rm -q Reg.tla; commit rm >/dev/null
+check "a deleted apalache regression is red" 1 "$(rc_of --check)"
+
+# ----- the scaffolded harness captures apalache the way it captures dafny
+mkapalache
+mkdir -p "$R/scripts" "$R/bin"
+cp "$PLUGIN/templates/harness.sh" "$R/scripts/harness.sh"; chmod +x "$R/scripts/harness.sh"
+itf_fixture >"$R/bin/cex.itf.json"
+# The shim writes the trace where the checker would and prints the lines
+# that name it, then exits 12 the way `apalache-mc check` did.
+cat >"$R/bin/apalache-mc" <<EOF
+#!/usr/bin/env bash
+if [ "\$1" = "version" ]; then echo "0.47.2"; exit 0; fi
+d="\$PWD/$AP_DIR"
+mkdir -p "\$d"
+cp "\$(dirname "\$0")/cex.itf.json" "\$d/violation1.itf.json"
+printf 'PASS #13: BoundedChecker                                          I@00:20:53.785\nState 2: Checking 1 state invariants                              I@00:20:54.169\nCheck the trace in: %s/violation1.tla, %s/MCviolation1.out, %s/violation1.json, %s/violation1.itf.json I@00:20:54.308\nState 2: state invariant 0 violated.                              I@00:20:54.308\nEXITCODE: ERROR (12)\n' "\$d" "\$d" "\$d" "\$d"
+exit 12
+EOF
+chmod +x "$R/bin/apalache-mc"
+git -C "$R" add -A; git -C "$R" -c user.email=t@t -c user.name=t commit -qm shim
+( cd "$R" && env -u CLAUDE_PLUGIN_ROOT PATH="$R/bin:$PATH" FPL_PLUGIN_ROOT="$PLUGIN" \
+    FPL_APALACHE_ARGS="--inv=Inv Counter.tla" \
+    bash scripts/harness.sh --full >"$ROOT/harness.log" 2>&1 ); hrc=$?
+check "the harness fails with the checker's exit" 12 "$hrc"
+check "and the trace was recorded on the way" 1 "$(rows)"
+[ "$(rows)" = 1 ] || { echo "      harness output:"; tail -15 "$ROOT/harness.log" | sed 's/^/      /'; }
+mkapalache
+( cd "$R" && env -u CLAUDE_PLUGIN_ROOT PATH="$R/bin:$PATH" FPL_PLUGIN_ROOT="$PLUGIN" \
+    bash scripts/harness.sh --full >"$ROOT/harness.log" 2>&1 ); hrc=$?
+check "without FPL_APALACHE_ARGS the checker is not invoked at all" 0 "$(rows)"
 
 cd /; rm -rf "$ROOT"
 printf '\n%d passed, %d failed\n' "$pass" "$fail"

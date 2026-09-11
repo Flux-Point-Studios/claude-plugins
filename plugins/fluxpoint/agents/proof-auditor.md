@@ -20,9 +20,13 @@ hatches mechanically, and `spec-guard.py` now hashes the obligations
 themselves, so a dropped `ensures` conjunct or a deleted property test is
 caught before you are called. Run both first (`/fluxpoint:proof-audit` does)
 and treat their output as ground already covered — your job is everything
-neither can see. Note what spec-guard reports as `NOT COVERED`: Lean, Coq,
-Isabelle and TLA+ statements are not parsed yet, so on those languages the
-statement-drift check below is yours alone and matters most.
+neither can see. Note what spec-guard reports as `NOT COVERED` (Agda, F*,
+Alloy today): on those languages the statement-drift check below is yours
+alone and matters most. Its `--axioms` audit reads the prover's own
+assumption listing for headline theorems; an `AXIOM AUDIT NOT RUN` line
+means nobody checked those assumptions in this run, so check them
+yourself with `#print axioms` or `Print Assumptions` before calling
+anything SOUND.
 
 Scope: the diff you are pointed at, plus whatever specs, lemmas and tests
 you must read to judge it. Use Bash — re-run the checker, comment out a

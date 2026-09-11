@@ -60,6 +60,42 @@ reading as a run with no failures. Resolution and type errors also print
 as `Error:` lines; only messages that name a verification failure ("could
 not be proved", "might not hold", …) become rows.
 
+### kani
+
+`cargo kani` prints, per harness, a `RESULTS:` block of numbered checks
+(`Check 3: my_harness.assertion.1` / `- Status: FAILURE` / `- Description:
+"…"` / `- Location: src/lib.rs:12:5 in function my_harness`), a `Failed
+Checks:` summary with a `File: "…", line N, in <fn>` line, and a verdict
+line `VERIFICATION:- FAILED` (or `SUCCESSFUL`). With `-Z concrete-playback
+--concrete-playback=print` it also prints a generated Rust unit test
+introduced by ``Concrete playback unit test for `my_harness`:`` whose
+`concrete_vals` vector carries one `// <value>` comment per input (the
+interpreted value, in order) above the raw bytes `vec![…]`. The run ends
+with a `Summary:` block: `Verification failed for - <harness>` per failure
+and `Complete - N successfully verified harnesses, M failures, T total.`
+One row per failed harness; the comment values are the recorded input
+(`255, 1` — Kani does not name them), and the byte vectors are kept as an
+alternative spelling so the test Kani itself writes into the source under
+`--concrete-playback=inplace` is a legal pin. A build error prints no
+verdict line at all and records nothing, said aloud. A `Complete` line
+counting more failures than rows were extracted is parser drift.
+
+### apalache
+
+`apalache-mc check --inv=Inv Spec.tla` exits 12 on a violation
+(`EXITCODE: ERROR (12)`) and names the trace files on stdout — any line
+carrying a path ending in `.itf.json` is read, and `--from` may point at
+the ITF file itself. ITF (Informal Trace Format): `#meta` (with `source`
+and `description`), `vars`, and `states`, each state a map from variable
+to value with `#meta.index`; values are plain JSON scalars or the tagged
+forms `{"#bigint": "…"}`, `{"#set": […]}`, `{"#map": [[k, v], …]}`,
+`{"#tup": […]}`, `{"#unserializable": "…"}`, and records as plain
+objects. One row per trace; `input` renders every state in order
+(`x = 1, y = {1, 2} ; x = 2, y = {1, 2, 3}`), and containment is judged on
+the FIRST state — the initial-state block is the shrunk-input equivalent
+here as it is for Dafny, and a TLA+ regression is written as an `Init`
+constrained to it, not as a paste of the whole trace.
+
 ## What a pin has to survive
 
 `--pin` cannot write the regression test itself: the recorded value does
@@ -70,13 +106,17 @@ this tool refuses to record it unless the recorded value is physically in
 it. Specifically, a pin is rejected when:
 
   * the file is untracked, outside a directory the prover compiles (Aiken:
-    `lib/`, `validators/`, `env/`; Dafny: any tracked `.dfy`), or under
-    `.claude/` (where this tool writes its own draft — a tool must not mint
-    the artifact that satisfies its own check),
+    `lib/`, `validators/`, `env/`; Dafny: any tracked `.dfy`; Kani: any
+    tracked `.rs`; Apalache: any tracked `.tla`), or under `.claude/`
+    (where this tool writes its own draft — a tool must not mint the
+    artifact that satisfies its own check),
   * the named test inverts or disables the oracle: an Aiken test annotated
     `fail`, which passes *because* the predicate is broken and goes red the
     day someone fixes it; a Dafny declaration carrying `{:verify false}` or
-    `{:axiom}`, or a body containing `assume`, which makes anything verify,
+    `{:axiom}`, or a body containing `assume`, which makes anything verify;
+    a Rust fn under `#[should_panic]` or `#[ignore]`, or one with neither
+    `#[test]` nor `#[kani::proof]`, which nothing ever runs; a TLA+
+    operator introduced by `ASSUME`, which the checker takes as given,
   * the recorded literals are absent from that test's own body, in order,
     on token boundaries — not merely somewhere in the file, where a
     counterexample of `0` or `True` would match by accident,
@@ -84,7 +124,11 @@ it. Specifically, a pin is rejected when:
     and then ignored (`let v = <value> True`), or an `assert true`.
 
 Comments and string literals are stripped before any of that, or pasting
-the value into a comment would satisfy it.
+the value into a comment would satisfy it. For Kani and Apalache each
+string literal is replaced by a digest of its contents rather than
+blanked, and a string-valued leaf is digested the same way before the
+search: a `pc = "L1"` state stays pinnable, and still nothing else can
+hide inside a string.
 
 ## What this does NOT claim
 
@@ -142,13 +186,23 @@ DFY_VERIFICATION = re.compile(
     r"is not proved|violat|does not hold|not maintained|not established|"
     r"nontermination|decreases", re.I)
 DFY_SUMMARY = re.compile(r"verifier finished with \d+ verified, (?P<n>\d+) error", re.I)
-DFY_CEX_HEAD = re.compile(r"^\s*Counterexample(?: for first failing assertion)?:\s*$", re.M)
+# Three spellings of the heading, all seen in real output: Dafny 3 prints
+# `Counterexample for first failing assertion:`, Dafny 4.9 prints
+# ` Related counterexample:` under the Error line (indented, and followed
+# by a WARNING that the model may be inconsistent), older 4.x a bare
+# `Counterexample:`.
+DFY_CEX_HEAD = re.compile(
+    r"^\s*(?:Related\s+)?[Cc]ounterexample(?: for first failing assertion)?:\s*$", re.M)
 DFY_STATE = re.compile(
-    r"^(?P<file>[^\s(]+\.dfy)\((?P<line>\d+),(?P<col>\d+)\)(?::\s*(?P<label>[^:\n]*?))?\s*:\s*$")
+    r"^\s*(?P<file>[^\s(]+\.dfy)\((?P<line>\d+),(?P<col>\d+)\)(?::\s*(?P<label>[^:\n]*?))?\s*:\s*$")
 DFY_ASSIGN = re.compile(
     r"^\s+(?P<name>[A-Za-z_][\w'#$]*)\s*:\s*(?P<type>[^=\n]+?)\s*=\s*(?P<value>.+?)\s*$")
 DFY_ASSUME = re.compile(r"^\s*assume\s+(?P<expr>.+?)\s*;\s*$")
-DFY_CONJUNCT = re.compile(r"([A-Za-z_][\w'#$]*)\s*==\s*([^&]+?)\s*(?=&&|$)")
+# Dafny 4.9 writes the literal on the left (`assume 0 == bal && 1 == amt`),
+# earlier 4.x the name; both orders are read and recorded as name == value.
+DFY_CONJUNCT = re.compile(
+    r"(?:(?P<name>[A-Za-z_][\w'#$]*)\s*==\s*(?P<value>[^&]+?)"
+    r"|(?P<lvalue>[^&=]+?)\s*==\s*(?P<lname>[A-Za-z_][\w'#$]*))\s*(?=&&|$)")
 DFY_DECL = re.compile(
     r"^\s*(?:ghost\s+|static\s+|twostate\s+)*"
     r"(?:method|function|lemma|predicate|function method|greatest lemma|least lemma)"
@@ -161,6 +215,74 @@ DFY_LEAF = re.compile(
     r"|\b([A-Z][A-Za-z0-9_]*)\b"
 )
 DFY_VACUOUS = re.compile(r"^(?:(?:assert|expect)\s+true\s*;?\s*)+$")
+
+# ---- kani -------------------------------------------------------------------
+RS_COMMENT = re.compile(r"//[^\n]*|/\*.*?\*/", re.S)
+# Ordinary, byte, and raw string literals. The contents are captured so a
+# digest can stand in for them (see _digest_strings).
+RS_STRING = re.compile(
+    r'b?r(?P<h>#*)"(?P<raw>[\s\S]*?)"(?P=h)'
+    r'|b?"(?P<s>(?:[^"\\\n]|\\.)*)"')
+RS_LEAF = re.compile(
+    r'("(?:[^"\\]|\\.)*")'
+    r"|('(?:[^'\\]|\\.)')"
+    r"|(-?\d+(?:\.\d+)?)"
+    r"|\b(true|false)\b"
+    r"|\b([A-Z][A-Za-z0-9_]*)\b"
+)
+RS_VACUOUS = re.compile(
+    r"^(?:(?:assert!\s*\(\s*true\s*\)|assert_eq!\s*\(\s*true\s*,\s*true\s*\))\s*;?\s*)+$")
+# An identifier or macro followed by `(`: the body reaches some code. Control
+# keywords are not calls.
+RS_CALL = re.compile(
+    r"\b(?!(?:if|while|for|match|let|return|loop|in|as|unsafe|else)\b)"
+    r"[A-Za-z_][\w:]*!?\s*\(")
+RS_TEST_ATTR = re.compile(r"#\[\s*(?:[\w:]+::)?test\s*[\](]|kani::proof")
+RS_INVERTED_ATTR = re.compile(r"#\[\s*(?:should_panic|ignore)\s*[\](]")
+KANI_HARNESS_START = re.compile(r"^Checking harness (?P<name>\S+?)\.\.\.\s*$", re.M)
+KANI_VERDICT = re.compile(r"^VERIFICATION:-\s*(?P<v>FAILED|SUCCESSFUL)", re.M)
+KANI_CHECK = re.compile(
+    r"^Check \d+: (?P<name>\S+)[ \t]*\n"
+    r"[ \t]*- Status: (?P<status>\S+)[ \t]*\n"
+    r"[ \t]*- Description: \"(?P<desc>[^\n]*)\"[ \t]*"
+    r"(?:\n[ \t]*- Location: (?P<loc>[^\n]*?)[ \t]*(?=\n|$))?", re.M)
+KANI_LOCATION = re.compile(
+    r"(?P<file>[^\s:]+):(?P<line>\d+):(?P<col>\d+)(?:\s+in function\s+(?P<fn>\S+))?")
+KANI_FAILED_CHECK = re.compile(
+    r"^Failed Checks: (?P<desc>[^\n]*)\n[ \t]*File: \"(?P<file>[^\"\n]+)\", line "
+    r"(?P<line>\d+), in (?P<fn>\S+)", re.M)
+KANI_PLAYBACK = re.compile(
+    r"^Concrete playback unit test for `(?P<name>[^`\n]+)`:[ \t]*\n"
+    r"(?P<body>.*?)kani::concrete_playback_run\(", re.M | re.S)
+KANI_PLAYBACK_VAL = re.compile(r"^[ \t]*//[ \t]*(?P<v>.*?)[ \t]*\n[ \t]*vec!\[(?P<bytes>[^\]]*)\]", re.M)
+KANI_FAILED_FOR = re.compile(r"^Verification failed for - (?P<name>\S+)[ \t]*$", re.M)
+KANI_COMPLETE = re.compile(
+    r"^Complete - \d+ successfully verified harness(?:es)?, (?P<n>\d+) failures?, "
+    r"\d+ total", re.M)
+# rustc/cargo diagnostics: the run never reached a harness.
+RS_BUILD_ERROR = re.compile(r"^\s*error(?:\[E\d+\])?:", re.M)
+
+# ---- apalache ---------------------------------------------------------------
+TLA_COMMENT = re.compile(r"\\\*[^\n]*|\(\*.*?\*\)", re.S)
+TLA_STRING = re.compile(r'"(?P<s>(?:[^"\\\n]|\\.)*)"')
+TLA_LEAF = re.compile(
+    r'("(?:[^"\\]|\\.)*")'
+    r"|(-?\d+)"
+    r"|\b(TRUE|FALSE)\b"
+)
+TLA_VACUOUS = re.compile(r"^(TRUE|FALSE)$")
+TLA_DEF = re.compile(
+    r"(?:^|\n)[ \t]*(?:(?P<kw>ASSUME|AXIOM|THEOREM|LEMMA)[ \t]+)?"
+    r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)[ \t]*(?:\([^)]*\))?[ \t]*==")
+# Where an operator body ends: the next column-0 definition or declaration,
+# a separator line, or the module end.
+TLA_DEF_END = re.compile(
+    r"\n(?=[A-Za-z_][A-Za-z0-9_]*[ \t]*(?:\([^)]*\))?[ \t]*==|"
+    r"(?:ASSUME|AXIOM|THEOREM|LEMMA|VARIABLES?|CONSTANTS?|EXTENDS|INSTANCE|LOCAL|"
+    r"RECURSIVE)\b|-{4,}|[ \t]*={4,})")
+ITF_PATH = re.compile(r"(?P<path>[^\s,\"'<>]+\.itf\.json)")
+AP_EXITCODE = re.compile(r"EXITCODE:\s*(?:ERROR\s*\()?(?P<n>\d+)", re.I)
+AP_VIOLATION = re.compile(r"invariant[^\n]*violated|Check the (?:trace|counterexample)", re.I)
 
 
 def path_for(root):
@@ -196,6 +318,39 @@ def strip_dfy(text):
     return DFY_STRING.sub(' "" ', DFY_COMMENT.sub(" ", text))
 
 
+def _digest_strings(text, pattern, groups):
+    """Every string literal replaced by a literal holding a digest of its contents.
+
+    Blanking strings outright (as the Aiken and Dafny readers do) makes a
+    string-valued counterexample unpinnable: the literal a pin needs is the
+    very thing removed. A digest keeps string-to-string matching exact while
+    nothing else — no integer, no boolean — can hide inside one.
+    """
+    def sub(m):
+        for g in groups:
+            if m.group(g) is not None:
+                return '"' + sha(m.group(g))[:12] + '"'
+        return '""'
+    return pattern.sub(sub, text)
+
+
+def strip_rs(text):
+    """Rust comments removed; string literals digested (see _digest_strings)."""
+    return _digest_strings(RS_COMMENT.sub(" ", text), RS_STRING, ("raw", "s"))
+
+
+def strip_tla(text):
+    """TLA+ comments (`\\*` and `(* *)`) removed; string literals digested."""
+    return _digest_strings(TLA_COMMENT.sub(" ", text), TLA_STRING, ("s",))
+
+
+def needle_for(nd, tool):
+    """A recorded leaf in the form the stripped body would carry it."""
+    if tool in ("kani", "apalache") and len(nd) >= 2 and nd[0] == nd[-1] == '"':
+        return '"' + sha(nd[1:-1])[:12] + '"'
+    return nd
+
+
 def leaves(value, tool="aiken"):
     """The literals of a reified value, in order, as (kind, text).
 
@@ -205,13 +360,19 @@ def leaves(value, tool="aiken"):
     make a legitimate pin impossible. The data inside it is still required.
     """
     vals, ctors = [], []
-    if tool == "dafny":
-        for m in DFY_LEAF.finditer(str(value or "")):
+    if tool in ("dafny", "kani"):
+        for m in (DFY_LEAF if tool == "dafny" else RS_LEAF).finditer(str(value or "")):
             string, char, number, keyword, ident = m.groups()
             if string or char or number or keyword:
                 vals.append(string or char or number or keyword)
             else:
                 ctors.append(ident)
+        return vals, ctors
+    if tool == "apalache":
+        # No constructors in a TLA+ value: field names and variable names are
+        # not literals, and everything else is.
+        for m in TLA_LEAF.finditer(str(value or "")):
+            vals.append(next(g for g in m.groups() if g))
         return vals, ctors
     for m in LEAF.finditer(str(value or "")):
         byte, string, integer, ident = m.groups()
@@ -340,6 +501,66 @@ def dafny_test_body(text, name):
     return None, None
 
 
+def _skip_parens(src, i):
+    """Index of the `)` closing the `(` at or after `i`, or -1."""
+    depth = 0
+    for j in range(i, len(src)):
+        if src[j] == "(":
+            depth += 1
+        elif src[j] == ")":
+            depth -= 1
+            if depth == 0:
+                return j
+    return -1
+
+
+def rust_test_body(text, name):
+    """(body, inverted) for `fn name(...)` in Rust source, else (None, None).
+
+    `inverted` is True under `#[should_panic]` (it passes because the code
+    still panics) or `#[ignore]` (it never runs), and is a reason string
+    when the fn carries neither `#[test]` nor `#[kani::proof]`: cargo runs
+    no such function, so it guards nothing. Attributes are read off the
+    contiguous `#[...]` block directly above the fn, comments already gone.
+    """
+    src = strip_rs(text)
+    head = re.compile(
+        r"(?:^|\n)[ \t]*(?:pub(?:\([^)]*\))?[ \t]+)?"
+        r"(?:(?:async|unsafe|const|extern(?:[ \t]+\"[^\"]*\")?)[ \t]+)*"
+        r"fn[ \t]+" + re.escape(name) + r"\s*(?:<[^>]*>)?\s*\(")
+    for m in head.finditer(src):
+        attrs = re.search(r"(?:#\[[^\]]*\]\s*)*$", src[:m.start()]).group(0)
+        inverted = bool(RS_INVERTED_ATTR.search(attrs))
+        if not inverted and not RS_TEST_ATTR.search(attrs):
+            inverted = ("a plain `fn` with neither `#[test]` nor `#[kani::proof]` "
+                        "— cargo runs no such function, so it guards nothing")
+        close = _skip_parens(src, m.end() - 1)
+        if close < 0:
+            continue
+        body = _brace_body(src, close + 1)
+        if body is None:
+            return None, None
+        return norm(body), inverted
+    return None, None
+
+
+def tla_test_body(text, name):
+    """(body, inverted) for `name == body` in a TLA+ module, else (None, None).
+
+    The body runs to the next column-0 definition or declaration, a
+    separator line, or the module end `====`. `inverted` when the operator
+    is introduced by `ASSUME`: the checker takes it as given.
+    """
+    src = strip_tla(text)
+    for m in TLA_DEF.finditer(src):
+        if m.group("name") != name:
+            continue
+        end = TLA_DEF_END.search(src, m.end())
+        body = src[m.end():end.start() if end else len(src)]
+        return norm(body), m.group("kw") == "ASSUME"
+    return None, None
+
+
 def hollow(body, tool="aiken"):
     """A body that runs but asserts nothing. Returns a reason or ''."""
     if not body:
@@ -347,6 +568,17 @@ def hollow(body, tool="aiken"):
     if tool == "dafny":
         if DFY_VACUOUS.match(body):
             return f"the body is `{body}` — it proves nothing"
+        return ""
+    if tool == "kani":
+        if RS_VACUOUS.match(body):
+            return f"the body is `{body}` — it cannot fail"
+        if not re.search(r"\bassert|kani::", body) and not RS_CALL.search(body):
+            return ("the body calls nothing and asserts nothing — the values "
+                    "are bound and then ignored")
+        return ""
+    if tool == "apalache":
+        if TLA_VACUOUS.match(body):
+            return f"the body is `{body}` — it constrains nothing"
         return ""
     if VACUOUS.match(body):
         return f"the body is `{body}` — it cannot fail"
@@ -375,9 +607,9 @@ def head_sha(root):
         return ""
 
 
-def tool_version(tool):
+def tool_version(tool, flag="--version"):
     try:
-        r = subprocess.run([tool, "--version"], capture_output=True, text=True,
+        r = subprocess.run([tool, flag], capture_output=True, text=True,
                            timeout=10)
         return r.stdout.strip()[:80] if r.returncode == 0 else ""
     except Exception:  # noqa: BLE001
@@ -464,12 +696,13 @@ def ingest_failed(root, output, why, tool="aiken"):
 
 
 # ------------------------------------------------------------------- parsers
-# Each parser returns one of:
+# Each parser takes (root, output, exit_code, source) — `source` is the
+# --from path when there was one, or None — and returns one of:
 #   ("nothing", None)          the run recorded no failures (green, or nothing ran)
 #   ("failed", why)            parser drift — file INGEST-FAILED, never red
 #   ("rows", rows, raw_for)    rows to record; raw_for(row) is the evidence blob
 
-def parse_aiken(root, output, exit_code):
+def parse_aiken(root, output, exit_code, source=None):
     text = output.strip()
     if not text:
         if exit_code not in (0, 1):
@@ -581,8 +814,11 @@ def dafny_model(section):
             continue
         s = DFY_ASSUME.match(line)
         if s:
-            for name, value in DFY_CONJUNCT.findall(s.group("expr")):
-                cur["assign"].append((name, value.strip()))
+            for m in DFY_CONJUNCT.finditer(s.group("expr")):
+                if m.group("name"):
+                    cur["assign"].append((m.group("name"), m.group("value").strip()))
+                elif m.group("lname"):
+                    cur["assign"].append((m.group("lname"), m.group("lvalue").strip()))
     initial = next((b for b in blocks if "initial" in b["label"].lower() and b["assign"]), None)
     first = next((b for b in blocks if b["assign"]), None)
     chosen = initial or first
@@ -607,7 +843,7 @@ def dafny_enclosing(root, rel, line):
     return name
 
 
-def parse_dafny(root, output, exit_code):
+def parse_dafny(root, output, exit_code, source=None):
     text = output.strip()
     if exit_code == 0:
         return ("nothing", None)
@@ -684,6 +920,285 @@ def parse_dafny(root, output, exit_code):
     return ("rows", rows, raw_for)
 
 
+def kani_segments(text):
+    """[(harness, text)] per `Checking harness X...` section.
+
+    One unnamed segment when the run printed no such line, so a single
+    `--harness` run and an older output shape still read.
+    """
+    starts = list(KANI_HARNESS_START.finditer(text))
+    if not starts:
+        return [(None, text)]
+    out = []
+    for i, m in enumerate(starts):
+        end = starts[i + 1].start() if i + 1 < len(starts) else len(text)
+        out.append((m.group("name"), text[m.end():end]))
+    return out
+
+
+def parse_kani(root, output, exit_code, source=None):
+    text = output.strip()
+    if exit_code == 0:
+        return ("nothing", None)
+    if not text:
+        return ("failed", f"cargo kani exited {exit_code} and wrote nothing to stdout")
+    verdicts = [m.group("v") for m in KANI_VERDICT.finditer(text)]
+    complete = KANI_COMPLETE.search(text)
+    reported = int(complete.group("n")) if complete else None
+    if not verdicts:
+        if RS_BUILD_ERROR.search(text):
+            # A build error: no harness ran, so there is no failing input to
+            # record. Said, not swallowed — the same call parse_dafny makes
+            # for resolution errors.
+            print(f"cex: cargo kani exited {exit_code} on a build error before "
+                  f"any harness ran — nothing was verified, nothing to record")
+            return ("nothing", None)
+        return ("failed", "no `VERIFICATION:- FAILED|SUCCESSFUL` verdict and no "
+                          "rustc error line — this is not cargo kani output as "
+                          "this parser knows it")
+    if "FAILED" not in verdicts:
+        if reported:
+            return ("failed", f"the summary counts {reported} failure(s) but every "
+                              f"harness printed VERIFICATION:- SUCCESSFUL — the "
+                              f"output format changed")
+        print(f"cex: cargo kani exited {exit_code} but every harness verified — "
+              f"nothing to record")
+        return ("nothing", None)
+
+    failed_for = [m.group("name") for m in KANI_FAILED_FOR.finditer(text)]
+    rows, evidence = [], {}
+    for harness, seg in kani_segments(text):
+        segv = [m.group("v") for m in KANI_VERDICT.finditer(seg)]
+        if not segv or segv[-1] != "FAILED":
+            continue
+        checks = [c for c in KANI_CHECK.finditer(seg) if c.group("status") == "FAILURE"]
+        summary = KANI_FAILED_CHECK.search(seg)
+        play = KANI_PLAYBACK.search(seg)
+        # The harness is named from the strongest source present: the
+        # section header, the playback block, the summary's `in <fn>`, a
+        # failed check's location, or the run summary when it names one.
+        name = harness or (play.group("name") if play else None) \
+            or (summary.group("fn") if summary else None)
+        locs = [KANI_LOCATION.search(c.group("loc") or "") for c in checks]
+        if not name:
+            name = next((lo.group("fn") for lo in locs if lo and lo.group("fn")), None)
+        if not name and len(failed_for) == 1:
+            name = failed_for[0]
+        if not name:
+            return ("failed", "VERIFICATION:- FAILED but no harness name could be "
+                              "read from the section header, the playback block, "
+                              "the Failed Checks summary or a check location — "
+                              "the output format changed")
+        module = next((lo.group("file") for lo in locs if lo), None) \
+            or (summary.group("file") if summary else "")
+        module = (module or "").replace(os.sep, "/")
+        parts = [f"\"{c.group('desc')}\" at {c.group('loc') or 'unknown location'}"
+                 for c in checks]
+        if not parts and summary:
+            parts = [f"\"{summary.group('desc')}\" at {summary.group('file')}:"
+                     f"{summary.group('line')} in function {summary.group('fn')}"]
+        assertion = "; ".join(parts) or "verification failed"
+        vals = KANI_PLAYBACK_VAL.findall(play.group("body")) if play else []
+        payload = ", ".join(v for v, _ in vals)
+        alt = ", ".join(f"vec![{norm(b)}]" for _, b in vals)
+        key = f"kani|{module}|{name}|{norm(payload) or norm(assertion)}"
+        cexid = "cex_" + sha(key)[:12]
+        rows.append({
+            "cexId": cexid,
+            "dedupeKey": key,
+            "tool": "kani",
+            "toolVersion": tool_version("cargo-kani"),
+            "module": module,
+            "title": name,
+            "selector": f"{module}:{name}" if module else name,
+            "kind": "harness",
+            "input": payload or None,
+            "inputForm": "kani-concrete-playback" if payload else None,
+            "assertion": assertion,
+            "containment": norm(payload),
+            # The raw bytes Kani writes under --concrete-playback=inplace are
+            # the same value in the prover's own second spelling; a pin may
+            # carry either.
+            "containmentAlt": norm(alt) or None,
+            "signature": "counterexample" if payload else "assertion",
+            "iterations": None,
+            "seed": None,
+            "status": "open",
+            "firstSeen": now(),
+            "headSha": head_sha(root),
+        })
+        evidence[cexid] = {
+            "harness": name,
+            "checks": [{"name": c.group("name"), "status": c.group("status"),
+                        "description": c.group("desc"), "location": c.group("loc")}
+                       for c in checks],
+            "playback": [{"value": v, "bytes": norm(b)} for v, b in vals],
+            "output": text[:20000],
+        }
+    if not rows:
+        return ("failed", "VERIFICATION:- FAILED was printed but no harness "
+                          "section could be read — the output format changed")
+    # Extraction is an invariant, as with aiken's summary.failed: a summary
+    # that counts more failures than were read means the format moved.
+    if reported is not None and reported > len(rows):
+        return ("failed", f"the summary counts {reported} failure(s) but only "
+                          f"{len(rows)} harness(es) could be extracted — the "
+                          f"output format changed")
+
+    def raw_for(row):
+        return evidence.get(row["cexId"], {})
+    return ("rows", rows, raw_for)
+
+
+def itf_value(v):
+    """A compact TLA+-like rendering of one ITF value."""
+    if isinstance(v, bool):
+        return "TRUE" if v else "FALSE"
+    if isinstance(v, (int, float)):
+        return str(v)
+    if isinstance(v, str):
+        return json.dumps(v, ensure_ascii=False)
+    if isinstance(v, list):
+        return "<<" + ", ".join(itf_value(x) for x in v) + ">>"
+    if isinstance(v, dict):
+        if "#bigint" in v:
+            return str(v["#bigint"])
+        if "#set" in v:
+            return "{" + ", ".join(itf_value(x) for x in v["#set"]) + "}"
+        if "#tup" in v:
+            return "<<" + ", ".join(itf_value(x) for x in v["#tup"]) + ">>"
+        if "#map" in v:
+            return "SetAsFun({" + ", ".join(
+                f"<<{itf_value(k)}, {itf_value(x)}>>" for k, x in v["#map"]) + "})"
+        if "#unserializable" in v:
+            return str(v["#unserializable"])
+        return "[" + ", ".join(f"{k} |-> {itf_value(x)}" for k, x in v.items()
+                               if not str(k).startswith("#")) + "]"
+    return json.dumps(v)
+
+
+def itf_state(state, names):
+    """`x = 1, y = {1, 2}` for one ITF state, variables in `vars` order."""
+    order = [n for n in names if n in state]
+    order += [k for k in state if not str(k).startswith("#") and k not in order]
+    return ", ".join(f"{n} = {itf_value(state[n])}" for n in order)
+
+
+def parse_apalache(root, output, exit_code, source=None):
+    text = output.strip()
+    if exit_code == 0:
+        return ("nothing", None)
+    if not text:
+        return ("failed", f"apalache-mc exited {exit_code} and wrote nothing to stdout")
+    traces = []
+    try:
+        doc = json.loads(text)
+    except json.JSONDecodeError:
+        doc = None
+    if isinstance(doc, dict) and isinstance(doc.get("states"), list):
+        # --from pointed at the ITF file itself.
+        label = source.replace(os.sep, "/") if source else "(stdin)"
+        if source and os.path.isabs(source):
+            r = os.path.relpath(source, os.path.abspath(root))
+            label = r.replace(os.sep, "/") if not r.startswith("..") else label
+        traces.append((label, doc))
+    else:
+        paths = []
+        for m in ITF_PATH.finditer(text):
+            if m.group("path") not in paths:
+                paths.append(m.group("path"))
+        if not paths:
+            code = AP_EXITCODE.search(text)
+            n = int(code.group("n")) if code else None
+            if n == 12 or AP_VIOLATION.search(text):
+                return ("failed", "the run reports a violated invariant but names "
+                                  "no .itf.json trace — the output format changed")
+            if n is not None or re.search(r"\berror\b", text, re.I):
+                # A parse, type or configuration error: the checker never
+                # reached a counterexample. Said, not swallowed.
+                print(f"cex: apalache-mc exited {exit_code} without reaching a "
+                      f"counterexample (a parse, type or configuration error) — "
+                      f"nothing to record")
+                return ("nothing", None)
+            return ("failed", "no EXITCODE line and no .itf.json path — this is "
+                              "not apalache-mc output as this parser knows it")
+        for p in paths:
+            full = p if os.path.isabs(p) else os.path.join(root, p)
+            if not os.path.exists(full):
+                return ("failed", f"the output names {p} but it does not exist")
+            try:
+                with open(full, encoding="utf-8") as fh:
+                    d = json.load(fh)
+            except (OSError, json.JSONDecodeError) as e:
+                return ("failed", f"{p} is not readable ITF JSON: {e}")
+            if not isinstance(d, dict) or not isinstance(d.get("states"), list):
+                return ("failed", f"{p} has no `states` list — not ITF as this "
+                                  f"parser knows it")
+            rel = os.path.relpath(os.path.abspath(full), os.path.abspath(root))
+            traces.append((rel.replace(os.sep, "/") if not rel.startswith("..") else p, d))
+
+    rows, evidence = [], {}
+    for label, d in traces:
+        meta = d.get("#meta") if isinstance(d.get("#meta"), dict) else {}
+        names = [str(v) for v in d.get("vars")] if isinstance(d.get("vars"), list) else []
+        states = [s for s in d["states"] if isinstance(s, dict)]
+        if not states:
+            return ("failed", f"{label}: the trace has no states")
+        try:
+            rendered = [itf_state(s, names) for s in states]
+        except (TypeError, ValueError, AttributeError) as e:
+            return ("failed", f"{label}: a value could not be rendered ({e}) — the "
+                              f"ITF encoding changed")
+        module = meta.get("source") if isinstance(meta.get("source"), str) else ""
+        if module and os.path.isabs(module):
+            r = os.path.relpath(module, os.path.abspath(root))
+            module = r if not r.startswith("..") else module
+        module = (module or label).replace(os.sep, "/")
+        # Apalache 0.47 writes each run under _apalache-out/<Spec.tla>/<stamp>/
+        # and its ITF carries no `source`, so the spec is read from that
+        # directory. A key carrying the timestamp would file the same trace
+        # as new on every run.
+        if "_apalache-out/" in module:
+            after = module.split("_apalache-out/", 1)[1].split("/")
+            if after and after[0]:
+                module = after[0]
+        base = os.path.splitext(os.path.basename(module))[0]
+        n = len(states)
+        payload = " ; ".join(rendered)
+        title = f"{base} ({n} states)"
+        key = f"apalache|{module}|{title}|{norm(payload)}"
+        cexid = "cex_" + sha(key)[:12]
+        rows.append({
+            "cexId": cexid,
+            "dedupeKey": key,
+            "tool": "apalache",
+            "toolVersion": tool_version("apalache-mc", "version"),
+            "module": module,
+            "title": title,
+            "selector": f"{module}:{n}-state-trace",
+            "kind": "trace",
+            "input": payload,
+            "inputForm": "itf",
+            "assertion": f"invariant violated after {n - 1} transition(s)",
+            # The initial state is what a regression re-checks from; see the
+            # module docstring.
+            "containment": norm(rendered[0]),
+            "signature": "counterexample",
+            "iterations": None,
+            "seed": None,
+            "status": "open",
+            "firstSeen": now(),
+            "headSha": head_sha(root),
+            "trace": label,
+            "traceLength": n,
+        })
+        evidence[cexid] = {"trace": label, "itf": d, "output": text[:20000]}
+
+    def raw_for(row):
+        return evidence.get(row["cexId"], {})
+    return ("rows", rows, raw_for)
+
+
 # The registry. `parse` reads a run; `body` reads a regression test in that
 # prover's language into (body, oracle_inverted); `roots` bounds where a pin
 # may live (None: anywhere tracked, judged by `ext`); `rerun` is the command a
@@ -716,7 +1231,59 @@ TOOLS = {
         "hint": "// call the method with the recorded values and expect the fixed result",
         "call": lambda row: f"var r := <method>({', '.join(v for _, v in _pairs(row))});",
     },
+    "kani": {
+        "parse": parse_kani,
+        "body": rust_test_body,
+        "roots": None,
+        "ext": ".rs",
+        "inverted": ("annotated `#[should_panic]` or `#[ignore]`: the first passes "
+                     "because the code still panics and goes red the day someone "
+                     "fixes it, the second never runs"),
+        "rerun": lambda row: (f"cargo kani --harness {row.get('title')} -Z "
+                              f"concrete-playback --concrete-playback=print   "
+                              f"(=inplace writes the test into the source instead; "
+                              f"renamed to carry this cexId and tracked, it is a "
+                              f"legal pin target)"),
+        "head": lambda cexid: f"#[test]\nfn {cexid}() {{",
+        "hint": ("// call the code under proof with the recorded values (Kani does "
+                 "not name them; they are in harness order) and assert the fixed result"),
+        "call": lambda row: f"assert!(<property>({row.get('input') or ''}));",
+    },
+    "apalache": {
+        "parse": parse_apalache,
+        "body": tla_test_body,
+        "roots": None,
+        "ext": ".tla",
+        "inverted": ("introduced by `ASSUME`, which the checker takes as given "
+                     "rather than checks"),
+        "rerun": lambda row: f"apalache-mc check --inv=<Inv> {row.get('module')}",
+        "head": lambda cexid: f"{cexid} ==",
+        "hint": ("\\* the recorded trace's first state, as an Init to re-check the "
+                 "invariant from: apalache-mc check --init=<this> --inv=<Inv> <module>"),
+        "call": lambda row: _tla_conj(row.get("containment")),
+        "comment": "\\*",
+        "tail": "",
+    },
 }
+
+
+def _tla_conj(state):
+    """`x = 1, y = {1, 2}` as `x = 1 /\\ y = {1, 2}`: split on top-level commas."""
+    parts, cur, depth, prev = [], [], 0, ""
+    for ch in str(state or ""):
+        if ch in "{[<(":
+            depth += 1
+        elif ch in "}])" or (ch == ">" and prev != "-"):
+            depth -= 1
+        if ch == "," and depth == 0:
+            parts.append("".join(cur).strip())
+            cur = []
+        else:
+            cur.append(ch)
+        prev = ch
+    if "".join(cur).strip():
+        parts.append("".join(cur).strip())
+    return " /\\ ".join(parts)
 
 
 def _pairs(row):
@@ -729,12 +1296,12 @@ def _pairs(row):
     return out
 
 
-def ingest(root, output, exit_code, tool):
+def ingest(root, output, exit_code, tool, source=None):
     spec = TOOLS.get(tool)
     if spec is None:
         print(f"cex: unknown tool '{tool}' (known: {sorted(TOOLS)})", file=sys.stderr)
         return 1
-    parsed = spec["parse"](root, output, exit_code)
+    parsed = spec["parse"](root, output, exit_code, source)
     if parsed[0] == "failed":
         return ingest_failed(root, output, parsed[1], tool)
     if parsed[0] == "nothing":
@@ -808,30 +1375,34 @@ def pin(root, cexid, path, testname):
         os.makedirs(d, exist_ok=True)
         draft = os.path.join(d, f"{cexid}{spec['ext']}.draft")
         need = required_leaves(row.get("containment"), tool)
+        # The draft speaks the prover's language down to its comment marker
+        # and its closing line (none, for a TLA+ operator).
+        c = spec.get("comment", "//")
+        tail = spec.get("tail", "}")
         with open(draft, "w", encoding="utf-8", newline="\n") as fh:
             fh.write(
-                f"// DRAFT from fluxpoint cex.py --pin. Not a pin yet, and not\n"
-                f"// compiled from here — write the real test into the source\n"
-                f"// tree, then record it with:\n"
-                f"//   cex.py --pin {cexid} --file <path> --test-name {cexid}\n"
-                f"//\n"
-                f"// cexId:  {cexid}\n"
-                f"// source: {row.get('selector')} ({tool} "
+                f"{c} DRAFT from fluxpoint cex.py --pin. Not a pin yet, and not\n"
+                f"{c} compiled from here — write the real test into the source\n"
+                f"{c} tree, then record it with:\n"
+                f"{c}   cex.py --pin {cexid} --file <path> --test-name {cexid}\n"
+                f"{c}\n"
+                f"{c} cexId:  {cexid}\n"
+                f"{c} source: {row.get('selector')} ({tool} "
                 f"{row.get('toolVersion')}"
                 + (f", seed {row.get('seed')}, after {row.get('iterations')} test(s)"
                    if row.get("seed") is not None else "")
                 + ")\n"
-                f"// re-run: {spec['rerun'](row)}\n"
-                f"//\n"
-                f"// The value below is copied verbatim from {CEX}. It is\n"
-                f"// evidence, not a restatement — retyping it from memory is\n"
-                f"// the one thing the pin check refuses.\n"
-                f"// Literals your test must contain, in order: "
+                f"{c} re-run: {spec['rerun'](row)}\n"
+                f"{c}\n"
+                f"{c} The value below is copied verbatim from {CEX}. It is\n"
+                f"{c} evidence, not a restatement — retyping it from memory is\n"
+                f"{c} the one thing the pin check refuses.\n"
+                f"{c} Literals your test must contain, in order: "
                 f"{', '.join(need) if need else '(none)'}\n\n"
                 f"{spec['head'](cexid)}\n"
                 f"  {spec['hint']}\n"
                 f"  {spec['call'](row)}\n"
-                f"}}\n")
+                + (f"{tail}\n" if tail else ""))
         print(f"cex: evidence at {os.path.join(EVIDENCE, cexid + '.json')}")
         print(f"cex: draft at {draft}")
         print(f"cex: still OPEN. Write the compiling test, then re-run with "
@@ -907,7 +1478,9 @@ def verify_pin(root, row, rel, testname):
     if body is None:
         return False, f"{rel} has no test/method named `{testname}`"
     if inverted:
-        return False, f"`{testname}` is {spec['inverted']}"
+        # A reader may hand back its own reason instead of True.
+        why = inverted if isinstance(inverted, str) else spec["inverted"]
+        return False, f"`{testname}` is {why}"
     why = hollow(body, tool)
     if why:
         return False, f"`{testname}` proves nothing — {why}"
@@ -915,10 +1488,17 @@ def verify_pin(root, row, rel, testname):
     if not need:
         return False, ("this counterexample recorded no literal to check for; "
                        "it cannot be pinned mechanically yet")
-    ok, missing = contains_in_order(body, need)
+    probed = [needle_for(n, tool) for n in need]
+    ok, missing = contains_in_order(body, probed)
+    if not ok and row.get("containmentAlt"):
+        # The prover's own second spelling of the same value (Kani's raw
+        # byte vectors) is the value too — but only whole: its leaves alone
+        # would let `f(44, 1)` stand in for the u16 300.
+        ok, _ = contains_in_order(body, [norm(row["containmentAlt"])])
     if not ok:
+        shown = need[probed.index(missing)] if missing in probed else missing
         return False, (
-            f"`{missing}` from the recorded counterexample is not in the body of "
+            f"`{shown}` from the recorded counterexample is not in the body of "
             f"`{testname}` (needed, in order: {', '.join(need)}). The value "
             f"is evidence, not a restatement — paste it, do not retype it")
     return True, ""
@@ -1033,7 +1613,7 @@ def main():
     if a.ingest:
         raw = (open(a.src, encoding="utf-8", errors="replace").read()
                if a.src else sys.stdin.read())
-        return ingest(a.root, raw, a.exit, a.tool)
+        return ingest(a.root, raw, a.exit, a.tool, a.src)
     if a.pin:
         return pin(a.root, a.pin, a.file, a.test_name)
     if a.retire:

@@ -30,8 +30,14 @@ Resolve the plugin root: `${CLAUDE_PLUGIN_ROOT}`, else
    *claim* did — a dropped `ensures` conjunct, a widened `requires`, a
    deleted or renamed property test, a `fail` test flipped positive, a
    narrowed fuzzer. None of those move a hatch count, and every checker
-   still exits 0. Read the `NOT COVERED` lines too: a tracked Lean or Coq
-   file is not yet parsed, and that surface is the auditor's alone.
+   still exits 0. It covers Aiken, Dafny, Lean, Coq, Isabelle, TLA+ (with
+   the invariants a TLC `.cfg` names) and Kani; read the `NOT COVERED`
+   lines for anything else, because that surface is the auditor's alone.
+   Read the rest of its output as ground already covered: a DoD line
+   whose `— proof:` obligation is missing, an attack class in
+   `.fluxpoint-attacks.json` with no test, and an `AXIOM AUDIT` line —
+   `NOT RUN` means a headline theorem's assumptions were not checked in
+   this run, which is a gap to name, never a pass.
 1a. **Can the tests fail?** If `.fluxpoint-mutation.json` exists, run
    `bash "$ROOT/scripts/py.sh" mutation-guard.py --report`. A ratchet on
    proof strength says nothing about a suite that executes every line and

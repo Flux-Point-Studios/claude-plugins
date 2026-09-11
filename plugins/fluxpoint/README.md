@@ -32,7 +32,7 @@ does.
   - Gates and ratchets: `exec-attest.sh` with `attest.py` (hook-minted exit
     codes for declared gates), `secret-guard.py` (credential gate),
     `proof-guard.py` (escape hatches), `spec-guard.py` (statements),
-    `cex.py` (counterexample ledger for Aiken and Dafny),
+    `cex.py` (counterexample ledger for Aiken, Dafny, Kani and Apalache),
     `mutation-guard.py` (mutation score), `seam-guard.py` (module mocks),
     `guard-guard.py` (named guards and the tests that hold them down),
     `pair-guard.py` (relations: co-change, parity, differential, bite and
@@ -65,8 +65,10 @@ does.
 - `templates/` — `harness.sh` (the repo-side contract), `WORK.md`,
   `WORK.feature.md`, `WORK.discovery.md`, `WORK.consolidate.md`,
   `WORK.verified.md` (opt-in: a `prover` node beside the builder),
-  `WORK_PROMPT.md`, `loop.sh`, `settings.snippet.json` for Claude Code and
-  `codex.config.snippet.toml` for Codex.
+  `WORK_PROMPT.md`, `loop.sh`, `attack-taxonomy.json` (the eUTxO attack
+  classes an Aiken repo must specify, enforced by spec-guard once copied
+  to `.fluxpoint-attacks.json`), `settings.snippet.json` for Claude Code
+  and `codex.config.snippet.toml` for Codex.
 - `tests/` — one suite per mechanism, all run by the repository's
   `scripts/harness.sh --full`: compiler invariants and field-effect probes,
   codegen injection, the Stop gate and hook wiring driven with both
@@ -263,6 +265,25 @@ proved one.
   (Lean/Isabelle), `Admitted` (Coq), `#[verifier::external_body]` (Verus),
   `ASSUME` (TLA+), and verification-disabling CLI flags into a committed
   file. `--check` fails when a category rises. Falling is always allowed.
+- **`scripts/spec-guard.py` ratchets the statements.** Hatch counts police
+  proof bodies; this hashes what is being proved, so a dropped `ensures`
+  conjunct or a deleted property test is a red gate unless a Decisions row
+  names the obligation id. Coverage: Aiken test and property signatures,
+  Dafny `requires`/`ensures`/`invariant` clauses, Lean and Coq theorem
+  statements, Isabelle lemma statements, TLA+ `THEOREM`s plus every
+  `INVARIANT` and `PROPERTY` a TLC `.cfg` names bound to the operator it
+  checks, and every Rust fn carrying a `kani::` attribute. Three more
+  checks ride on the same scan: `--axioms` records the prover's own
+  assumption listing for headline theorems (`#print axioms`, `Print
+  Assumptions`, `dafny audit`) and reds on a new axiom in the dependency
+  set, which closes laundering an assumption through a helper lemma; a
+  checked `- [x]` line in the Definition of Done with a `— proof: <obligation
+  id>` tail must name an obligation that exists and is unchanged; and
+  `.fluxpoint-attacks.json`, copied from `templates/attack-taxonomy.json`
+  by `/fluxpoint:init` on an Aiken repo, names the eUTxO attack classes a
+  validator must specify as property tests, red for every class with
+  neither a test of that name nor a waiver with a reason. Where a prover is
+  not on PATH the axiom audit says NOT RUN rather than reading clean.
 - **`scripts/plutus-budget.py` gates submittability.** Correct and
   submittable are different properties and only one has a prover:
   `aiken check` is green on a validator too large to go on chain. It reads

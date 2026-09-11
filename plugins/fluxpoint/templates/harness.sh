@@ -224,7 +224,7 @@ full() {
   fi
   # Provers run in --full, not only per-file. A gate that decides "done"
   # without invoking the prover is not a gate.
-  if has dafny && compgen -G '**/*.dfy' >/dev/null 2>&1; then
+  if has dafny && [ -n "$(git ls-files -- '*.dfy' 2>/dev/null)" ]; then
     # Same shape as the aiken block above: capture, record, re-raise, with
     # the prover's exit code staying the gate. Dafny prints a model for the
     # first failing assertion only under --extract-counterexample; put it
@@ -232,10 +232,20 @@ full() {
     # harness stays the one place the prover is invoked. The output is
     # echoed unconditionally: in a repo carrying this harness without the
     # plugin, it is the only record of what failed.
+    #
+    # The prover takes a project file or the .dfy files themselves; a bare
+    # `.` is refused by Dafny 4.9 ("neither a recognized option nor a Dafny
+    # input file"), and a `**/*.dfy` glob without globstar only ever saw one
+    # directory level. Tracked files are the honest list either way.
     dafny_out="$(mktemp)"
     dafny_rc=0
-    # shellcheck disable=SC2086
-    dafny verify ${FPL_DAFNY_ARGS:-} . >"$dafny_out" 2>&1 || dafny_rc=$?
+    if [ -f dfyconfig.toml ]; then
+      # shellcheck disable=SC2086
+      dafny verify ${FPL_DAFNY_ARGS:-} dfyconfig.toml >"$dafny_out" 2>&1 || dafny_rc=$?
+    else
+      # shellcheck disable=SC2086,SC2046
+      dafny verify ${FPL_DAFNY_ARGS:-} $(git ls-files -- '*.dfy') >"$dafny_out" 2>&1 || dafny_rc=$?
+    fi
     cat "$dafny_out"
     cx="$(plugin_script cex.py)"
     if [ -n "$cx" ]; then
@@ -244,6 +254,29 @@ full() {
     fi
     rm -f "$dafny_out"
     if [ "$dafny_rc" -ne 0 ]; then return "$dafny_rc"; fi
+  fi
+  # Apalache runs only where the repo names its spec and invariant: there is
+  # no manifest to detect, and `apalache-mc check` without --inv checks
+  # nothing worth recording. FPL_APALACHE_ARGS carries them, e.g.
+  # `--inv=Inv Spec.tla`. Same shape again — capture, record, re-raise, the
+  # checker's exit code staying the gate (12 on a violation) and the
+  # recorder never getting a vote. The trace itself lands under
+  # _apalache-out/ and the recorder reads it from the path the checker
+  # prints; the output is echoed unconditionally for the repo that carries
+  # this harness without the plugin.
+  if has apalache-mc && [ -n "${FPL_APALACHE_ARGS:-}" ]; then
+    ap_out="$(mktemp)"
+    ap_rc=0
+    # shellcheck disable=SC2086
+    apalache-mc check $FPL_APALACHE_ARGS >"$ap_out" 2>&1 || ap_rc=$?
+    cat "$ap_out"
+    cx="$(plugin_script cex.py)"
+    if [ -n "$cx" ]; then
+      "$FPL_PY" "$cx" --ingest --tool apalache --from "$ap_out" \
+        --exit "$ap_rc" || true
+    fi
+    rm -f "$ap_out"
+    if [ "$ap_rc" -ne 0 ]; then return "$ap_rc"; fi
   fi
   if [ -f lakefile.lean ] || [ -f lakefile.toml ]; then
     if has lake; then lake build; fi
@@ -257,6 +290,30 @@ full() {
       cargo clippy --all-targets --quiet -- -D warnings
     fi
     cargo test --quiet
+    # Kani proof harnesses, when the crate declares any and the cargo plugin
+    # is installed. Same shape as the aiken and dafny blocks: capture,
+    # record, re-raise, with the prover's exit code staying the gate and
+    # the recorder never getting a vote. Put `-Z concrete-playback
+    # --concrete-playback=print` (and whatever else these proofs need) in
+    # FPL_KANI_ARGS so the ledger gets the interpreted input values and not
+    # only the failed check; `=inplace` writes that playback test into the
+    # source instead, where — renamed to carry the cexId and tracked — it is
+    # a legal pin target. The output is echoed unconditionally: without the
+    # plugin it is the only record of what failed.
+    if has cargo-kani && grep -rqs 'kani::proof' src; then
+      kani_out="$(mktemp)"
+      kani_rc=0
+      # shellcheck disable=SC2086
+      cargo kani ${FPL_KANI_ARGS:-} >"$kani_out" 2>&1 || kani_rc=$?
+      cat "$kani_out"
+      cx="$(plugin_script cex.py)"
+      if [ -n "$cx" ]; then
+        "$FPL_PY" "$cx" --ingest --tool kani --from "$kani_out" \
+          --exit "$kani_rc" || true
+      fi
+      rm -f "$kani_out"
+      if [ "$kani_rc" -ne 0 ]; then return "$kani_rc"; fi
+    fi
   fi
   if [ -f package.json ]; then
     run_script_if_present typecheck
@@ -275,8 +332,11 @@ full() {
   # Statement ratchet. The hatch counts above police proof bodies; this
   # polices what is being proved, because dropping a conjunct from an
   # `ensures` or deleting a property test moves no count and keeps every
-  # checker green. Dormant until armed with --baseline.
-  if need_gate spec-guard.py .fluxpoint-proof-baseline.json; then
+  # checker green. It also holds the DoD's `— proof:` claims to the scan,
+  # audits headline theorems' axioms when the baseline names any, and
+  # requires every class in .fluxpoint-attacks.json to be specified, so the
+  # attack manifest arms it on its own. Dormant until one of them exists.
+  if need_gate spec-guard.py .fluxpoint-proof-baseline.json .fluxpoint-attacks.json; then
     "$FPL_PY" "$FPL_GATE" --check
   fi
   # Seam ratchet. The mutation score below asks whether the tests can fail;

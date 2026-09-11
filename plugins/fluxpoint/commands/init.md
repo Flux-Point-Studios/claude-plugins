@@ -135,11 +135,48 @@ step; do not stop at copying files.
    not parse yet, so an unarmed corner never reads as a covered one.
    Confirm `harness.sh --full` actually invokes the prover; per-file
    checking on edit is not a Definition-of-Done gate.
+   Where the repo has headline theorems — the results everything else
+   rests on — record what the prover says they depend on, so an
+   assumption that later sneaks in through a helper lemma is a red gate
+   rather than a flat hatch count:
+   ```
+   bash "${CLAUDE_PLUGIN_ROOT}/scripts/py.sh" spec-guard.py --baseline --axioms \
+     --headline lean:Vault/Safety.lean:no_double_spend --headline dafny:*
+   ```
+   Lean (`#print axioms`), Coq (`Print Assumptions`, resolved through
+   `_CoqProject`) and Dafny (`dafny audit`) are read; the ids come from
+   `spec-guard.py --scan`, and `dafny:*` audits every tracked `.dfy`.
+   For an Aiken repo, copy `templates/attack-taxonomy.json` to
+   `.fluxpoint-attacks.json` and commit it. It names the eUTxO attack
+   classes every validator has to rule out — double satisfaction, datum
+   hijack, token-name confusion, unbounded value, staking-credential
+   substitution, foreign UTxOs, unbounded validity ranges, arbitrary
+   mints — and `spec-guard.py --check` is red for each class until the
+   repo carries a property test of that exact name over `aiken/fuzz`
+   (`test attack_double_satisfaction(n: Int via bounded_int(1, 99)) { … }`)
+   or the manifest's `waived` object gives the class a reason of at least
+   twenty characters. Write those tests now, against this repo's real
+   validators, and then arm the ratchets so their signatures are hashed.
+   A class that genuinely cannot apply is waived in the committed file,
+   where review sees it; it is never left unspecified.
+   When a Definition-of-Done line rests on a proof, say which one:
+   `- [x] withdraw never overdraws — proof: dafny:src/vault.dfy:Withdraw`.
+   `spec-guard.py --check` refuses a checked box whose obligation does not
+   exist or no longer says what was recorded.
    For Aiken repos the scaffolded harness also captures `aiken check`'s
    JSON and records any counterexample it finds to `.fluxpoint-cex.jsonl`;
    for Dafny repos it captures `dafny verify` the same way, and
    `FPL_DAFNY_ARGS="--extract-counterexample"` in the environment makes
-   the prover print the model the ledger records. That file and
+   the prover print the model the ledger records. A Rust crate with
+   `#[kani::proof]` harnesses and `cargo-kani` installed is captured the
+   same way, with `FPL_KANI_ARGS="-Z concrete-playback
+   --concrete-playback=print"` so the ledger gets the interpreted values
+   and not only the failed check (declare `cfg(kani)` under
+   `[lints.rust] unexpected_cfgs` in `Cargo.toml`, or the clippy step that
+   runs first fails on the harness module's `#[cfg(kani)]`); an Apalache
+   spec runs only when
+   `FPL_APALACHE_ARGS` names it (`--inv=Inv Spec.tla`), and the ITF trace
+   it writes is what gets recorded. That file and
    `.fluxpoint-cex/` are committed artifacts like the baselines — a
    ratchet only anyone else can see is one that lives in the tree, so do
    not add them to `.gitignore`.

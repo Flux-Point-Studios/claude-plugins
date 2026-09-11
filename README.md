@@ -83,7 +83,7 @@ the gate dormant.
 | Definition-of-Done gate | `Stop` | When code changed this session, runs `scripts/harness.sh --full` plus a hygiene scan for TODO, FIXME, skipped tests and similar markers. Red blocks the stop, up to `FPL_MAX_BLOCKS` times, then yields with a checkpoint notice. The gate records its own Evidence row. |
 | Compaction gate | `PreCompact` | Blocks one compaction when code changed and nothing durable was written, so the reasoning gets written down before the transcript is summarized. |
 | Ratchets | inside `--full` | Proof escape hatches, theorem statements, mutation score, module mocks and named guards may only move in the safe direction against committed baselines. |
-| Counterexamples | inside `--full` | Shrunk failing inputs from `aiken check` and `dafny verify` are recorded, and each must be pinned to a regression test. |
+| Counterexamples | inside `--full` | Shrunk failing inputs from `aiken check`, `dafny verify`, `cargo kani` (concrete playback) and `apalache-mc` (ITF traces) are recorded, and each must be pinned to a regression test. |
 | Relations | inside `--full` | Declared artifact pairs are checked for co-change, parity and differential agreement. |
 | Review | agents | `red-team-reviewer`, `proof-auditor` and `graph-auditor` end in a typed verdict that the gate consumes. |
 
