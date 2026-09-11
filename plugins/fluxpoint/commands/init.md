@@ -119,12 +119,21 @@ step; do not stop at copying files.
    ```
    bash "${CLAUDE_PLUGIN_ROOT}/scripts/py.sh" seam-guard.py --baseline
    ```
-   If the repo also tracks proof-language files (`.ak`, `.dfy`, `.lean`,
-   `.v`, `.thy`, `.tla`, or verified Rust), arm both proof ratchets:
+   If the repo tracks proof-language files (`.ak`, `.dfy`, `.lean`, `.v`,
+   `.thy`, `.tla`, or verified Rust) **or TypeScript**, arm the hatch
+   ratchet; add the statement ratchet where a prover is involved:
    ```
    bash "${CLAUDE_PLUGIN_ROOT}/scripts/py.sh" proof-guard.py --baseline
    bash "${CLAUDE_PLUGIN_ROOT}/scripts/py.sh" spec-guard.py --baseline
    ```
+   TypeScript is in the first list because a type checker is a prover with
+   a weak logic and `as any` is its `sorry`: the obligation is discharged
+   without being met and `tsc` exits 0 either way. On an off-chain repo
+   that is the surface an autonomous caller actually reaches, so run
+   `proof-guard.py --scan` first and read what it found. A codebase with a
+   hundred existing `any`s baselines at a hundred and ratchets from there;
+   arguing about the number is the wrong fight, and stopping the hundred
+   and first is the right one.
    Each preserves the others' sections of the shared file. Commit it — it
    belongs in review, because a rise in the seam counts is someone walling
    a module off behind a mock, a rise in the hatch counts is someone

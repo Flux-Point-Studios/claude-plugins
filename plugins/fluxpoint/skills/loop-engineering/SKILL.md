@@ -109,6 +109,14 @@ Five rules, in order of how often they are broken:
    file; `--check` fails when any category rises. Proving something you
    previously assumed lowers the count and is always allowed. Raising one
    is a diff a human has to justify.
+   **Off-chain counts too.** A type checker is a prover with a weak logic,
+   so `as any`, `as unknown as T`, the `!` assertion, `@ts-ignore` and a
+   tsconfig with `"strict": false` ratchet as `ts.*` categories. Each
+   discharges an obligation `tsc` had, and `tsc` exits 0 on all of them.
+   That surface is where an autonomous caller actually reaches a protocol,
+   which is why it is gated rather than trusted. `@ts-expect-error` is
+   deliberately uncounted: it fails the build once the error it names is
+   fixed, so it cannot rot in place.
    **And the statements ratchet too.** An agent blocked from adding an
    `assume` has an easier move: weaken the theorem. `scripts/spec-guard.py`
    hashes what is being proved — Dafny `requires`/`ensures`/`invariant`

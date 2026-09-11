@@ -265,6 +265,16 @@ proved one.
   (Lean/Isabelle), `Admitted` (Coq), `#[verifier::external_body]` (Verus),
   `ASSUME` (TLA+), and verification-disabling CLI flags into a committed
   file. `--check` fails when a category rises. Falling is always allowed.
+  TypeScript ratchets on the same argument: a type checker is a prover with
+  a weak logic, and `as any`, `as unknown as T`, the `!` assertion,
+  `@ts-ignore` and a tsconfig with `"strict": false` each discharge an
+  obligation `tsc` had while it exits 0 regardless. Off-chain code is the
+  surface an autonomous caller actually reaches, so it is gated rather than
+  trusted. `@ts-expect-error` is deliberately uncounted, because it fails
+  the build once the error it names is fixed and so cannot rot in place.
+  A category this plugin adds after a repo armed is reported as new and
+  left unratcheted until the next `--baseline`, so an upgrade never reds a
+  diff nobody wrote.
 - **`scripts/spec-guard.py` ratchets the statements.** Hatch counts police
   proof bodies; this hashes what is being proved, so a dropped `ensures`
   conjunct or a deleted property test is a red gate unless a Decisions row

@@ -82,7 +82,7 @@ the gate dormant.
 | Attestation | `PostToolUse` on `Bash` | Records the runtime's own exit code for every command declared in `.fluxpoint-gates.json`, so a gate result cannot be typed by an agent. |
 | Definition-of-Done gate | `Stop` | When code changed this session, runs `scripts/harness.sh --full` plus a hygiene scan for TODO, FIXME, skipped tests and similar markers. Red blocks the stop, up to `FPL_MAX_BLOCKS` times, then yields with a checkpoint notice. The gate records its own Evidence row. |
 | Compaction gate | `PreCompact` | Blocks one compaction when code changed and nothing durable was written, so the reasoning gets written down before the transcript is summarized. |
-| Ratchets | inside `--full` | Proof escape hatches, theorem statements, the assumption set each headline theorem depends on, mutation score, module mocks and named guards may only move in the safe direction against committed baselines. |
+| Ratchets | inside `--full` | Escape hatches in proof languages and in TypeScript, theorem statements, the assumption set each headline theorem depends on, mutation score, module mocks and named guards may only move in the safe direction against committed baselines. |
 | Counterexamples | inside `--full` | Shrunk failing inputs from `aiken check`, `dafny verify`, `cargo kani` (concrete playback) and `apalache-mc` (ITF traces) are recorded, and each must be pinned to a regression test. |
 | Specification floor | inside `--full` | A checked Definition-of-Done line citing an obligation id must name one that exists and still says what was recorded. On an Aiken repo, every eUTxO attack class in `.fluxpoint-attacks.json` needs a property test of that name or a waiver carrying a reason. |
 | Relations | inside `--full` | Declared artifact pairs are checked for co-change, parity and differential agreement. |
@@ -191,7 +191,11 @@ scaffolded harness runs the prover in `--full` and four ratchets hold the
 proof surface: escape hatches, theorem statements, the assumptions each
 headline theorem depends on, and the on-chain budget for Cardano validators.
 Statements are parsed for Aiken, Dafny, Lean, Coq, Isabelle, TLA+ (with the
-invariants a TLC config names) and Kani. The assumption sets come from the
+invariants a TLC config names) and Kani. Escape hatches are counted in those
+languages and in TypeScript, where `as any` is the off-chain `sorry`: it
+discharges an obligation the type checker had, `tsc` exits 0 either way, and
+that layer is the one an autonomous caller actually reaches.
+The assumption sets come from the
 prover itself — `#print axioms`, `Print Assumptions`, `dafny audit` — so an
 axiom laundered in through a helper lemma is red while every hatch count
 holds flat; where the toolchain is absent the audit says so and never reads
