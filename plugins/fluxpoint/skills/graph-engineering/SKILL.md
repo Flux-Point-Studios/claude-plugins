@@ -15,6 +15,15 @@ never decides "done"; the harness does.
 
 ## Loop or graph
 
+Before a new implementation goal, use `/fluxpoint:grill-me` (Codex:
+`$fluxpoint-grill-me`) to research and fill the decision tree, challenge its
+assumptions and lock the requirement packet. Routine decisions have explicit
+model defaults the user can override. Mutating graph compilation requires
+`.fluxpoint-spec.json` and its current lock; every requirement names checks,
+and the compiler carries the packet into node context. Schema validation is
+structural; the declared tests, model checks or proofs and runtime exercises
+establish the behavior. Read-only exploration can precede the locked packet.
+
 Stay in loop mode when the work is one zone, one contract, serial
 evidence. Escalate to a graph when two or more hold: independent subtasks
 that fail independently; a work-list to fan out over; claims that need

@@ -42,6 +42,8 @@ def record(summary, run_id, *flags, template="WORK.md"):
         work = os.path.join(d, "WORK.md")
         with open(os.path.join(PLUGIN, "templates", template), encoding="utf-8") as fh:
             src = fh.read()
+        # These historical summaries predate requirement packets.
+        src = src.replace("SPEC: .fluxpoint-spec.json\n", "")
         with open(work, "w", encoding="utf-8", newline="\n") as fh:
             fh.write(src)
         r = subprocess.run(

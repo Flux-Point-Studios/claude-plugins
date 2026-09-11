@@ -236,6 +236,7 @@ case "${1:---full}" in
     step "manifests validate" validate_manifests
     step "manifests agree across runtimes" manifests_in_sync
     step "portable interpreter invocations" portable_invocations
+    step "locked specification + executed requirements" "$FPL_PY" "$PLUGIN/scripts/specification.py" --run
     step "templates compile + emit valid JS" compile_templates
     step "compiler invariants" "$FPL_PY" "$PLUGIN/tests/compile-test.py"
     step "agentType resolution + contract" "$FPL_PY" "$PLUGIN/tests/agenttype-test.py"

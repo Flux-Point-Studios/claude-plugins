@@ -175,7 +175,14 @@ changed() {
 }
 
 full() {
-  if [ -f aiken.toml ] && has aiken; then
+  if need_gate specification.py .fluxpoint-spec.json .fluxpoint-spec-lock.json; then
+    "$FPL_PY" "$FPL_GATE" --run --if-present
+  elif [ -f WORK.md ] && grep -q '^SPEC: .fluxpoint-spec.json' WORK.md; then
+    echo "harness: specification.py is required by WORK.md but is unavailable" >&2
+    return 1
+  fi
+  if [ -f aiken.toml ]; then
+    has aiken || { echo "harness: Aiken project requires aiken; checks did not run" >&2; return 1; }
     aiken fmt --check .
     # `aiken check` has no --json flag: it emits structured JSON whenever
     # stdout is not a TTY and sends every diagnostic to stderr, so a plain
@@ -229,7 +236,8 @@ full() {
   fi
   # Provers run in --full, not only per-file. A gate that decides "done"
   # without invoking the prover is not a gate.
-  if has dafny && [ -n "$(git ls-files -- '*.dfy' 2>/dev/null)" ]; then
+  if [ -n "$(git ls-files -- '*.dfy' 2>/dev/null)" ]; then
+    has dafny || { echo "harness: Dafny sources require dafny; verification did not run" >&2; return 1; }
     # Same shape as the aiken block above: capture, record, re-raise, with
     # the prover's exit code staying the gate. Dafny prints a model for the
     # first failing assertion only under --extract-counterexample; put it
@@ -269,7 +277,8 @@ full() {
   # _apalache-out/ and the recorder reads it from the path the checker
   # prints; the output is echoed unconditionally for the repo that carries
   # this harness without the plugin.
-  if has apalache-mc && [ -n "${FPL_APALACHE_ARGS:-}" ]; then
+  if [ -n "${FPL_APALACHE_ARGS:-}" ]; then
+    has apalache-mc || { echo "harness: Apalache check requires apalache-mc; verification did not run" >&2; return 1; }
     ap_out="$(mktemp)"
     ap_rc=0
     # shellcheck disable=SC2086
@@ -284,19 +293,22 @@ full() {
     if [ "$ap_rc" -ne 0 ]; then return "$ap_rc"; fi
   fi
   if [ -f lakefile.lean ] || [ -f lakefile.toml ]; then
-    if has lake; then lake build; fi
+    has lake || { echo "harness: Lean project requires lake; verification did not run" >&2; return 1; }
+    lake build
   fi
-  if [ -f _CoqProject ] && has coq_makefile; then
+  if [ -f _CoqProject ]; then
+    has coq_makefile || { echo "harness: Coq project requires coq_makefile; verification did not run" >&2; return 1; }
     coq_makefile -f _CoqProject -o CoqMakefile && make -f CoqMakefile
   fi
-  if [ -f Cargo.toml ] && has cargo; then
+  if [ -f Cargo.toml ]; then
+    has cargo || { echo "harness: Rust project requires cargo; checks did not run" >&2; return 1; }
     cargo fmt --all -- --check
     if cargo clippy --version >/dev/null 2>&1; then
       cargo clippy --all-targets --quiet -- -D warnings
     fi
     cargo test --quiet
-    # Kani proof harnesses, when the crate declares any and the cargo plugin
-    # is installed. Same shape as the aiken and dafny blocks: capture,
+    # Kani proof harnesses, when the crate declares any. Same shape as the
+    # aiken and dafny blocks: capture,
     # record, re-raise, with the prover's exit code staying the gate and
     # the recorder never getting a vote. Put `-Z concrete-playback
     # --concrete-playback=print` (and whatever else these proofs need) in
@@ -305,7 +317,8 @@ full() {
     # source instead, where — renamed to carry the cexId and tracked — it is
     # a legal pin target. The output is echoed unconditionally: without the
     # plugin it is the only record of what failed.
-    if has cargo-kani && grep -rqs 'kani::proof' src; then
+    if grep -rqs 'kani::proof' src; then
+      has cargo-kani || { echo "harness: Kani proofs require cargo-kani; verification did not run" >&2; return 1; }
       kani_out="$(mktemp)"
       kani_rc=0
       # shellcheck disable=SC2086

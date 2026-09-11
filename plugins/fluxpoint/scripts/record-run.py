@@ -170,6 +170,16 @@ def main():
         print(f"record-run: result is not JSON: {e}", file=sys.stderr)
         return 1
 
+    from specification import load, required
+    if "specification" in summary or required(args.root):
+        try:
+            _, identity = load(args.root)
+            if summary.get("specification") != identity:
+                raise ValueError("run specification differs from the locked packet")
+        except (OSError, ValueError, TypeError) as e:
+            print(f"record-run: spec verification failed: {e}", file=sys.stderr)
+            return 1
+
     prov = summary.get("provenance") or []
     ok = sum(1 for p in prov if p.get("status") == "OK")
     dead = sum(1 for p in prov if p.get("status") == "DEAD")

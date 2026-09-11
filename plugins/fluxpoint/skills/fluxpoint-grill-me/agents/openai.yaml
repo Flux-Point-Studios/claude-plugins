@@ -1,0 +1,4 @@
+interface:
+  display_name: "Flux Point Grill Me"
+  short_description: "Draft a spec with researched decisions and checkable requirements"
+  default_prompt: "Use $fluxpoint-grill-me to draft and challenge the specification for this goal."

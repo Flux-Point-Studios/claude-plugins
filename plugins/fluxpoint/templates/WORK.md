@@ -2,6 +2,7 @@
 
 STATUS: ACTIVE
 MODE: loop
+SPEC: .fluxpoint-spec.json
 
 One goal, one Definition of Done, one Evidence table — whether the work is
 decomposed as loop slices, as a graph campaign, or both. MODE is `loop`
@@ -24,6 +25,9 @@ needs a row in Evidence.
      re-picking a blocked slice spends the iteration budget on nothing. -->
 
 Loop slices, worked one per iteration per `WORK_PROMPT.md`.
+
+Complete the grill-me decision pass and lock the requirement packet before
+implementation. Map each slice to requirement ids and their failing checks.
 
 - [ ] <failing test for the first behavior>
 - [ ] <minimum code to flip it green>

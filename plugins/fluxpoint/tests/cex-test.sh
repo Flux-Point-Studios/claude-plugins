@@ -56,7 +56,9 @@ PY
 mkrepo() {
   rm -rf "$R"; mkdir -p "$R/lib" "$R/validators"; cd "$R" || exit 1
   git init -q -b main
-  printf 'name = "x/y"\n' >aiken.toml
+  if [ "${1:-aiken}" = aiken ]; then
+    printf 'name = "x/y"\n' >aiken.toml
+  fi
   git add -A; git -c user.email=t@t -c user.name=t commit -qm base
 }
 commit() { git -C "$R" add -A; git -C "$R" -c user.email=t@t -c user.name=t commit -qm "${1:-x}"; }
@@ -354,7 +356,7 @@ case "$err" in *"is not valid JSON"*) ok "a corrupted store fails hard on read" 
 # literal on the left), each captured from a real run, never from
 # documentation.
 mkdafny() {
-  mkrepo
+  mkrepo dafny
   mkdir -p "$R/src" "$R/test"
   cat >"$R/src/example.dfy" <<'EOF'
 module M {
@@ -450,7 +452,7 @@ PY2
 # written to the two earlier shapes read this run as a bare assertion and
 # lost the model, which is why the real output is the fixture.
 mkdafny49() {
-  mkrepo
+  mkrepo dafny
   mkdir -p "$R/src" "$R/test"
   cat >"$R/src/vault.dfy" <<'EOF'
 module Vault {
@@ -640,7 +642,7 @@ check "and the counterexample was recorded on the way" 1 "$(rows)"
 # The only edit is the crate path. The green fixture is the same run's
 # `fine` section with the closing summary in the form Kani prints it.
 mkkani() {
-  mkrepo
+  mkrepo kani
   mkdir -p "$R/src" "$R/tests"
   printf '[package]\nname = "vault"\nversion = "0.1.0"\nedition = "2021"\n' >"$R/Cargo.toml"
   cat >"$R/src/lib.rs" <<'EOF'
@@ -1148,7 +1150,7 @@ check "and both counterexamples were recorded on the way" 2 "$(rows)"
 # from the ITF format description (ADR-015), to exercise the encodings this
 # spec does not produce.
 mkapalache() {
-  mkrepo
+  mkrepo apalache
   cat >"$R/Counter.tla" <<'EOF'
 ---- MODULE Counter ----
 EXTENDS Integers
@@ -1449,7 +1451,7 @@ check "without FPL_APALACHE_ARGS the checker is not invoked at all" 0 "$(rows)"
 # counterexamples: a vitest run mixes property failures with ordinary
 # assertion failures, and only the first kind carries a shrunk input.
 mkfc() {
-  mkrepo
+  mkrepo fastcheck
   mkdir -p "$R/test"
   printf '{ "name": "app", "type": "module", "scripts": { "test": "vitest run" } }\n' \
     >"$R/package.json"

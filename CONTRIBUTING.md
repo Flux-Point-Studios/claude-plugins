@@ -22,6 +22,12 @@ prints the trend without failing the run.
 `scripts/harness.sh --changed <file>` runs the scoped checks for one file,
 which is what the plugin's own per-edit hook calls.
 
+For implementation goals, update the decision and requirement packet before
+coding and lock it with `plugins/fluxpoint/scripts/py.sh specification.py --lock`.
+The full harness runs its focused checks; never point a packet check back at
+the full harness. A packet or proof-baseline revision invalidates the lock.
+Read [the spec-first contract](docs/spec-first.md) for the scope and trust boundary.
+
 Contributions are accepted under the repository's Apache-2.0 license, on
 the terms in section 5 of [LICENSE](LICENSE).
 

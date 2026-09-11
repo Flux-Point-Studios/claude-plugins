@@ -13,6 +13,14 @@ Workflow tool requires.
    rather than improvising around it:
    - `bash "$ROOT/scripts/py.sh" compile-graph.py <graph> --check` exits 0.
      Its findings are the work list; fix the IR, never the compiler.
+   - Mutating and irreversible graphs require the locked spec packet.
+     The compiler loads it from the repository root and embeds it in node
+     context. Verify the packet covers this goal, its check commands are
+     wired into the repo harness, and it and its lock are committed for
+     isolated nodes. On Codex's fallback, pass the embedded packet to each
+     node and preserve its identity in the summary; recording rejects a
+     stale or omitted identity. Do not re-lock a changed spec to repair a
+     failing implementation; review the requirement change first.
    - `STATUS:` reads `READY` (or `RUNNING` with a resume point in Notes).
    - The `--check` line names the estimated tokens and the prompt-cache
      TTL the graph declares (`budget.cacheTtl`). A graph written for `1h`

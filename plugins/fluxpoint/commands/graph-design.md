@@ -6,14 +6,21 @@ argument-hint: [campaign goal]
 Design the graph. The IR is the deliverable; nothing executes from this
 command.
 
-1. Read `WORK.md`; if absent, run `/fluxpoint:graph-init` first.
+1. Read `WORK.md`; if absent, run `/fluxpoint:init` first.
    Set the `campaign` field from "$ARGUMENTS" if provided, otherwise ask
    before writing.
 2. Apply the loop-or-graph rule from the graph-engineering skill. If the
    goal fits one loop slice — one zone, one contract, serial
    evidence — say exactly that, recommend `/goal` or WORK.md, and stop.
    Never build a graph as ceremony.
-3. Interrogate the repo until every planned node is grounded: which files
+3. Before designing implementation nodes, perform `/fluxpoint:grill-me`
+   (Codex: `$fluxpoint-grill-me`). Reuse the current packet when it covers
+   the goal; revise changed decisions and their dependents. Require
+   `bash "${CLAUDE_PLUGIN_ROOT}/scripts/py.sh" specification.py --check`
+   to pass. A defaulted model decision is sufficient for routine authorized
+   work, but a blocked authority decision is not. Read-only discovery can
+   establish facts for the packet before it is locked.
+   Interrogate the repo until every planned node is grounded: which files
    each prompt names, which commands each verifier runs, which
    `agents/*.md` roles already exist to reference by `agentType`.
 4. Write the `graph-ir` block:

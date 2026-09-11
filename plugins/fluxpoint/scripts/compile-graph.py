@@ -1693,7 +1693,7 @@ def emit_halt_any(n, var):
     )
 
 
-def emit(ir, contracts, imports_resolved=None):
+def emit(ir, contracts, imports_resolved=None, specification=None):
     nodes = ir["nodes"]
     lists = ir.get("lists") or {}
     nodes_by_id = {x.get("id"): x for x in nodes}
@@ -1754,6 +1754,9 @@ def emit(ir, contracts, imports_resolved=None):
     for k, v in (ir.get("argDefaults") or {}).items():
         a(f"if (!A[{js_str(k)}]) A[{js_str(k)}] = {js_str(v)}")
     a(f"const campaign = {js_str(ir['campaign'])}")
+    if specification:
+        a("const SPECIFICATION = " + json.dumps(specification, ensure_ascii=True))
+        a("function specificationPreamble() { return 'Implement and verify this locked requirement packet. Defaulted decisions are model choices, not user authorization. Do not edit the packet, lock or proof baseline to pass a check. If a requirement is wrong, return the counterexample for a spec revision.\\n' + JSON.stringify(SPECIFICATION) + '\\n'; }")
     a("// Resolved inputs are logged, never silently defaulted behind your back.")
     a("log(`inputs: ${JSON.stringify(A)}`)")
     # What the spec priced, next to what the run will meter. The profile is
@@ -1964,6 +1967,8 @@ def emit(ir, contracts, imports_resolved=None):
     a("function summary(outcome) {")
     a("  const final = outcome === 'COMPLETE' && INCOMPLETE ? 'INCOMPLETE' : outcome")
     extra = ""
+    if specification:
+        extra += ", specification: SPECIFICATION.identity"
     if any(n.get("irreversible") for n in nodes):
         extra += ", ledger: LEDGER_WRITES"
     if parked:
@@ -2058,6 +2063,8 @@ def emit(ir, contracts, imports_resolved=None):
         a("  }")
         a("  const votes = await parallel(Array.from({ length: n }, (_, i) => () =>")
         a("    spawn(")
+        if specification:
+            a("      specificationPreamble() +")
         a("      `Attempt to REFUTE this claim. ${claimText}\\n\\n` + (priors || '') +")
         a("        `Re-read the underlying code or evidence YOURSELF; do not trust the claim's own summary. ` +")
         a("        `Hunt for the reason it is wrong: a guard upstream, a type that forbids the state, a test that pins it. ` +")
@@ -2187,7 +2194,7 @@ def emit(ir, contracts, imports_resolved=None):
             a("// still the tree every earlier verdict described.")
             a(f"if (!await treeCheck({js_str('before ' + n['id'])}, "
               f"{js_str(n.get('phase', 'Run'))})) return summary('TREE-MOVED')")
-        a(emit_node(n, ir))
+        a(emit_node(n, ir, specification=bool(specification)))
         a("")
     if tree_guard:
         a(f"if (!await treeCheck('campaign-end', {js_str(last_phase)})) return summary('TREE-MOVED')")
@@ -2195,7 +2202,7 @@ def emit(ir, contracts, imports_resolved=None):
     return "\n".join(L) + "\n"
 
 
-def emit_parked(n):
+def emit_parked(n, specification=False):
     """A node no agent can run: released from a file, or reported blocked.
 
     Emits no spawn at all. The campaign continues past it rather than
@@ -2231,6 +2238,8 @@ def emit_parked(n):
     # the block is real — most steps that feel human-only are not.
     a(f"  const advice_{var} = affordable({js_str('advice for ' + nid)})")
     a(f"    ? await spawn(")
+    if specification:
+        a("        specificationPreamble() +")
     a(f"        `A campaign step cannot be run by an agent and is about to be "
       f"handed to a person. Do not simply agree.\\n\\n` +")
     a(f"        `The step: ` + {js_template(str(n['prompt']), mapping)} + `\\n` +")
@@ -2330,7 +2339,7 @@ def emit_reduce(n, ir):
     return "\n".join(L)
 
 
-def emit_node(n, ir):
+def emit_node(n, ir, specification=False):
     nid = n["id"]
     var = "n_" + nid.replace("-", "_")
     phase = n.get("phase", "Run")
@@ -2348,6 +2357,8 @@ def emit_node(n, ir):
         pre = "measurePreamble() + "
     elif n.get("isolation") in (True, "worktree") or n.get("mutates"):
         pre = "basePreamble() + "
+    if specification:
+        pre += "specificationPreamble() + "
     prompt = (pre + js_template(n["prompt"], mapping)) if not is_reduce(n) else None
     L = []
     a = L.append
@@ -2374,7 +2385,7 @@ def emit_node(n, ir):
         a("} else {")
 
     if n.get("actor", "agent") != "agent":
-        a(emit_parked(n))
+        a(emit_parked(n, specification))
     elif is_reduce(n):
         a(emit_reduce(n, ir))
     elif n.get("repeat"):
@@ -2793,6 +2804,16 @@ def main():
             print(f"  - {f}", file=sys.stderr)
         return 1
 
+    specification = None
+    from specification import load, required
+    if required(args.gates_root) or any(n.get("mutates") or n.get("irreversible") for n in ir["nodes"]):
+        try:
+            packet, identity = load(args.gates_root)
+            specification = {"packet": packet, "identity": identity}
+        except (OSError, ValueError, TypeError) as e:
+            print(f"graph-compile: spec required before implementation: {e}", file=sys.stderr)
+            return 1
+
     planned = plan_node_count(ir)
     # Warnings inform, never block: these shapes are legal and occasionally
     # deliberate, but they will usually disappoint whoever reads the result.
@@ -2822,7 +2843,7 @@ def main():
               f"{(ir.get('budget') or {}).get('maxNodes')}, {cost_line}{imported}")
         return 0
 
-    js = emit(ir, contracts, resolved)
+    js = emit(ir, contracts, resolved, specification)
     if args.out:
         os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
         with open(args.out, "w", encoding="utf-8", newline="\n") as fh:

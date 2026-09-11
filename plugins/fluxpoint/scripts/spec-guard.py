@@ -1119,7 +1119,11 @@ def check(root, axioms_only=False):
                 f"{len(now)} obligation(s) found but the spec ratchet is NOT "
                 f"armed. Run: spec-guard.py --baseline")
     else:
-        justified = work_text(root)
+        # Legacy waivers must be decision rows. A locked campaign changes its
+        # reviewed packet and baseline instead of exempting obligations in prose.
+        justified = "" if os.path.exists(os.path.join(root, ".fluxpoint-spec-lock.json")) else "\n".join(
+            line for line in work_text(root).splitlines()
+            if re.match(r"^\|\s*\d{4}-\d{2}-\d{2}\b", line) and line.count("|") >= 7)
         # A file rename moves every obligation in it. That is not a weakening,
         # so an id that vanished while an identical statement appeared under
         # the same name elsewhere is treated as the same obligation, relocated.

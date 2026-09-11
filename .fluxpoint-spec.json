@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "goal": "Require researched decisions and executable requirements before Flux Point implementation campaigns",
+  "asset": "The existing WORK.md compiler, harness, proof ratchets and shared Claude/Codex plugin",
+  "scope": ["Decision packet and freeze validation", "Mutating graph preflight and context", "Requirement checks in newly initialized loops", "Formal tool availability", "Statement exception validation"],
+  "outOfScope": ["Installing provers into consumer repositories", "Proving arbitrary program semantics", "Changing existing installed plugin caches", "Rewriting legacy consuming harnesses automatically"],
+  "decisions": [
+    {
+      "id": "spec-boundary",
+      "status": "defaulted",
+      "dependsOn": [],
+      "record": {
+        "question": "How should decisions and requirements constrain implementation?",
+        "options": [
+          {"option": "locked-packet", "argued_by": "model", "strongest_objection": "Adds a manifest and lock that must be revised when requirements change"},
+          {"option": "advisory-prose", "argued_by": "model", "strongest_objection": "The existing compiler accepts mutating graphs with no spec or decisions"},
+          {"option": "universal-proof", "argued_by": "model", "strongest_objection": "Would require new models and checker support for every implementation language"}
+        ],
+        "chosen": "locked-packet",
+        "rationale": "The actual compiler probe accepted a two-node mutating graph with no spec, while the repo already provides typed decisions, a harness and proof ratchets. A checked packet connects those existing parts.",
+        "overturned_prior": false,
+        "frozen_by": "none",
+        "reversible": true,
+        "evidence": ["2026-09-11: no-spec compiler CLI probe exited 0 on e4a497d", "Read DecisionV1.schema.json, spec-guard.py and templates/harness.sh", "User requested implementation and tests after the assessment"]
+      },
+      "costs": [
+        {"option": "locked-packet", "cost": "Two tracked artifacts and requirement-specific check maintenance", "basis": "estimate", "evidence": ["Design scope; no elapsed implementation time estimate claimed"]},
+        {"option": "advisory-prose", "cost": "No new runtime checks; unmet requirements can remain invisible", "basis": "measured", "evidence": ["Mutating graph without spec compiled with exit 0"]},
+        {"option": "universal-proof", "cost": "Per-language proof and conformance work with unmeasured maintenance cost", "basis": "unknown", "evidence": ["Existing proof integrations have different semantics; no universal adapter exists in this repository"]}
+      ]
+    }
+  ],
+  "requirements": [
+    {"id": "decision-quality", "statement": "A packet requires resolved decisions with alternatives, evidence, costs and acyclic dependencies", "decisions": ["spec-boundary"], "checks": ["specification-tests"], "counterexample": "A blocked decision, empty evidence or missing option cost can be locked"},
+    {"id": "preflight", "statement": "A mutating graph requires a current locked packet and carries it into agent context", "decisions": ["spec-boundary"], "checks": ["specification-tests"], "counterexample": "A graph with no spec compiles or its emitted agents never receive requirement ids"},
+    {"id": "execution", "statement": "Declared check errors, timeouts, missing tools, unarmed formal escape-hatch ratchets and failed proof witnesses prevent success", "decisions": ["spec-boundary"], "checks": ["specification-tests"], "counterexample": "A failed check, unarmed proof ratchet or absent prover is silently treated as a pass"},
+    {"id": "provenance", "statement": "Spec edits, named obligation drift and proof baseline changes invalidate the lock, and recording rejects an absent or stale identity", "decisions": ["spec-boundary"], "checks": ["specification-tests"], "counterexample": "A weaker theorem or a summary from an earlier spec is accepted as current"},
+    {"id": "bootstrap", "statement": "A WORK.md spec declaration arms the scaffolded harness and a mere Decisions mention cannot exempt statement drift", "decisions": ["spec-boundary"], "checks": ["specification-tests"], "counterexample": "Deleting a declared packet or mentioning an obligation leaves the gate green"}
+  ],
+  "checks": [
+    {"id": "specification-tests", "kind": "test", "argv": ["{python}", "plugins/fluxpoint/tests/specification-test.py"], "scope": "Execute packet CLI, graph compiler output, run recording and scaffolded harness regressions", "assumptions": ["The test runner and operating system are trusted", "These tests establish enforcement behavior, not mathematical correctness of arbitrary consumer code"], "timeoutSeconds": 120}
+  ],
+  "challenges": [
+    {"claim": "A complete-looking spec can still express the wrong requirement", "resolution": "The grill pass records counterexamples and challenges; independent verification and real runtime checks remain required"},
+    {"claim": "An agent can rewrite both the packet and its lock", "resolution": "The lock is a drift boundary and a reviewable artifact; CI and review remain the external trust boundary"},
+    {"claim": "A missing response could be mistaken for authorization", "resolution": "Defaulted decisions remain model recommendations; genuine authority boundaries remain blocked"},
+    {"claim": "Installing a plugin might be mistaken for upgrading every consuming harness", "resolution": "New initialization requires integration; existing copied harnesses need an explicit update"}
+  ]
+}
