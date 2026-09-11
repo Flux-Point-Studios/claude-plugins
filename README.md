@@ -86,6 +86,7 @@ the gate dormant.
 | Counterexamples | inside `--full` | Shrunk failing inputs from `aiken check`, `dafny verify`, `cargo kani` (concrete playback) and `apalache-mc` (ITF traces) are recorded, and each must be pinned to a regression test. |
 | Specification floor | inside `--full` | A checked Definition-of-Done line citing an obligation id must name one that exists and still says what was recorded. On an Aiken repo, every eUTxO attack class in `.fluxpoint-attacks.json` needs a property test of that name or a waiver carrying a reason. |
 | Relations | inside `--full` | Declared artifact pairs are checked for co-change, parity and differential agreement. |
+| Blueprint conformance | inside `--full` | PlutusData the off-chain builder produced is decoded and checked against the CIP-57 schema the validator declares in `plutus.json`, so a proof on one side of the wire is not read as a guarantee about the other. |
 | Review | agents | `red-team-reviewer`, `proof-auditor` and `graph-auditor` end in a typed verdict that the gate consumes. |
 
 The mechanisms behind each row, the invariants they hold and their
@@ -202,7 +203,15 @@ holds flat; where the toolchain is absent the audit says so and never reads
 clean. Two further claims are gated on the same scan: a checked
 Definition-of-Done line citing an obligation id, and every eUTxO attack
 class an Aiken repo has left unspecified. `/fluxpoint:proof-audit` adds the
-semantic pass a counter cannot do. Supported provers and the details are in
+semantic pass a counter cannot do.
+
+None of that reaches the other side of the wire. A validator proved correct
+still signs whatever the transaction builder constructs, and the builder is
+the caller an autonomous agent actually reaches. `blueprint-guard.py`
+decodes the PlutusData that builder produced and checks it against the
+CIP-57 schema the validator declares in `plutus.json`, which `aiken build`
+regenerates from the validator itself. Supported provers and the details
+are in
 [plugins/fluxpoint/README.md](plugins/fluxpoint/README.md#verified-work).
 
 ## Security

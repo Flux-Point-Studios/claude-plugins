@@ -189,6 +189,34 @@ step; do not stop at copying files.
    `.fluxpoint-cex/` are committed artifacts like the baselines — a
    ratchet only anyone else can see is one that lives in the tree, so do
    not add them to `.gitignore`.
+8b. If this repo builds Aiken validators, hold the off-chain builder to the
+   blueprint they declare. Everything in step 8 judges the on-chain
+   predicate; a validator proved correct still signs whatever the
+   transaction builder constructs, and the builder is the caller an
+   autonomous agent actually reaches. Start by reading what the blueprint
+   declares:
+   ```
+   bash "${CLAUDE_PLUGIN_ROOT}/scripts/py.sh" blueprint-guard.py --scan
+   ```
+   It lists every validator's datum and redeemer schema and names the ones
+   that are opaque `Data` — a validator taking untyped data has no
+   specification to hold anyone to, so say that in review rather than
+   reading a green as coverage. Then declare a corpus in
+   `.fluxpoint-blueprint.json`: a command that prints one PlutusData hex
+   per line, exactly as the builder encodes it.
+   ```json
+   {"version": 1,
+    "corpora": [{"validator": "vault.vault.spend", "purpose": "datum",
+                 "produce": "node offchain/scripts/sample-datums.mjs"}],
+    "waived": {"vault.vault.else": "the else handler declares no schema of its own"}}
+   ```
+   `--check` decodes each line and asks the blueprint whether the validator
+   would recognise it, then reds on a value the schema refuses, a manifest
+   naming a validator the blueprint lacks, or a `$ref` that does not
+   resolve. The producer should be the builder's own encoder over its own
+   fixtures; a corpus written by hand tests the hand that wrote it. Set
+   `requireTyped` once every typed schema has a corpus, and the gate starts
+   refusing to leave one uncovered.
 9. If this repo has guards — the specific lines that stop money moving
    wrongly, an auth check, a spend limit, a signature verification — name
    them in `.fluxpoint-guards.json` so the guard ratchet can hold each one
