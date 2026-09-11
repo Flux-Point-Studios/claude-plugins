@@ -160,5 +160,74 @@ if _probe and _sh:
                r.returncode != 0, f"rc={r.returncode}"
                + ("" if r.returncode else " — SWALLOWED BY CLEANUP"))
 
+# ========== the front page counts what the code actually ships ==========
+# "three ratchets hold the proof surface: escape hatches, theorem statements
+# and the on-chain budget" outlived the slice that added a fourth. A summary
+# undercounting its own subject is the drift this file exists for: a reader
+# who trusts the number stops looking for the rest. So the number is checked
+# against the list it introduces, and the coverage claims are derived from
+# the registries that decide them rather than restated by hand.
+ROOT_README = open(os.path.join(REPO, "README.md"), encoding="utf-8").read()
+_sec = re.search(r"^## Verified work\s*$(.*?)(?=^## )", ROOT_README, re.S | re.M)
+VERIFIED = re.sub(r"\s+", " ", _sec.group(1)).strip() if _sec else ""
+report("the root README has a Verified work section", bool(VERIFIED),
+       f"{len(VERIFIED)} chars" if VERIFIED else "NOT FOUND")
+
+COUNTS = {"two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7}
+_m = re.search(r"\b(%s) ratchets hold the proof surface: (.*?)\." % "|".join(COUNTS),
+               VERIFIED)
+if _m:
+    _listed = [re.sub(r"^and\s+", "", p.strip())
+               for p in _m.group(2).split(",") if p.strip()]
+    report("the ratchet count matches the list it introduces",
+           COUNTS[_m.group(1)] == len(_listed),
+           f"says {_m.group(1)}, lists {len(_listed)}")
+else:
+    report("the ratchet count matches the list it introduces", False,
+           "the counted sentence is gone — re-pin the claim or drop this case")
+
+SPEC = read("scripts", "spec-guard.py")
+CEX = read("scripts", "cex.py")
+DISPLAY = {"aiken": "Aiken", "dafny": "Dafny", "lean": "Lean", "coq": "Coq",
+           "isabelle": "Isabelle", "tla": "TLA+", "kani": "Kani",
+           "apalache": "apalache"}
+
+
+def _shown(tool):
+    return DISPLAY.get(tool, tool.title())
+
+
+# Every language the statement ratchet parses, taken from the registry that
+# decides it. A parser the summary does not name is one no reader arms.
+_m = re.search(r"^COVERED = \{(.*?)\n\}", SPEC, re.S | re.M)
+_covered = sorted(set(re.findall(r':\s*"(\w+)"', _m.group(1)))) if _m else []
+_missing = [t for t in _covered if _shown(t) not in VERIFIED]
+report("every language spec-guard parses is named on the front page",
+       bool(_covered) and not _missing,
+       f"{len(_covered)} covered" if not _missing else f"MISSING {_missing}")
+
+# Same for the counterexample ledger, against its own tool registry.
+_m = re.search(r"^TOOLS = \{(.*?)\n\}", CEX, re.S | re.M)
+_tools = re.findall(r'^\s{4}"(\w+)":\s*\{', _m.group(1), re.M) if _m else []
+_row = re.search(r"^\| Counterexamples \|.*$", ROOT_README, re.M)
+_row = _row.group(0).lower() if _row else ""
+_missing = [t for t in _tools if t not in _row]
+report("every prover the ledger ingests is named in the enforcement table",
+       bool(_tools) and not _missing,
+       f"{len(_tools)} provers" if not _missing else f"MISSING {_missing}")
+
+# Three gates that exist in the code and were silent on the front page for a
+# release. Each is keyed to the constant that implements it, so removing the
+# feature relaxes the pin and shipping one leaves the doc owing a sentence.
+for label, needle, promised in (
+        ("the axiom audit", '"--axioms"', "assumption"),
+        ("the attack taxonomy", 'ATTACKS = ".fluxpoint-attacks.json"', "attack"),
+        ("the Definition-of-Done citation", "DOD_LINE = re.compile", "Definition-of-Done")):
+    if needle not in SPEC:
+        report(f"{label} is still implemented", False, f"{needle} is gone — re-pin")
+        continue
+    report(f"{label} is described where it is claimed", promised in VERIFIED,
+           "described" if promised in VERIFIED else f"SILENT on {promised!r}")
+
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

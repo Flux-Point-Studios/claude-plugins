@@ -82,8 +82,9 @@ the gate dormant.
 | Attestation | `PostToolUse` on `Bash` | Records the runtime's own exit code for every command declared in `.fluxpoint-gates.json`, so a gate result cannot be typed by an agent. |
 | Definition-of-Done gate | `Stop` | When code changed this session, runs `scripts/harness.sh --full` plus a hygiene scan for TODO, FIXME, skipped tests and similar markers. Red blocks the stop, up to `FPL_MAX_BLOCKS` times, then yields with a checkpoint notice. The gate records its own Evidence row. |
 | Compaction gate | `PreCompact` | Blocks one compaction when code changed and nothing durable was written, so the reasoning gets written down before the transcript is summarized. |
-| Ratchets | inside `--full` | Proof escape hatches, theorem statements, mutation score, module mocks and named guards may only move in the safe direction against committed baselines. |
+| Ratchets | inside `--full` | Proof escape hatches, theorem statements, the assumption set each headline theorem depends on, mutation score, module mocks and named guards may only move in the safe direction against committed baselines. |
 | Counterexamples | inside `--full` | Shrunk failing inputs from `aiken check`, `dafny verify`, `cargo kani` (concrete playback) and `apalache-mc` (ITF traces) are recorded, and each must be pinned to a regression test. |
+| Specification floor | inside `--full` | A checked Definition-of-Done line citing an obligation id must name one that exists and still says what was recorded. On an Aiken repo, every eUTxO attack class in `.fluxpoint-attacks.json` needs a property test of that name or a waiver carrying a reason. |
 | Relations | inside `--full` | Declared artifact pairs are checked for co-change, parity and differential agreement. |
 | Review | agents | `red-team-reviewer`, `proof-auditor` and `graph-auditor` end in a typed verdict that the gate consumes. |
 
@@ -186,10 +187,18 @@ evidence and what it refuses to do are in
 ## Verified work
 
 A prover exits 0 on an assumed lemma exactly as on a proved one, so the
-scaffolded harness runs the prover in `--full` and three ratchets hold the
-proof surface: escape hatches, theorem statements and the on-chain budget
-for Cardano validators. `/fluxpoint:proof-audit` adds the semantic pass a
-counter cannot do. Supported provers and the details are in
+scaffolded harness runs the prover in `--full` and four ratchets hold the
+proof surface: escape hatches, theorem statements, the assumptions each
+headline theorem depends on, and the on-chain budget for Cardano validators.
+Statements are parsed for Aiken, Dafny, Lean, Coq, Isabelle, TLA+ (with the
+invariants a TLC config names) and Kani. The assumption sets come from the
+prover itself — `#print axioms`, `Print Assumptions`, `dafny audit` — so an
+axiom laundered in through a helper lemma is red while every hatch count
+holds flat; where the toolchain is absent the audit says so and never reads
+clean. Two further claims are gated on the same scan: a checked
+Definition-of-Done line citing an obligation id, and every eUTxO attack
+class an Aiken repo has left unspecified. `/fluxpoint:proof-audit` adds the
+semantic pass a counter cannot do. Supported provers and the details are in
 [plugins/fluxpoint/README.md](plugins/fluxpoint/README.md#verified-work).
 
 ## Security
