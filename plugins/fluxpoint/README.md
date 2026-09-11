@@ -32,7 +32,8 @@ does.
   - Gates and ratchets: `exec-attest.sh` with `attest.py` (hook-minted exit
     codes for declared gates), `secret-guard.py` (credential gate),
     `proof-guard.py` (escape hatches), `spec-guard.py` (statements),
-    `cex.py` (counterexample ledger for Aiken, Dafny, Kani and Apalache),
+    `cex.py` (counterexample ledger for Aiken, Dafny, Kani, Apalache and
+    fast-check, plus the off-session seed sweep),
     `mutation-guard.py` (mutation score), `seam-guard.py` (module mocks),
     `guard-guard.py` (named guards and the tests that hold them down),
     `pair-guard.py` (relations: co-change, parity, differential, bite and
@@ -66,9 +67,9 @@ does.
 - `templates/` — `harness.sh` (the repo-side contract), `WORK.md`,
   `WORK.feature.md`, `WORK.discovery.md`, `WORK.consolidate.md`,
   `WORK.verified.md` (opt-in: a `prover` node beside the builder),
-  `WORK_PROMPT.md`, `loop.sh`, `attack-taxonomy.json` (the eUTxO attack
-  classes an Aiken repo must specify, enforced by spec-guard once copied
-  to `.fluxpoint-attacks.json`), `settings.snippet.json` for Claude Code
+  `WORK_PROMPT.md`, `loop.sh`, `attack-taxonomy.json` (the attack classes
+  a repo must specify, eUTxO and off-chain builder, enforced by spec-guard
+  once copied to `.fluxpoint-attacks.json`), `settings.snippet.json` for Claude Code
   and `codex.config.snippet.toml` for Codex.
 - `tests/` — one suite per mechanism, all run by the repository's
   `scripts/harness.sh --full`: compiler invariants and field-effect probes,
@@ -291,9 +292,12 @@ proved one.
   checked `- [x]` line in the Definition of Done with a `— proof: <obligation
   id>` tail must name an obligation that exists and is unchanged; and
   `.fluxpoint-attacks.json`, copied from `templates/attack-taxonomy.json`
-  by `/fluxpoint:init` on an Aiken repo, names the eUTxO attack classes a
-  validator must specify as property tests, red for every class with
-  neither a test of that name nor a waiver with a reason. Where a prover is
+  by `/fluxpoint:init`, names the attack classes a repo must specify, one
+  taxonomy per language: the eUTxO classes a validator answers for, and
+  the builder classes the off-chain TypeScript answers for. It is red for
+  every class with neither a test of that name nor a waiver with a reason,
+  each taxonomy gates only a repo that tracks its language, and a waiver
+  is scoped to its own taxonomy. Where a prover is
   not on PATH the axiom audit says NOT RUN rather than reading clean.
 - **`scripts/plutus-budget.py` gates submittability.** Correct and
   submittable are different properties and only one has a prover:

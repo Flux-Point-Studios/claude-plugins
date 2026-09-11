@@ -49,15 +49,20 @@ pm() {
   fi
 }
 
-run_script_if_present() {
-  local s="$1"
+has_script() {
   if has jq; then
-    if jq -e --arg s "$s" '.scripts[$s]' package.json >/dev/null 2>&1; then
-      "$(pm)" run "$s"
-    fi
-  elif grep -q "\"$s\"" package.json 2>/dev/null; then
-    "$(pm)" run "$s"
+    jq -e --arg s "$1" '.scripts[$s]' package.json >/dev/null 2>&1
+  else
+    grep -q "\"$1\"" package.json 2>/dev/null
   fi
+}
+
+run_script_if_present() {
+  # `has_script "$1" && run` would return non-zero when the script is ABSENT,
+  # and under `set -e` that aborts the harness in every repo that does not
+  # define it. An explicit early return keeps absence a no-op.
+  has_script "$1" || return 0
+  "$(pm)" run "$1"
 }
 
 # Locate a script shipped with the plugin. Prints nothing when the plugin is
@@ -318,7 +323,26 @@ full() {
   if [ -f package.json ]; then
     run_script_if_present typecheck
     run_script_if_present lint
-    run_script_if_present test
+    # The test run is captured the way the provers are. A fast-check failure
+    # prints a shrunk counterexample with the `seed` and `path` that replay
+    # it, and that is the most reusable thing an off-chain property test
+    # produces — it otherwise scrolls out of the terminal. Capture, echo,
+    # record, re-raise: the runner's exit code stays the gate and the
+    # recorder never gets a vote. Only the vitest reporter is parsed; any
+    # other shape files a loud INGEST-FAILED rather than reading as green.
+    if has_script test; then
+      js_out="$(mktemp)"
+      js_rc=0
+      "$(pm)" run test >"$js_out" 2>&1 || js_rc=$?
+      cat "$js_out"
+      cx="$(plugin_script cex.py)"
+      if [ -n "$cx" ]; then
+        "$FPL_PY" "$cx" --ingest --tool fastcheck --from "$js_out" \
+          --exit "$js_rc" || true
+      fi
+      rm -f "$js_out"
+      if [ "$js_rc" -ne 0 ]; then return "$js_rc"; fi
+    fi
   fi
   if has terraform && compgen -G '*.tf' >/dev/null; then
     terraform fmt -check -recursive

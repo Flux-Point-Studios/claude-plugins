@@ -1,56 +1,110 @@
 {
   "version": 1,
-  "language": "aiken",
-  "note": "The known eUTxO validator attack classes, each the name of a property test this repo must carry over aiken/fuzz. /fluxpoint:init copies this file to .fluxpoint-attacks.json; spec-guard.py --check is then red for every class with neither a test of that name nor a waiver here with a reason of at least 20 characters. The test names are spec-guard obligation ids, so once written they are hashed and may not quietly weaken.",
-  "classes": [
+  "note": "The known attack classes, one taxonomy per language, each class the name of a test this repo must carry. /fluxpoint:init copies this file to .fluxpoint-attacks.json; spec-guard.py --check is then red for every class with neither a test of that name nor a waiver in its own taxonomy carrying a reason of at least 20 characters. A waiver is scoped to the taxonomy it sits in, so excusing a class on one side of the chain leaves the same id on the other side still owed. A taxonomy whose language the repo does not carry gates nothing, so a validator-only repo answers for the eUTxO classes alone and a builder-only repo for the off-chain ones alone. The single-taxonomy shape that shipped in 1.38.0, with language, classes and waived at the top level, is still read as one taxonomy.",
+  "taxonomies": [
     {
-      "id": "attack_double_satisfaction",
-      "applies": "spend",
-      "property": "One output cannot pay for two script inputs at once: for any transaction spending two inputs locked by this validator, the validator rejects it unless each input is matched by its own output. Count the paying outputs or the validating tokens across ALL script inputs, never only the one being validated.",
-      "fuzz": "a context with two inputs at this script's address and one output that would satisfy either alone"
+      "language": "aiken",
+      "note": "The known eUTxO validator attack classes, each the name of a property test this repo must carry over aiken/fuzz. The test names are spec-guard obligation ids, so once written they are hashed and may not quietly weaken.",
+      "classes": [
+        {
+          "id": "attack_double_satisfaction",
+          "applies": "spend",
+          "property": "One output cannot pay for two script inputs at once: for any transaction spending two inputs locked by this validator, the validator rejects it unless each input is matched by its own output. Count the paying outputs or the validating tokens across ALL script inputs, never only the one being validated.",
+          "fuzz": "a context with two inputs at this script's address and one output that would satisfy either alone"
+        },
+        {
+          "id": "attack_datum_hijack",
+          "applies": "spend",
+          "property": "An output that continues the contract goes to this script's address with the expected inline datum: the validator rejects any transaction whose continuing output is at another address, carries a foreign or missing datum, or names a datum hash the transaction does not resolve.",
+          "fuzz": "continuing outputs with a random address, a random datum, and a datum-by-hash the transaction does not carry"
+        },
+        {
+          "id": "attack_token_name_confusion",
+          "applies": "mint",
+          "property": "A policy that mints one named token cannot be used to mint another: for any mint under this policy id with a token name or quantity other than the one expected, the policy rejects it. Check the whole value under the policy id, never only the presence of the expected token.",
+          "fuzz": "mint fields under the policy carrying extra token names and quantities beside the expected one"
+        },
+        {
+          "id": "attack_unbounded_value",
+          "applies": "all",
+          "property": "Validation cost does not grow with attacker-supplied size: for values, datums or lists larger than the bound the contract documents, the validator rejects rather than iterating. A script that runs out of budget on a crafted input locks the funds it guards.",
+          "fuzz": "values with many token names and lists at and beyond the documented bound"
+        },
+        {
+          "id": "attack_staking_credential",
+          "applies": "spend",
+          "property": "Address checks compare the full address, not only the payment credential: for any continuing output whose payment credential matches but whose staking credential was replaced, the validator rejects it.",
+          "fuzz": "outputs with the right payment credential and a random or absent stake credential"
+        },
+        {
+          "id": "attack_foreign_utxo",
+          "applies": "spend",
+          "property": "Inputs this validator reads are its own: for any spent or reference input at another script's address carrying a datum this validator would accept, the validator rejects the transaction or restricts what that input may prove.",
+          "fuzz": "inputs at random script addresses carrying well-formed datums of the expected type"
+        },
+        {
+          "id": "attack_unbounded_validity",
+          "applies": "spend",
+          "property": "Time-dependent logic requires a bounded validity range: for any transaction with an unbounded lower or upper validity bound where the contract reasons about time, the validator rejects it.",
+          "fuzz": "validity ranges with NegativeInfinity or PositiveInfinity bounds"
+        },
+        {
+          "id": "attack_arbitrary_mint",
+          "applies": "spend",
+          "property": "A spend that expects a mint or burn checks the exact policy, name and quantity: for any transaction that mints extra tokens under other policies, or a different quantity under the expected one, the validator rejects it.",
+          "fuzz": "mint fields with extra policies and with the expected policy at the wrong quantity"
+        }
+      ],
+      "waived": {}
     },
     {
-      "id": "attack_datum_hijack",
-      "applies": "spend",
-      "property": "An output that continues the contract goes to this script's address with the expected inline datum: the validator rejects any transaction whose continuing output is at another address, carries a foreign or missing datum, or names a datum hash the transaction does not resolve.",
-      "fuzz": "continuing outputs with a random address, a random datum, and a datum-by-hash the transaction does not carry"
-    },
-    {
-      "id": "attack_token_name_confusion",
-      "applies": "mint",
-      "property": "A policy that mints one named token cannot be used to mint another: for any mint under this policy id with a token name or quantity other than the one expected, the policy rejects it. Check the whole value under the policy id, never only the presence of the expected token.",
-      "fuzz": "mint fields under the policy carrying extra token names and quantities beside the expected one"
-    },
-    {
-      "id": "attack_unbounded_value",
-      "applies": "all",
-      "property": "Validation cost does not grow with attacker-supplied size: for values, datums or lists larger than the bound the contract documents, the validator rejects rather than iterating. A script that runs out of budget on a crafted input locks the funds it guards.",
-      "fuzz": "values with many token names and lists at and beyond the documented bound"
-    },
-    {
-      "id": "attack_staking_credential",
-      "applies": "spend",
-      "property": "Address checks compare the full address, not only the payment credential: for any continuing output whose payment credential matches but whose staking credential was replaced, the validator rejects it.",
-      "fuzz": "outputs with the right payment credential and a random or absent stake credential"
-    },
-    {
-      "id": "attack_foreign_utxo",
-      "applies": "spend",
-      "property": "Inputs this validator reads are its own: for any spent or reference input at another script's address carrying a datum this validator would accept, the validator rejects the transaction or restricts what that input may prove.",
-      "fuzz": "inputs at random script addresses carrying well-formed datums of the expected type"
-    },
-    {
-      "id": "attack_unbounded_validity",
-      "applies": "spend",
-      "property": "Time-dependent logic requires a bounded validity range: for any transaction with an unbounded lower or upper validity bound where the contract reasons about time, the validator rejects it.",
-      "fuzz": "validity ranges with NegativeInfinity or PositiveInfinity bounds"
-    },
-    {
-      "id": "attack_arbitrary_mint",
-      "applies": "spend",
-      "property": "A spend that expects a mint or burn checks the exact policy, name and quantity: for any transaction that mints extra tokens under other policies, or a different quantity under the expected one, the validator rejects it.",
-      "fuzz": "mint fields with extra policies and with the expected policy at the wrong quantity"
+      "language": "typescript",
+      "note": "The known off-chain transaction builder attack classes. An agent calls the builder, the API and the indexer; the validator only ever sees what the builder produced, so a builder that can be talked into an out-of-spec transaction is the shorter path to the funds a correct validator guards. A class counts as specified when a tracked TypeScript test file (*.test.ts, *.spec.ts, or any .ts under test/, tests/ or __tests__/) names it in a test title or declares a function or const of that name. A match in a file that imports fast-check is a property over a generator; a match in a file without it is noted as an example.",
+      "classes": [
+        {
+          "id": "attack_unvalidated_change_address",
+          "applies": "build",
+          "property": "Change returns to an address the wallet controls: for any build request carrying a caller-supplied change address, the builder rejects the request or replaces the address with one whose payment credential the signing key derives. Compare the whole address, staking part included, against the set the wallet owns.",
+          "fuzz": "build requests whose change address is a random bech32 address, the wallet's own address with a foreign staking part, a script address, and an address from the other network id"
+        },
+        {
+          "id": "attack_datum_round_trip",
+          "applies": "all",
+          "property": "A datum survives encode then decode unchanged: for any datum this builder constructs, decoding its CBOR yields a value equal to the one encoded, and hashing the round-tripped bytes yields the datum hash the transaction carries. A datum that fails this is read by the validator as a different value than the builder wrote.",
+          "fuzz": "datums across the full field ranges: empty and maximal bytestrings, zero, negative and word64-sized integers, nested constructors at and past the depth the schema allows, maps with duplicate and unsorted keys, and every constructor index the type declares"
+        },
+        {
+          "id": "attack_stale_protocol_params",
+          "applies": "build",
+          "property": "Every fee, min-ADA and execution-unit figure comes from protocol parameters fetched for the epoch the transaction is submitted in: for a cached parameter set older than the current epoch boundary, the builder refetches or refuses to build. A transaction priced from last epoch's parameters underpays its fee or its script budget and is rejected at submission.",
+          "fuzz": "cached parameter sets with fetch times spread across an epoch boundary, paired with live sets whose fee coefficients, min-ADA per byte and execution unit prices differ from the cached ones"
+        },
+        {
+          "id": "attack_replayable_signed_tx",
+          "applies": "submit",
+          "property": "A signed body can be submitted once: every transaction this builder signs is bound to something that cannot repeat, a specific input it spends, a validity interval that closes, or a nonce carried in its datum or metadata. Resubmitting a body the builder already signed is refused before it reaches the node.",
+          "fuzz": "a captured signed body resubmitted inside and outside its validity interval, with its inputs still unspent and after they are spent, and with the wallet's UTxO set changed underneath it"
+        },
+        {
+          "id": "attack_unbounded_utxo_selection",
+          "applies": "build",
+          "property": "Coin selection runs within a bound the builder documents: for a wallet holding many small UTxOs, selection completes inside that bound on inputs considered and transaction size, or it fails with a stated reason. Anyone able to send UTxOs to the wallet decides how many it holds, so the bound is what keeps that out of their hands.",
+          "fuzz": "wallets of 1 to 10000 UTxOs, most of them dust carrying many token names, with the payment amount held fixed"
+        },
+        {
+          "id": "attack_missing_script_data_hash",
+          "applies": "build",
+          "property": "The script data hash in the body commits to the redeemers, datums and cost models the witness set actually carries: for any transaction with a script input, recomputing the hash over the witness set reproduces the value in the body, and removing, reordering or reindexing a redeemer changes it. A body whose hash disagrees with its witness set fails phase 1 and the scripts never run.",
+          "fuzz": "transactions with a redeemer removed, a redeemer's tag or index changed, a datum dropped from the witness set, and a cost model taken from another protocol version"
+        },
+        {
+          "id": "attack_unbounded_collateral",
+          "applies": "build",
+          "property": "Collateral is capped: for any transaction with a script input, the total collateral selected stays inside the ceiling computed from the fee and the collateral percentage, and a collateral return output carries the remainder. A failing script forfeits every collateral input whole, so selection with no ceiling burns the entire UTxO it happened to pick.",
+          "fuzz": "wallets whose largest UTxO exceeds the required collateral by orders of magnitude, fees from the minimum to the block limit, and collateral percentages from every recent protocol parameter set"
+        }
+      ],
+      "waived": {}
     }
-  ],
-  "waived": {}
+  ]
 }

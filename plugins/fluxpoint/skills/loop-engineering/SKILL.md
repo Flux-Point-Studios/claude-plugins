@@ -158,7 +158,13 @@ Five rules, in order of how often they are broken:
    repo's `dafny verify` model, a Rust crate's `cargo kani` concrete
    playback and an Apalache ITF trace are captured the same way, with
    `FPL_DAFNY_ARGS`, `FPL_KANI_ARGS` and `FPL_APALACHE_ARGS` carrying what
-   each prover needs to print its input. Pin one
+   each prover needs to print its input. Off-chain counts too: a
+   fast-check failure under vitest carries a shrunk counterexample with
+   the `seed` and `path` that replay it, and the scaffolded harness
+   captures the `test` script the same way. A plain assertion failure in
+   the same run is deliberately not recorded, because it carries no
+   generated input and minting one would put a value in the ledger that
+   no generator produced. Pin one
    with `cex.py --pin <cexId> --file <path> --test-name <name>` once you
    have written a real regression test; the pin is refused unless the
    recorded value is physically in that test's body, on token boundaries,

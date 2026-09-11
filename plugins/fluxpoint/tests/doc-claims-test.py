@@ -210,7 +210,9 @@ report("every language spec-guard parses is named on the front page",
 _m = re.search(r"^TOOLS = \{(.*?)\n\}", CEX, re.S | re.M)
 _tools = re.findall(r'^\s{4}"(\w+)":\s*\{', _m.group(1), re.M) if _m else []
 _row = re.search(r"^\| Counterexamples \|.*$", ROOT_README, re.M)
-_row = _row.group(0).lower() if _row else ""
+# Hyphens dropped so the registry key `fastcheck` matches the product name
+# `fast-check` as a reader would write it.
+_row = _row.group(0).lower().replace("-", "") if _row else ""
 _missing = [t for t in _tools if t not in _row]
 report("every prover the ledger ingests is named in the enforcement table",
        bool(_tools) and not _missing,

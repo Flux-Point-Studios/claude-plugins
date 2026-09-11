@@ -450,8 +450,31 @@ check "a checked box over a weakened obligation is red (CHANGED)" 1 "$(rc_of --c
 
 # ================= 8. the attack taxonomy: unspecified is red =============
 TAX="$PLUGIN/templates/attack-taxonomy.json"
-n_classes="$("$FPL_PY" -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["classes"]))' "$TAX")"
-check "the shipped taxonomy names eight classes" 8 "$n_classes"
+# The class ids of one language in the shipped template, read from the file
+# both taxonomies live in, so no count below is written down twice.
+tax_ids() {
+  "$FPL_PY" - "$TAX" "$1" <<'PY'
+import json, sys
+doc = json.load(open(sys.argv[1]))
+for tax in doc.get("taxonomies") or [doc]:
+    if tax.get("language", "aiken") == sys.argv[2]:
+        print(" ".join(c["id"] for c in tax["classes"]))
+PY
+}
+tax_n() { set -- $(tax_ids "$1"); echo $#; }
+waive() {  # language, class id, reason — into that language's own taxonomy
+  "$FPL_PY" - "$1" "$2" "$3" <<'PY'
+import json, sys
+p = ".fluxpoint-attacks.json"
+doc = json.load(open(p))
+for tax in doc.get("taxonomies") or [doc]:
+    if tax.get("language", "aiken") == sys.argv[1]:
+        tax.setdefault("waived", {})[sys.argv[2]] = sys.argv[3]
+json.dump(doc, open(p, "w"), indent=2)
+PY
+}
+n_aiken="$(tax_n aiken)"
+check "the shipped taxonomy names eight eUTxO classes" 8 "$n_aiken"
 
 base_state; cp "$TAX" .fluxpoint-attacks.json
 check "an Aiken repo with the manifest and no attack tests is red" 1 "$(rc_of --check)"
@@ -459,14 +482,14 @@ out="$(sg --check 2>&1)"
 case "$out" in *"UNSPECIFIED"*attack_double_satisfaction*"One output cannot pay"*)
   ok "each class is named with the property to state" "named" ;;
   *) bad "each class is named with the property to state" "${out:0:60}" ;; esac
-n_red="$(printf '%s' "$out" | grep -c 'attack:attack_')"
-check "every class is its own finding" 8 "$n_red"
-case "$(sg --scan)" in *"attack class attack_datum_hijack: UNSPECIFIED"*)
+n_red="$(printf '%s' "$out" | grep -c 'attack:aiken:attack_')"
+check "every class is its own finding" "$n_aiken" "$n_red"
+case "$(sg --scan)" in *"attack class aiken:attack_datum_hijack: UNSPECIFIED"*)
   ok "--scan reports the taxonomy state" "reported" ;;
   *) bad "--scan reports the taxonomy state" "silent" ;; esac
 
 write_attacks() {  # every class as a property test over a generator
-  for cls in $("$FPL_PY" -c 'import json,sys; print(" ".join(c["id"] for c in json.load(open(sys.argv[1]))["classes"]))' "$TAX"); do
+  for cls in $(tax_ids aiken); do
     printf '\ntest %s(n: Int via bounded_int(1, 99)) {\n  !spend(mk_datum(n), Void, mk_ctx(attack: True))\n}\n' "$cls" >>validators/vault.ak
   done
 }
@@ -479,20 +502,10 @@ case "$(sg --check 2>&1)" in *"attack_foreign_utxo is a unit test"*) ok "a unit 
 
 base_state; cp "$TAX" .fluxpoint-attacks.json; write_attacks
 sed -i '/test attack_unbounded_validity/,/^}/d' validators/vault.ak
-"$FPL_PY" - <<'PY'
-import json
-p = ".fluxpoint-attacks.json"; d = json.load(open(p))
-d["waived"] = {"attack_unbounded_validity": "n/a"}
-json.dump(d, open(p, "w"), indent=2)
-PY
+waive aiken attack_unbounded_validity "n/a"
 check "a waiver without a real reason is red" 1 "$(rc_of --check)"
 case "$(sg --check 2>&1)" in *"WAIVED WITHOUT A REASON"*) ok "and says so" "said" ;; *) bad "and says so" "silent" ;; esac
-"$FPL_PY" - <<'PY'
-import json
-p = ".fluxpoint-attacks.json"; d = json.load(open(p))
-d["waived"] = {"attack_unbounded_validity": "this validator has no time-dependent logic at all; the range is never read"}
-json.dump(d, open(p, "w"), indent=2)
-PY
+waive aiken attack_unbounded_validity "this validator has no time-dependent logic at all; the range is never read"
 check "a waiver with a reason is green" 0 "$(rc_of --check)"
 case "$(sg --check)" in *"attack_unbounded_validity waived"*) ok "and the waiver is echoed" "echoed" ;;
   *) bad "and the waiver is echoed" "silent" ;; esac
@@ -504,7 +517,257 @@ check "the manifest in a repo with no Aiken is green with a note" 0 "$(rc_of --c
 case "$(sg --check)" in *"gates nothing"*) ok "  and the note says it gates nothing" "said" ;;
   *) bad "  and the note says it gates nothing" "silent" ;; esac
 
-# ================= 9. --axioms: the prover's own assumption audit =========
+# ================= 9. the taxonomy reaches the off-chain builder ==========
+# Same manifest, same waiver rule, a second language. An agent never calls
+# the validator; it calls the builder, so the builder has its own class list.
+# What counts as "specified" differs by language: an Aiken test of that name
+# on-chain, a TypeScript test title or declaration off-chain. Each taxonomy
+# gates only a repo that carries its language, and a waiver excuses a class
+# in the taxonomy it is written in and nowhere else.
+n_ts="$(tax_n typescript)"
+check "and seven off-chain builder classes" 7 "$n_ts"
+
+write_ts() {  # a builder with one ordinary test and no attack tests
+  mkdir -p test src
+  printf 'export const build = (n: number): number => n;\n' >src/build.ts
+  cat >test/build.test.ts <<'EOF'
+import { describe, it, expect } from "vitest";
+import { build } from "../src/build";
+
+describe("build", () => {
+  it("returns what it was given", () => {
+    expect(build(1)).toBe(1);
+  });
+});
+EOF
+}
+ts_state()   { mkrepo; write_ts; cp "$TAX" .fluxpoint-attacks.json; commit; }
+both_state() { mkrepo; write_aiken; write_ts; cp "$TAX" .fluxpoint-attacks.json; commit; }
+write_ts_attacks() {  # one fast-check property per off-chain class
+  mkdir -p test
+  printf 'import fc from "fast-check";\nimport { it } from "vitest";\n' >test/attacks.test.ts
+  for cls in $(tax_ids typescript); do
+    printf '\nit("%s over generated builds", () => {\n  fc.assert(fc.property(fc.integer(), (n) => n === n));\n});\n' \
+      "$cls" >>test/attacks.test.ts
+  done
+}
+plant_on_aiken() {  # the same class id, stated on the on-chain side too
+  "$FPL_PY" - "$1" <<'PY'
+import json, sys
+p = ".fluxpoint-attacks.json"
+doc = json.load(open(p))
+for tax in doc["taxonomies"]:
+    if tax["language"] == "aiken":
+        tax["classes"].append({"id": sys.argv[1], "applies": "spend",
+                               "property": "the same id, stated on-chain"})
+json.dump(doc, open(p, "w"), indent=2)
+PY
+}
+
+ts_state
+check "a TypeScript repo with the manifest and no attack tests is red" 1 "$(rc_of --check)"
+out="$(sg --check 2>&1)"
+check "every off-chain class is its own finding" "$n_ts" \
+  "$(printf '%s' "$out" | grep -c 'attack:typescript:attack_')"
+case "$out" in *attack_datum_round_trip*"survives encode then decode"*)
+  ok "each names the property to state" "named" ;;
+  *) bad "each names the property to state" "${out:0:60}" ;; esac
+case "$out" in *"attack:aiken:"*) bad "and the aiken taxonomy gates nothing there" "gated" ;;
+  *) ok "and the aiken taxonomy gates nothing there" "dormant" ;; esac
+case "$(sg --check)" in *"aiken taxonomy gates nothing"*) ok "  and says so by name" "said" ;;
+  *) bad "  and says so by name" "silent" ;; esac
+
+# A test title carrying the class id is what specifies it off-chain.
+ts_state
+cat >>test/build.test.ts <<'EOF'
+
+it("attack_datum_round_trip: every datum decodes to what was encoded", () => {
+  expect(decode(encode(d))).toEqual(d);
+});
+EOF
+commit
+out="$(sg --check 2>&1)"
+case "$out" in *"attack:typescript:attack_datum_round_trip"*)
+  bad "a class id in a test title specifies it" "still red" ;;
+  *) ok "a class id in a test title specifies it" "specified" ;; esac
+check "  and only that class leaves the finding list" "$((n_ts - 1))" \
+  "$(printf '%s' "$out" | grep -c 'attack:typescript:attack_')"
+case "$out" in *"attack_datum_round_trip is specified by an example"*)
+  ok "  a match in a file without fast-check is noted as an example" "noted" ;;
+  *) bad "  a match in a file without fast-check is noted as an example" "silent" ;; esac
+
+# fast-check in the file makes the same match a property over a generator.
+ts_state
+cat >test/round-trip.test.ts <<'EOF'
+import fc from "fast-check";
+import { it, expect } from "vitest";
+import { decode, encode } from "../src/build";
+
+it(`attack_datum_round_trip over generated datums`, () => {
+  fc.assert(fc.property(fc.anything(), (d) => expect(decode(encode(d))).toEqual(d)));
+});
+EOF
+commit
+out="$(sg --check 2>&1)"
+case "$out" in *"attack:typescript:attack_datum_round_trip"*)
+  bad "a template-literal title specifies the class too" "still red" ;;
+  *) ok "a template-literal title specifies the class too" "specified" ;; esac
+case "$out" in *"is specified by an example"*)
+  bad "  and a fast-check file raises no example note" "noted" ;;
+  *) ok "  and a fast-check file raises no example note" "clean" ;; esac
+
+# A class id inside a comment is not a test, which is the Aiken rule for a
+# commented-out test carried over to // and to /* */.
+ts_state
+cat >>test/build.test.ts <<'EOF'
+
+// it("attack_stale_protocol_params: params are refetched", () => {});
+/*
+it("attack_replayable_signed_tx", () => {});
+const attack_unbounded_collateral = () => true;
+*/
+EOF
+commit
+out="$(sg --check 2>&1)"
+for cls in attack_stale_protocol_params attack_replayable_signed_tx attack_unbounded_collateral; do
+  case "$out" in *"attack:typescript:$cls"*) ok "a commented-out $cls stays unspecified" "red" ;;
+    *) bad "a commented-out $cls stays unspecified" "read as specified" ;; esac
+done
+check "  so the finding count is unchanged" "$n_ts" \
+  "$(printf '%s' "$out" | grep -c 'attack:typescript:attack_')"
+
+# A declaration of that name specifies a class as a title does, and a .ts
+# under a test directory is a test file whatever it is called.
+ts_state
+printf '\nexport async function attack_unvalidated_change_address() { return 1; }\n' \
+  >>test/build.test.ts
+mkdir -p src/__tests__
+printf 'const attack_missing_script_data_hash = () => true;\nexport default attack_missing_script_data_hash;\n' \
+  >src/__tests__/hash.ts
+commit
+out="$(sg --check 2>&1)"
+case "$out" in *"attack:typescript:attack_unvalidated_change_address"*)
+  bad "a function named for the class specifies it" "still red" ;;
+  *) ok "a function named for the class specifies it" "specified" ;; esac
+case "$out" in *"attack:typescript:attack_missing_script_data_hash"*)
+  bad "a const in a .ts under __tests__ specifies it" "still red" ;;
+  *) ok "a const in a .ts under __tests__ specifies it" "specified" ;; esac
+
+ts_state; write_ts_attacks; commit
+check "a property per off-chain class is green" 0 "$(rc_of --check)"
+case "$(sg --check)" in *"is specified by an example"*)
+  bad "  with no example note anywhere" "noted" ;;
+  *) ok "  with no example note anywhere" "clean" ;; esac
+case "$(sg --scan)" in *"attack class typescript:attack_datum_round_trip: specified"*)
+  ok "--scan names the language beside the state" "reported" ;;
+  *) bad "--scan names the language beside the state" "silent" ;; esac
+case "$(sg --scan)" in *"attack taxonomy aiken: dormant"*)
+  ok "  and labels a dormant taxonomy dormant" "labelled" ;;
+  *) bad "  and labels a dormant taxonomy dormant" "listed as UNSPECIFIED" ;; esac
+
+# The waiver rule holds per taxonomy: a reason of at least MIN_REASON.
+ts_state; write_ts_attacks; sed -i '/it("attack_unbounded_collateral/d' test/attacks.test.ts; commit
+check "one off-chain class left unspecified is red" 1 "$(rc_of --check)"
+waive typescript attack_unbounded_collateral "n/a"
+check "  waived with a too-short reason, still red" 1 "$(rc_of --check)"
+case "$(sg --check 2>&1)" in *"attack:typescript:attack_unbounded_collateral"*"WAIVED WITHOUT A REASON"*)
+  ok "  naming the class and what a waiver owes" "said" ;;
+  *) bad "  naming the class and what a waiver owes" "silent" ;; esac
+waive typescript attack_unbounded_collateral "this service never selects collateral; the wallet provider attaches it"
+check "  waived with a real reason, green" 0 "$(rc_of --check)"
+case "$(sg --check)" in *"typescript:attack_unbounded_collateral waived"*)
+  ok "  and the waiver is echoed" "echoed" ;;
+  *) bad "  and the waiver is echoed" "silent" ;; esac
+
+# A repo carrying both languages answers for both taxonomies.
+both_state
+out="$(sg --check 2>&1)"
+check "a repo carrying both languages is gated by both" "$((n_aiken + n_ts))" \
+  "$(printf '%s' "$out" | grep -c 'attack:[a-z]*:attack_')"
+case "$out" in *"gates nothing"*) bad "  and neither taxonomy is dormant" "dormant" ;;
+  *) ok "  and neither taxonomy is dormant" "both live" ;; esac
+
+# A waiver is scoped to the taxonomy it sits in. The same id excused on one
+# side leaves the other side owed.
+both_state; plant_on_aiken attack_datum_round_trip
+waive aiken attack_datum_round_trip "the validator reads this datum as opaque bytes and never decodes it"
+out="$(sg --check 2>&1)"
+case "$out" in *"attack:typescript:attack_datum_round_trip"*)
+  ok "an aiken waiver does not excuse the typescript class" "still red" ;;
+  *) bad "an aiken waiver does not excuse the typescript class" "excused" ;; esac
+case "$out" in *"attack:aiken:attack_datum_round_trip"*)
+  bad "  while its own class is waived" "still red" ;;
+  *) ok "  while its own class is waived" "waived" ;; esac
+
+both_state; plant_on_aiken attack_datum_round_trip
+waive typescript attack_datum_round_trip "the builder never constructs this datum; the indexer hands it over whole"
+out="$(sg --check 2>&1)"
+case "$out" in *"attack:aiken:attack_datum_round_trip"*)
+  ok "and a typescript waiver does not excuse the aiken class" "still red" ;;
+  *) bad "and a typescript waiver does not excuse the aiken class" "excused" ;; esac
+case "$out" in *"attack:typescript:attack_datum_round_trip"*)
+  bad "  while its own class is waived" "still red" ;;
+  *) ok "  while its own class is waived" "waived" ;; esac
+
+# The other direction: a validator-only repo answers for the eUTxO classes
+# alone.
+base_state; cp "$TAX" .fluxpoint-attacks.json
+out="$(sg --check 2>&1)"
+case "$out" in *"attack:typescript:"*) bad "an Aiken-only repo is not gated off-chain" "gated" ;;
+  *) ok "an Aiken-only repo is not gated off-chain" "dormant" ;; esac
+case "$(sg --check)" in *"typescript taxonomy gates nothing"*)
+  ok "  saying the typescript taxonomy is dormant" "said" ;;
+  *) bad "  saying the typescript taxonomy is dormant" "silent" ;; esac
+check "  while its own classes are still owed" 1 "$(rc_of --check)"
+
+# Backward compatibility: the single-object manifest that shipped in 1.38.0
+# may already sit in a repo, and behaves exactly as it did.
+legacy_tax() {  # the aiken taxonomy, written back in the 1.38.0 shape
+  "$FPL_PY" - "$TAX" <<'PY'
+import json, sys
+doc = json.load(open(sys.argv[1]))
+tax = [t for t in doc["taxonomies"] if t["language"] == "aiken"][0]
+json.dump({"version": 1, "language": "aiken", "note": tax["note"],
+           "classes": tax["classes"], "waived": {}},
+          open(".fluxpoint-attacks.json", "w"), indent=2)
+PY
+}
+base_state; legacy_tax
+check "the 1.38.0 single-object manifest is still read" 1 "$(rc_of --check)"
+out="$(sg --check 2>&1)"
+check "  gating exactly the classes it names" "$n_aiken" \
+  "$(printf '%s' "$out" | grep -c 'attack:aiken:attack_')"
+case "$out" in *"attack:typescript:"*) bad "  and no others" "off-chain classes appeared" ;;
+  *) ok "  and no others" "clean" ;; esac
+base_state; legacy_tax; write_attacks
+check "  a property test per class turns it green" 0 "$(rc_of --check)"
+case "$(sg --scan)" in *"attack class aiken:attack_foreign_utxo: specified"*)
+  ok "  and --scan reads it as the aiken taxonomy" "reported" ;;
+  *) bad "  and --scan reads it as the aiken taxonomy" "silent" ;; esac
+mkrepo; printf 'print(1)\n' >app.py; legacy_tax; commit
+check "  in a repo with no Aiken it is green" 0 "$(rc_of --check)"
+case "$(sg --check)" in *"gates nothing"*) ok "    with the note that it gates nothing" "said" ;;
+  *) bad "    with the note that it gates nothing" "silent" ;; esac
+
+# A manifest in neither shape is a problem with a name, never a pass.
+base_state
+printf '{"version": 1, "taxonomies": []}\n' >.fluxpoint-attacks.json
+check "an empty taxonomies list is red" 1 "$(rc_of --check)"
+printf '{"version": 1, "taxonomies": [{"language": "rust", "classes": []}]}\n' >.fluxpoint-attacks.json
+check "a taxonomy in a language with no rule is red" 1 "$(rc_of --check)"
+case "$(sg --check 2>&1)" in *UNREADABLE*rust*) ok "  naming the language" "named" ;;
+  *) bad "  naming the language" "silent" ;; esac
+printf '{"version": 1, "taxonomies": [{"language": "typescript", "classes": [{"nope": 1}]}]}\n' \
+  >.fluxpoint-attacks.json
+check "a class carrying no id is red" 1 "$(rc_of --check)"
+printf '{"version": 1, "note": "no classes anywhere"}\n' >.fluxpoint-attacks.json
+check "a manifest in neither shape is red" 1 "$(rc_of --check)"
+case "$(sg --check 2>&1)" in *UNREADABLE*taxonomies*) ok "  and says what it needed" "named" ;;
+  *) bad "  and says what it needed" "silent" ;; esac
+printf '[]\n' >.fluxpoint-attacks.json
+check "a manifest that is not an object is red" 1 "$(rc_of --check)"
+
+# ================= 10. --axioms: the prover's own assumption audit ========
 # The provers are not installed where this suite runs, so each toolchain is
 # a shim on PATH that prints the listing its real counterpart printed for the
 # same probe — captured 2026-09-11 from Lean 4.15.0 (`lake env lean` on a
