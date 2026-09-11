@@ -85,6 +85,24 @@ class SpecificationTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn('checked', r.stdout)
 
+    def test_lock_supports_python39_path_write_text_signature(self):
+        bootstrap = '''
+from pathlib import Path
+import runpy, sys
+original = Path.write_text
+def legacy_write_text(self, data, encoding=None, errors=None):
+    return original(self, data, encoding=encoding, errors=errors)
+Path.write_text = legacy_write_text
+script = sys.argv[1]
+sys.argv = [script, '--lock']
+runpy.run_path(script, run_name='__main__')
+'''
+        r = subprocess.run([sys.executable, '-c', bootstrap, str(SCRIPT)], cwd=self.root,
+                           env=dict(os.environ, PYTHONPATH=str(PLUGIN / 'scripts'), PYTHONIOENCODING='utf-8'),
+                           capture_output=True, encoding='utf-8')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.run_cli('--check').returncode, 0)
+
     def test_check_requires_lock(self):
         r = self.run_cli('--check')
         self.assertEqual(r.returncode, 1)
@@ -228,6 +246,22 @@ class SpecificationTests(unittest.TestCase):
         self.assertIn('reject-missing', r.stdout)
         self.assertIn('specification:', r.stdout)
 
+    def test_spec_prompt_is_included_in_compilation_budget(self):
+        ir = graph()
+        ir['treeGuard'] = False
+        ir['budget']['maxEstimatedTokens'] = 100000
+        self.lock()
+        self.assertEqual(self.compile(ir).returncode, 0)
+        self.doc['goal'] = 'x' * 500000
+        self.lock()
+        r = self.compile(ir)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn('maxEstimatedTokens', r.stderr)
+        checked = subprocess.run([sys.executable, str(COMPILER), 'WORK.md', '--check'],
+                                 cwd=self.root, capture_output=True, encoding='utf-8',
+                                 env=dict(os.environ, PYTHONIOENCODING='utf-8'))
+        self.assertEqual(checked.returncode, 1)
+
     def test_read_only_graph_needs_no_packet(self):
         ir = graph()
         ir['nodes'] = [{'id': 'read', 'prompt': 'Read and report findings.', 'contract': 'FindingsV1'}]
@@ -317,6 +351,22 @@ const agent = async (prompt) => {prompts.push(prompt); return {exit: 0, branch: 
         self.assertEqual(len(observed['prompts']), 6)
         self.assertTrue(all('reject-missing' in p for p in observed['prompts']))
         self.assertIn('sha256', observed['result']['specification'])
+        total = observed['result']['estimate']['total']
+        self.assertEqual(total, sum(p['estimatedTokens'] for p in observed['result']['profile'].values()))
+        ir['budget']['maxEstimatedTokens'] = total
+        self.assertEqual(self.compile(ir).returncode, 0)
+        checked = subprocess.run([sys.executable, str(COMPILER), 'WORK.md', '--check'],
+                                 cwd=self.root, capture_output=True, encoding='utf-8',
+                                 env=dict(os.environ, PYTHONIOENCODING='utf-8'))
+        self.assertEqual(checked.returncode, 0, checked.stderr)
+        self.assertIn(f'~{total:,} estimated tokens', checked.stdout)
+        ir['budget']['maxEstimatedTokens'] -= 1
+        self.assertEqual(self.compile(ir).returncode, 1)
+        rejected = subprocess.run([sys.executable, str(COMPILER), 'WORK.md', '--out', 'over.graph.js'],
+                                  cwd=self.root, capture_output=True,
+                                  env=dict(os.environ, PYTHONIOENCODING='utf-8'))
+        self.assertEqual(rejected.returncode, 1)
+        self.assertFalse((self.root / 'over.graph.js').exists())
 
     def test_kani_without_cargo_cannot_pass_full_harness(self):
         (self.root / '.fluxpoint-spec.json').unlink()

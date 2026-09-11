@@ -65,6 +65,16 @@ Costs above describe concrete work and risk, not measured time or price estimate
     One canonical command supplies both. The protocol continues independent
     work while optional changes are pending, and never treats silence as assent
     for money, custody, destructive operations or external commitments.
+11. The token estimate and `maxEstimatedTokens` ceiling include the packet,
+    identity and preamble at every worker, refuter and advisor call. Price
+    this input conservatively at one token per ASCII-serialized byte, apply
+    the existing model multiplier, and assume no cache discount for it.
+    Actual tree sentinels and deterministic reducers receive no packet.
+    This is a stated estimate, not a measured tokenizer count or a context-limit guarantee.
+    Template ceilings include packet headroom; recompute against each goal's
+    actual locked packet before launching. With this repository's packet the
+    consolidation, discovery and starter estimates are 272,685, 2,036,754
+    and 161,032, so their example ceilings are 300,000, 2,250,000 and 180,000.
 
 ## Implementation validation
 

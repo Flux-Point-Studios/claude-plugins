@@ -26,7 +26,7 @@ Copy over `WORK.md`'s Campaign section to use it.
   "version": 1,
   "name": "discovery-campaign",
   "campaign": "Sweep for defects until two consecutive rounds find nothing new",
-  "budget": { "maxNodes": 126, "verifyFloorTokens": 50000, "nodeFloorTokens": 80000, "cacheTtl": "1h", "maxEstimatedTokens": 1600000 },
+  "budget": { "maxNodes": 126, "verifyFloorTokens": 50000, "nodeFloorTokens": 80000, "cacheTtl": "1h", "maxEstimatedTokens": 2250000 },
   "defaults": { "effort": "medium" },
   "requiredArgs": ["target"],
   "roles": { "hunter": { "effort": "medium" } },

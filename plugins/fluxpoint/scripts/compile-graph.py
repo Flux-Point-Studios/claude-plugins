@@ -101,6 +101,9 @@ EFFORT_MULT = {"low": 0.5, "medium": 1.0, "high": 1.8, "xhigh": 2.5, "max": 3.5}
 # Price weight by model family, matched on a substring of the model id;
 # anything unmatched is the session's default model at weight 1.
 MODEL_MULT = (("haiku", 0.25), ("sonnet", 0.5))
+SPEC_PREAMBLE = ("Implement and verify this locked requirement packet. Defaulted decisions are model choices, "
+                 "not user authorization. Do not edit the packet, lock or proof baseline to pass a check. "
+                 "If a requirement is wrong, return the counterexample for a spec revision.\n")
 
 
 class GraphError(Exception):
@@ -499,7 +502,7 @@ def _validate_reduce(n, where, seen, contracts):
     return f
 
 
-def validate(ir, contracts, gates=None, agents=None):
+def validate(ir, contracts, gates=None, agents=None, specification=None):
     """Return a list of findings. Empty list means the graph may compile."""
     f = []
     if ir.get("version") != 1:
@@ -1209,7 +1212,7 @@ def validate(ir, contracts, gates=None, agents=None):
         if isinstance(cap, bool) or not isinstance(cap, int) or cap < 1:
             f.append("budget.maxEstimatedTokens must be a positive integer")
         elif ttl is None or ttl in CACHE_TTLS:
-            est = estimate_tokens(ir, contracts)
+            est = estimate_tokens(ir, contracts, specification)
             if est["total"] > cap:
                 f.append(
                     f"budget: the graph is estimated at ~{est['total']:,} tokens "
@@ -1396,13 +1399,13 @@ def plan_groups(ir):
     groups = []
     sentinel = ("", "low")
     if tree_guard:
-        groups.append({"calls": [("tree-check", sentinel)], "park": False})
+        groups.append({"calls": [("tree-check", sentinel)], "park": False, "sentinel": True})
     for n in ir.get("nodes") or []:
         if is_reduce(n):
             continue
         nid = n.get("id", "?")
         if tree_guard and (prove_gate(n) or n.get("independent")):
-            groups.append({"calls": [("tree-check", sentinel)], "park": False})
+            groups.append({"calls": [("tree-check", sentinel)], "park": False, "sentinel": True})
         if n.get("actor", "agent") != "agent":
             groups.append({"calls": [(nid, ("", "medium"))], "park": True})
             continue
@@ -1417,11 +1420,11 @@ def plan_groups(ir):
                 groups.append({"calls": [(nid, ("", "low"))] * (fan * per * cnt),
                                "park": False})
     if tree_guard:
-        groups.append({"calls": [("tree-check", sentinel)], "park": False})
+        groups.append({"calls": [("tree-check", sentinel)], "park": False, "sentinel": True})
     return groups
 
 
-def estimate_tokens(ir, contracts=None):
+def estimate_tokens(ir, contracts=None, specification=None):
     """Cold-input-token equivalents for the worst-case plan.
 
     A call's prefix is warm when an earlier call at the same (model, effort)
@@ -1439,6 +1442,10 @@ def estimate_tokens(ir, contracts=None):
     warm = set()
     total, calls, cold = 0.0, 0, 0
     per_node = {}
+    # One token per ASCII serialization byte is deliberately conservative.
+    # Do not assume the packet, after a varying preamble, shares the cache.
+    spec_input = (len(SPEC_PREAMBLE) + len(json.dumps(specification, ensure_ascii=True,
+                                                    separators=(',', ':'))) + 1) if specification else 0
     for g in plan_groups(ir):
         if not persist:
             warm = set()
@@ -1447,9 +1454,9 @@ def estimate_tokens(ir, contracts=None):
             key = (model, effort)
             is_warm = key in warm
             prefix = PREFIX_TOKENS * (CACHED_PREFIX_FRACTION if is_warm else 1.0)
-            work = (SENTINEL_WORK_TOKENS if nid == "tree-check"
+            work = (SENTINEL_WORK_TOKENS if g.get("sentinel")
                     else WORK_TOKENS * EFFORT_MULT.get(effort, 1.0))
-            cost = (prefix + work) * _model_mult(model)
+            cost = (prefix + work + (0 if g.get("sentinel") else spec_input)) * _model_mult(model)
             if not is_warm:
                 cold += 1
                 warm.add(key)
@@ -1464,6 +1471,7 @@ def estimate_tokens(ir, contracts=None):
         "total": int(round(total)), "calls": calls, "cold": cold, "ttl": ttl,
         "perNode": per_node,
         "assumptions": {"prefixTokens": PREFIX_TOKENS,
+                        "specificationInputTokens": spec_input,
                         "cachedPrefixFraction": CACHED_PREFIX_FRACTION,
                         "workTokens": WORK_TOKENS, "effortMult": EFFORT_MULT,
                         "modelMult": dict(MODEL_MULT)},
@@ -1717,7 +1725,7 @@ def emit(ir, contracts, imports_resolved=None, specification=None):
             phases.append(p)
     needs_panel = any(panel_size(n) for n in nodes)
 
-    est = estimate_tokens(ir, contracts)
+    est = estimate_tokens(ir, contracts, specification)
     L = []
     a = L.append
     a("// GENERATED by fluxpoint compile-graph.py — DO NOT EDIT.")
@@ -1756,7 +1764,7 @@ def emit(ir, contracts, imports_resolved=None, specification=None):
     a(f"const campaign = {js_str(ir['campaign'])}")
     if specification:
         a("const SPECIFICATION = " + json.dumps(specification, ensure_ascii=True))
-        a("function specificationPreamble() { return 'Implement and verify this locked requirement packet. Defaulted decisions are model choices, not user authorization. Do not edit the packet, lock or proof baseline to pass a check. If a requirement is wrong, return the counterexample for a spec revision.\\n' + JSON.stringify(SPECIFICATION) + '\\n'; }")
+        a("function specificationPreamble() { return " + js_str(SPEC_PREAMBLE) + " + JSON.stringify(SPECIFICATION) + '\\n'; }")
     a("// Resolved inputs are logged, never silently defaulted behind your back.")
     a("log(`inputs: ${JSON.stringify(A)}`)")
     # What the spec priced, next to what the run will meter. The profile is
@@ -2797,22 +2805,24 @@ def main():
         return 1
 
     agents = load_agents(args.gates_root)
-    findings = validate(ir, contracts, load_gates(args.gates_root), agents)
+    gates = load_gates(args.gates_root)
+    findings = validate(ir, contracts, gates, agents)
+    specification = None
+    from specification import load, required
+    if not findings and (required(args.gates_root) or any(n.get("mutates") or n.get("irreversible") for n in ir["nodes"])):
+        try:
+            packet, identity = load(args.gates_root)
+            specification = {"packet": packet, "identity": identity}
+            findings = validate(ir, contracts, gates, agents, specification)
+        except (OSError, ValueError, TypeError) as e:
+            print(f"graph-compile: spec required before implementation: {e}", file=sys.stderr)
+            return 1
+
     if findings:
         print("graph-compile: IR rejected\n", file=sys.stderr)
         for f in findings:
             print(f"  - {f}", file=sys.stderr)
         return 1
-
-    specification = None
-    from specification import load, required
-    if required(args.gates_root) or any(n.get("mutates") or n.get("irreversible") for n in ir["nodes"]):
-        try:
-            packet, identity = load(args.gates_root)
-            specification = {"packet": packet, "identity": identity}
-        except (OSError, ValueError, TypeError) as e:
-            print(f"graph-compile: spec required before implementation: {e}", file=sys.stderr)
-            return 1
 
     planned = plan_node_count(ir)
     # Warnings inform, never block: these shapes are legal and occasionally
@@ -2829,7 +2839,7 @@ def main():
             print(f"  - {f}", file=sys.stderr)
         return 1
 
-    est = estimate_tokens(ir, contracts)
+    est = estimate_tokens(ir, contracts, specification)
     cap = (ir.get("budget") or {}).get("maxEstimatedTokens")
     cost_line = (f"~{est['total']:,} estimated tokens"
                  + (f" of {cap:,} allowed" if cap is not None else "")

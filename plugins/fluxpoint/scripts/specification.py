@@ -234,7 +234,8 @@ def main():
             return 0
         doc, identity = load(root, locked=not args.lock)
         if args.lock:
-            (root / LOCK).write_text(json.dumps(identity, indent=2) + '\n', encoding='utf-8', newline='\n')
+            with (root / LOCK).open('w', encoding='utf-8', newline='\n') as lock_file:
+                lock_file.write(json.dumps(identity, indent=2) + '\n')
             print(f"specification: locked {identity['sha256']}; checks have not run")
             return 0
         print(f"specification: validated {identity['sha256']}", flush=True)
