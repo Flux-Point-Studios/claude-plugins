@@ -43,6 +43,7 @@
 // 0 = clean or medium-only (mediums print to stdout as advice).
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const PROSE_EXT = new Set([".md", ".markdown", ".txt", ".html", ".htm", ".eml"]);
 // Generated/ledger files carry structured text, not authored prose.
@@ -146,6 +147,24 @@ const APHORISM_SHORT_WORDS = 8;
 
 const EMDASH_PER_100_WORDS = 1.5;
 const EMDASH_MIN_COUNT = 4;
+
+// Mail length. Calibrated on what recipients did with real drafts rather than
+// on a round number: an ~800-word message came back asking for less, and the
+// ~130-word rewrite of the same content is what actually got acted on. Drafts
+// around 100-200 words landed reliably. Length is the defect the frame rules
+// above cannot see — every claim in that long draft was accurate and every
+// frame rule was green, and it still failed as a message.
+//
+// Only MAIL is scored, and "is this mail?" is answered structurally: a file
+// whose first non-blank line is a Subject: header is an email body. A memo, a
+// plan or a findings doc is legitimately long, and firing on those is how a
+// gate earns being switched off.
+const MAIL_WORDS_HIGH = 350;
+const MAIL_WORDS_MEDIUM = 250;
+const SUBJECT_LINE = /^Subject:\s*\S/;
+// A threaded reply carries the whole history under the sign-off. Those are not
+// the author's words and counting them would fail every reply on a long thread.
+const QUOTED_CHAIN = /^From:\s+\S[^\n]*\n(?:[^\n]*\n){0,3}?\s*(?:Sent|To|Date):\s+\S/m;
 // Authored prose is small; anything bigger is a generated report or data
 // masquerading as prose, and scanning it would cost memory and hook budget.
 const MAX_BYTES = 2_000_000;
@@ -270,6 +289,41 @@ function aphorismFindings(prose, offsets) {
   return out;
 }
 
+/** Words the author wrote, when the file is an email body; null when it is not.
+ *
+ * The Subject header itself is excluded - a descriptive subject is a virtue and
+ * must not count against the body - and so is any quoted chain below it.
+ */
+function authoredMailWords(prose) {
+  const lines = prose.split("\n");
+  const first = lines.findIndex((l) => l.trim() !== "");
+  if (first === -1 || !SUBJECT_LINE.test(lines[first].trim())) return null;
+  let body = lines.slice(first + 1).join("\n");
+  const quoted = body.match(QUOTED_CHAIN);
+  if (quoted) body = body.slice(0, quoted.index);
+  return (body.match(/\S+/g) || []).length;
+}
+
+function mailLengthFindings(prose) {
+  const words = authoredMailWords(prose);
+  if (words === null) return [];
+  if (words > MAIL_WORDS_HIGH) {
+    return [{
+      severity: "high", rule: "mail-too-long", line: 1,
+      excerpt: `${words} words of body; mail that lands runs under `
+        + `${MAIL_WORDS_MEDIUM}. Lead with what changes for the reader, keep the `
+        + "few things that bite, move the rest to an attachment or a file",
+    }];
+  }
+  if (words > MAIL_WORDS_MEDIUM) {
+    return [{
+      severity: "medium", rule: "mail-getting-long", line: 1,
+      excerpt: `${words} words of body; the drafts that worked ran 83-199`,
+    }];
+  }
+  return [];
+}
+
 export function scan(text, config = {}) {
   const prose = stripInlineCode(stripFences(text));
   const offsets = newlineOffsets(prose);
@@ -297,6 +351,7 @@ export function scan(text, config = {}) {
     }
   }
   findings.push(...aphorismFindings(prose, offsets));
+  findings.push(...mailLengthFindings(prose));
   const words = (prose.match(/\S+/g) || []).length;
   const dashes = (prose.match(/[—–]/g) || []).length;
   if (words > 0 && dashes >= EMDASH_MIN_COUNT
@@ -458,6 +513,16 @@ function main() {
 }
 
 // Importable for tests; executed when run directly.
-if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(import.meta.url).pathname)) {
+//
+// ⚠ `new URL(import.meta.url).pathname` is NOT a filesystem path on Windows: it
+// yields "/C:/Users/…", and path.resolve() then reads the leading slash as
+// drive-root and returns "C:\C:\Users\…". The comparison was therefore ALWAYS
+// false on Windows, main() never ran, and the gate exited 0 for every file it
+// was ever handed - a hook that reported clean because it had not looked.
+// Measured 2026-09-11 against the deployed 1.6.0: scan() returned the expected
+// HIGH finding while the CLI exited 0, and 18 of this file's own 28 tests were
+// red. fileURLToPath is the only correct URL-to-path conversion.
+if (process.argv[1]
+    && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))) {
   main();
 }
