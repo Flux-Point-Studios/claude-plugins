@@ -7,8 +7,10 @@ import json
 import os
 from pathlib import Path
 import re
+import signal
 import subprocess
 import sys
+import time
 
 import decision
 
@@ -16,6 +18,50 @@ SPEC = '.fluxpoint-spec.json'
 LOCK = '.fluxpoint-spec-lock.json'
 BASELINE = '.fluxpoint-proof-baseline.json'
 ID = re.compile(r'^[a-z][a-z0-9-]*$')
+
+if os.name == 'nt':
+    import ctypes as C
+    from ctypes import wintypes as W
+
+    class JobLimits(C.Structure):
+        _fields_ = [('PerProcessUserTimeLimit', C.c_int64), ('PerJobUserTimeLimit', C.c_int64),
+                    ('LimitFlags', W.DWORD), ('MinimumWorkingSetSize', C.c_size_t),
+                    ('MaximumWorkingSetSize', C.c_size_t), ('ActiveProcessLimit', W.DWORD),
+                    ('Affinity', C.c_size_t), ('PriorityClass', W.DWORD), ('SchedulingClass', W.DWORD)]
+
+    class ExtendedJobLimits(C.Structure):
+        _fields_ = [('BasicLimitInformation', JobLimits), ('IoInfo', C.c_uint64 * 6),
+                    ('ProcessMemoryLimit', C.c_size_t), ('JobMemoryLimit', C.c_size_t),
+                    ('PeakProcessMemoryUsed', C.c_size_t), ('PeakJobMemoryUsed', C.c_size_t)]
+
+    class JobAccounting(C.Structure):
+        _fields_ = [('TotalUserTime', C.c_int64), ('TotalKernelTime', C.c_int64),
+                    ('ThisPeriodTotalUserTime', C.c_int64), ('ThisPeriodTotalKernelTime', C.c_int64),
+                    ('TotalPageFaultCount', W.DWORD), ('TotalProcesses', W.DWORD),
+                    ('ActiveProcesses', W.DWORD), ('TotalTerminatedProcesses', W.DWORD)]
+
+    kernel = C.WinDLL('kernel32', use_last_error=True)
+    for name, params, returns in [
+        ('CreateJobObjectW', [C.c_void_p, W.LPCWSTR], W.HANDLE),
+        ('SetInformationJobObject', [W.HANDLE, C.c_int, C.c_void_p, W.DWORD], W.BOOL),
+        ('AssignProcessToJobObject', [W.HANDLE, W.HANDLE], W.BOOL),
+        ('QueryInformationJobObject', [W.HANDLE, C.c_int, C.c_void_p, W.DWORD, C.c_void_p], W.BOOL),
+        ('TerminateJobObject', [W.HANDLE, W.UINT], W.BOOL),
+        ('OpenProcess', [W.DWORD, W.BOOL, W.DWORD], W.HANDLE),
+        ('CloseHandle', [W.HANDLE], W.BOOL),
+    ]:
+        function = getattr(kernel, name)
+        function.argtypes, function.restype = params, returns
+
+    def win_checked(value):
+        if not value:
+            raise C.WinError(C.get_last_error())
+        return value
+
+    # The command cannot spawn until its trusted launcher belongs to the job.
+    CHECK_LAUNCHER = ('import json,subprocess,sys; go=sys.stdin.buffer.read(1); '
+                      'sys.exit(subprocess.call(json.loads(sys.argv[1]),stdin=subprocess.DEVNULL) '
+                      'if go==b"1" else 125)')
 
 
 def strings(value, nonempty=True):
@@ -168,9 +214,11 @@ def required(root):
 
 def load(root, locked=True):
     root = Path(root)
-    doc = json.loads((root / SPEC).read_text(encoding='utf-8'), object_pairs_hook=unique_keys)
+    snapshot = (root / SPEC).read_bytes().replace(b'\r\n', b'\n')
+    doc = json.loads(snapshot.decode('utf-8'), object_pairs_hook=unique_keys)
     errors = validate(doc)
-    identity = {'version': 1, 'sha256': digest(root / SPEC), 'proofBaselineSha256': digest(root / BASELINE)}
+    identity = {'version': 1, 'sha256': hashlib.sha256(snapshot).hexdigest(),
+                'proofBaselineSha256': digest(root / BASELINE)}
     if not errors:
         ids = {oid for check in doc['checks'] for oid in check.get('obligations', [])}
         if ids:
@@ -203,16 +251,72 @@ def run_checks(root, doc, stack):
                 continue
             argv = [sys.executable if v == '{python}' else v for v in check[key]]
             print(f"specification: {check['id']} {key}: {json.dumps(argv)}", flush=True)
+            process, job = None, None
             try:
-                result = subprocess.run(argv, cwd=root, timeout=check['timeoutSeconds'],
-                                        env=dict(os.environ, PYTHONIOENCODING='utf-8',
-                                                 FPL_SPEC_STACK=json.dumps(stack)))
+                try:
+                    env = dict(os.environ, PYTHONIOENCODING='utf-8', FPL_SPEC_STACK=json.dumps(stack))
+                    if os.name == 'nt':
+                        job = win_checked(kernel.CreateJobObjectW(None, None))
+                        limits = ExtendedJobLimits()
+                        limits.BasicLimitInformation.LimitFlags = 0x2000  # KILL_ON_JOB_CLOSE
+                        win_checked(kernel.SetInformationJobObject(job, 9, C.byref(limits), C.sizeof(limits)))
+                        process = subprocess.Popen(
+                            [sys.executable, '-I', '-S', '-c', CHECK_LAUNCHER, json.dumps(argv)],
+                            cwd=root, env=env, stdin=subprocess.PIPE, creationflags=subprocess.CREATE_NO_WINDOW)
+                        handle = win_checked(kernel.OpenProcess(0x0101, False, process.pid))
+                        try:
+                            win_checked(kernel.AssignProcessToJobObject(job, handle))
+                        finally:
+                            win_checked(kernel.CloseHandle(handle))
+                        process.stdin.write(b'1')
+                        process.stdin.close()
+                    else:
+                        process = subprocess.Popen(argv, cwd=root, env=env, stdin=subprocess.DEVNULL,
+                                                   start_new_session=True)
+                    code = process.wait(timeout=check['timeoutSeconds'])
+                finally:
+                    pending_error = sys.exc_info()[1]
+                    try:
+                        try:
+                            if job is not None:
+                                win_checked(kernel.TerminateJobObject(job, 125))
+                                info = JobAccounting()
+                                deadline = time.monotonic() + 5
+                                while True:
+                                    win_checked(kernel.QueryInformationJobObject(job, 1, C.byref(info), C.sizeof(info), None))
+                                    if info.ActiveProcesses == 0:
+                                        break
+                                    if time.monotonic() >= deadline:
+                                        raise OSError('check job did not drain within five seconds')
+                                    time.sleep(0.01)
+                            elif process is not None and os.name != 'nt':
+                                try:
+                                    os.killpg(process.pid, signal.SIGKILL)
+                                except ProcessLookupError:
+                                    # An already empty group has nothing left to terminate.
+                                    pass
+                        finally:
+                            try:
+                                if job is not None:
+                                    win_checked(kernel.CloseHandle(job))
+                            finally:
+                                if process is not None:
+                                    try:
+                                        if process.stdin is not None and not process.stdin.closed:
+                                            process.stdin.close()
+                                    finally:
+                                        if process.poll() is None:
+                                            process.kill()
+                                        process.wait(timeout=5)
+                    except (OSError, subprocess.TimeoutExpired) as e:
+                        prior = f'{pending_error}; ' if pending_error else ''
+                        raise ValueError(f'{prior}check cleanup failed; stopping remaining checks: {e}') from e
             except (OSError, subprocess.TimeoutExpired) as e:
                 print(f"specification: {check['id']} could not complete: {e}", file=sys.stderr)
                 failed = True
                 continue
-            print(f"specification: {check['id']} {key} exit {result.returncode}", flush=True)
-            failed |= result.returncode != 0
+            print(f"specification: {check['id']} {key} exit {code}", flush=True)
+            failed |= code != 0
     return 1 if failed else 0
 
 

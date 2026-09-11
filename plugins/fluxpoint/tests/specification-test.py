@@ -1,5 +1,6 @@
 import copy
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -7,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 PLUGIN = Path(__file__).resolve().parents[1]
 SCRIPT = PLUGIN / 'scripts/specification.py'
@@ -113,6 +115,78 @@ runpy.run_path(script, run_name='__main__')
         self.doc['goal'] = 'A different goal'
         self.save()
         self.assertIn('changed', self.run_cli('--check').stderr)
+
+    def test_packet_replaced_during_read_cannot_borrow_replacement_identity(self):
+        self.lock()
+        path = self.root / '.fluxpoint-spec.json'
+        locked_bytes = path.read_bytes()
+        self.doc['goal'] = 'Unlocked earlier packet'
+        self.save()
+        module_spec = importlib.util.spec_from_file_location('specification', SCRIPT)
+        runner = importlib.util.module_from_spec(module_spec)
+        with mock.patch.object(sys, 'path', [str(PLUGIN / 'scripts')] + sys.path):
+            module_spec.loader.exec_module(runner)
+        original_bytes, original_text = Path.read_bytes, Path.read_text
+
+        def replace_after_read(original):
+            def read(file, *args, **kwargs):
+                data = original(file, *args, **kwargs)
+                if file == path:
+                    path.write_bytes(locked_bytes)
+                return data
+            return read
+
+        with mock.patch.object(Path, 'read_bytes', replace_after_read(original_bytes)), \
+                mock.patch.object(Path, 'read_text', replace_after_read(original_text)):
+            with self.assertRaisesRegex(ValueError, 'changed since lock'):
+                runner.load(self.root)
+
+    def test_check_descendants_cannot_write_after_timeout_or_parent_exit(self):
+        grandchild = '''
+from pathlib import Path
+import time
+Path('descendant-ready').write_text('ready')
+deadline = time.monotonic() + 8
+while not Path('release-descendant').exists() and time.monotonic() < deadline:
+    time.sleep(0.01)
+if Path('release-descendant').exists():
+    Path('late-write').write_text('escaped')
+'''
+        middle = ('import subprocess, sys; subprocess.Popen([sys.executable, "grandchild.py"], '
+                  'stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)')
+        parent = '''
+from pathlib import Path
+import subprocess, sys, time
+subprocess.run([sys.executable, 'middle.py'], check=True)
+deadline = time.monotonic() + 5
+while not Path('descendant-ready').exists() and time.monotonic() < deadline:
+    time.sleep(0.01)
+assert Path('descendant-ready').exists()
+time.sleep(float(sys.argv[1]))
+'''
+        (self.root / 'grandchild.py').write_text(grandchild)
+        (self.root / 'middle.py').write_text(middle)
+        (self.root / 'parent.py').write_text(parent)
+        next_check = ('from pathlib import Path; import time; '
+                      'assert Path("descendant-ready").exists(); '
+                      'Path("release-descendant").touch(); time.sleep(0.4); '
+                      'assert not Path("late-write").exists()')
+        for delay, expected in [('10', 1), ('0', 0)]:
+            with self.subTest(parent_delay=delay):
+                for name in ('descendant-ready', 'release-descendant', 'late-write'):
+                    (self.root / name).unlink(missing_ok=True)
+                self.doc = packet()
+                self.doc['checks'][0].update(argv=['{python}', 'parent.py', delay], timeoutSeconds=2)
+                self.doc['checks'].append(dict(self.doc['checks'][0], id='next-check',
+                                               argv=['{python}', '-c', next_check], timeoutSeconds=5))
+                self.doc['requirements'][0]['checks'].append('next-check')
+                self.lock()
+                r = self.run_cli('--run')
+                self.assertTrue((self.root / 'descendant-ready').exists(), r.stderr)
+                self.assertFalse((self.root / 'late-write').exists(), r.stdout + r.stderr)
+                self.assertEqual(r.returncode, expected, r.stderr)
+                if expected:
+                    self.assertIn('timed out', r.stderr)
 
     def test_git_line_ending_conversion_preserves_lock(self):
         path = self.root / '.fluxpoint-spec.json'

@@ -37,7 +37,12 @@ Costs above describe concrete work and risk, not measured time or price estimate
 4. `--check` rejects absent, malformed, stale or blocked packets. `--run` also
    executes every declared check without a shell, from the repository root,
    with its timeout. Missing executables, errors, nonzero exits and timeouts are
-   failures. A passing command establishes its declared check only.
+   failures. Checks are noninteractive and receive EOF on stdin. Each check
+   runs in a fresh POSIX process group or Windows Job Object; descendants in
+   that group/job are terminated on timeout and on early parent exit before
+   the next check. Windows assigns a gated launcher before starting the real
+   command and verifies the job drains. Cleanup errors stop remaining checks.
+   A passing command establishes its declared check only.
 5. Checks distinguish `test`, `property`, `model`, `proof` and `runtime`.
    Every check declares scope and assumptions; model/proof checks name tracked
    obligations and execute a non-vacuity witness command. Unsupported proof
@@ -72,9 +77,8 @@ Costs above describe concrete work and risk, not measured time or price estimate
     Actual tree sentinels and deterministic reducers receive no packet.
     This is a stated estimate, not a measured tokenizer count or a context-limit guarantee.
     Template ceilings include packet headroom; recompute against each goal's
-    actual locked packet before launching. With this repository's packet the
-    consolidation, discovery and starter estimates are 272,685, 2,036,754
-    and 161,032, so their example ceilings are 300,000, 2,250,000 and 180,000.
+    actual locked packet before launching. The consolidation, discovery and
+    starter example ceilings are 350,000, 2,500,000 and 200,000.
 
 ## Implementation validation
 
@@ -107,3 +111,11 @@ The packet cannot prove the user's intent was captured correctly. Independent
 review, reachability witnesses, negative cases and actual runtime exercises still
 matter. An agent with write access to the spec, lock, compiler and harness can
 change all four. CI and review of those diffs remain the external trust boundary.
+
+Parsing and hashing use the same packet byte snapshot, so a concurrent
+replacement cannot stamp an old parsed packet with a new packet's digest.
+Process cleanup uses [Python process groups](https://docs.python.org/3/library/subprocess.html)
+and [Windows Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects).
+It is not a sandbox: POSIX programs can deliberately leave the group with
+setsid, and service/remote jobs live outside these local boundaries. Checks
+must not detach such work; use externally managed containment when required.

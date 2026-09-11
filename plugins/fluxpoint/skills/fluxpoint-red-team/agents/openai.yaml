@@ -1,3 +1,3 @@
 interface:
   display_name: "fluxpoint: red-team"
-  short_description: "Adversarial review of the current diff with the red-team-reviewer agent"
+  short_description: "Adversarial PR review with attack coverage and reproduced evidence"

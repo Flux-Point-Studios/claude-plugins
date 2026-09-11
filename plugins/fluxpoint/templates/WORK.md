@@ -45,7 +45,7 @@ for a worked council → build → independently-gated campaign.
   "version": 1,
   "name": "campaign",
   "campaign": "<one line: what this campaign proves or produces>",
-  "budget": { "maxNodes": 12, "verifyFloorTokens": 50000, "cacheTtl": "1h", "maxEstimatedTokens": 180000 },
+  "budget": { "maxNodes": 12, "verifyFloorTokens": 50000, "cacheTtl": "1h", "maxEstimatedTokens": 200000 },
   "defaults": { "effort": "medium" },
   "argDefaults": {
     "target": "the uncommitted diff: git diff HEAD, plus untracked files from git status"

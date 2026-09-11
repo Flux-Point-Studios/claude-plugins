@@ -94,6 +94,15 @@ report("BLOCK and WEAKENED together: outcome is BLOCKED-REDTEAM",
 report("  and the claim carries both",
        "red-team returned BLOCK" in text and "proof-audit returned WEAKENED" in text, "both")
 
+s = summary("SOUND", ["access.py"])
+s["results"]["rt"] = {"verdict": "BLOCK", "findings": [],
+                      "review": {"blockers": ["No authority attack executed"], "coverage": []}}
+text, art, _ = record(s, "wf_rt_incomplete", "--red-team", "SHIP")
+report("incomplete red-team coverage blocks with no fabricated finding",
+       art.get("outcome") == "BLOCKED-REDTEAM", "derived BLOCK wins over SHIP flag")
+report("additional red-team review evidence survives recording",
+       art.get("summary", {}).get("results", {}).get("rt") == s["results"]["rt"], "review retained")
+
 # ==================== UNPROVEN is a verification that did not run ========
 text, art, _ = record(summary("UNPROVEN", ["src/vault.dfy"]), "wf_p4")
 report("UNPROVEN files the run INCOMPLETE", "| wf_p4 | INCOMPLETE |" in text, "INCOMPLETE")
