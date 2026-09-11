@@ -155,19 +155,33 @@ step; do not stop at copying files.
    Lean (`#print axioms`), Coq (`Print Assumptions`, resolved through
    `_CoqProject`) and Dafny (`dafny audit`) are read; the ids come from
    `spec-guard.py --scan`, and `dafny:*` audits every tracked `.dfy`.
-   For an Aiken repo, copy `templates/attack-taxonomy.json` to
-   `.fluxpoint-attacks.json` and commit it. It names the eUTxO attack
-   classes every validator has to rule out — double satisfaction, datum
-   hijack, token-name confusion, unbounded value, staking-credential
-   substitution, foreign UTxOs, unbounded validity ranges, arbitrary
-   mints — and `spec-guard.py --check` is red for each class until the
-   repo carries a property test of that exact name over `aiken/fuzz`
-   (`test attack_double_satisfaction(n: Int via bounded_int(1, 99)) { … }`)
-   or the manifest's `waived` object gives the class a reason of at least
-   twenty characters. Write those tests now, against this repo's real
-   validators, and then arm the ratchets so their signatures are hashed.
-   A class that genuinely cannot apply is waived in the committed file,
-   where review sees it; it is never left unspecified.
+   Copy `templates/attack-taxonomy.json` to `.fluxpoint-attacks.json` and
+   commit it. It carries one taxonomy per language, and each gates only a
+   repo that tracks that language, so a validator-only repo is silent on
+   the builder classes and a builder-only repo is silent on the validator
+   ones.
+   The **aiken** taxonomy names the eUTxO classes every validator has to
+   rule out: double satisfaction, datum hijack, token-name confusion,
+   unbounded value, staking-credential substitution, foreign UTxOs,
+   unbounded validity ranges, arbitrary mints. A class is specified by a
+   property test of that exact name over `aiken/fuzz`
+   (`test attack_double_satisfaction(n: Int via bounded_int(1, 99)) { … }`).
+   The **typescript** taxonomy names what the transaction builder answers
+   for, which is the surface an autonomous caller actually reaches:
+   unvalidated change address, datum round-trip loss, stale protocol
+   parameters, a replayable signed transaction, unbounded UTxO selection,
+   a missing script data hash, unbounded collateral. A class is specified
+   by a test whose title carries the class id, and the scan notes when
+   that test uses no fast-check, because an example is weaker than a
+   property over a generator.
+   `spec-guard.py --check` is red for each unspecified class until the
+   test exists or the taxonomy's own `waived` object gives it a reason of
+   at least twenty characters. A waiver is scoped to its taxonomy, so an
+   Aiken waiver never excuses a builder class. Write those tests now,
+   against this repo's real validators and its real builder, and then arm
+   the ratchets so their signatures are hashed. A class that genuinely
+   cannot apply is waived in the committed file, where review sees it; it
+   is never left unspecified.
    When a Definition-of-Done line rests on a proof, say which one:
    `- [x] withdraw never overdraws — proof: dafny:src/vault.dfy:Withdraw`.
    `spec-guard.py --check` refuses a checked box whose obligation does not
@@ -185,7 +199,24 @@ step; do not stop at copying files.
    runs first fails on the harness module's `#[cfg(kani)]`); an Apalache
    spec runs only when
    `FPL_APALACHE_ARGS` names it (`--inv=Inv Spec.tla`), and the ITF trace
-   it writes is what gets recorded. That file and
+   it writes is what gets recorded. A TypeScript repo's `test` script is
+   captured the same way: a fast-check failure carries a shrunk
+   counterexample with the `seed` and `path` that replay it, and only the
+   vitest reporter is parsed.
+   **Then buy back the exploration the gate gives up.** The gate pins
+   `--seed 1` so a shrink is reproducible and the ledger can dedupe, which
+   means every run explores the same cases at the tool's default iteration
+   count. Declare a wide sweep and run it off-session, on a Routine, the
+   way `mutation-guard.py --measure` already runs:
+   ```json
+   {"version": 1, "tool": "aiken", "seeds": 25, "maxSuccess": 1000}
+   ```
+   in `.fluxpoint-fuzz.json`, then
+   `bash "${CLAUDE_PLUGIN_ROOT}/scripts/py.sh" cex.py --sweep`. Each sweep
+   starts where the last one stopped, so the ground covered grows instead
+   of repeating, and anything it finds lands in the same ledger under the
+   same pin discipline. `--check` then reports what the last sweep covered
+   and how stale it is; set `failWhenStale` once the cadence is established. That file and
    `.fluxpoint-cex/` are committed artifacts like the baselines — a
    ratchet only anyone else can see is one that lives in the tree, so do
    not add them to `.gitignore`.

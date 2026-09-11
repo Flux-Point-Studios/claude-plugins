@@ -55,10 +55,21 @@ Three more checks ride on the same scan:
              with a `— proof: <obligation id>` tail is a claim; the id must
              exist and be unchanged, or the box is red.
   taxonomy   `.fluxpoint-attacks.json` (from templates/attack-taxonomy.json)
-             names the eUTxO attack classes an Aiken repo must specify;
-             a class with neither a property test of that name nor a
-             waiver with a reason is red — route 0 of the escape routes,
-             never specifying the property, gets a gate too.
+             names the attack classes a repo must specify, one taxonomy
+             per language: the eUTxO classes a validator answers for, the
+             builder classes the off-chain TypeScript answers for. A class
+             with neither a test of that name nor a waiver with a reason is
+             red — route 0 of the escape routes, never specifying the
+             property, gets a gate too. Each taxonomy gates only a repo
+             that carries its language, so a validator-only repo is
+             silent on the builder classes and the other way round. A
+             taxonomy in a language this guard has no rule for is NOT a
+             malformed manifest: the manifest is the repo's declaration
+             and this script is what lags it, so those classes are
+             reported NOT COVERED and counted UNCHECKED, never as
+             specified and never as a failure. The known languages are
+             printed beside the unknown one, and a near miss is named,
+             so a transposition cannot quietly un-gate a language.
 
 What a statement hash cannot see: a property proved about an unreachable
 state, a generator that cannot produce the interesting case, a test whose
@@ -611,7 +622,98 @@ def dod_findings(root, now, recorded):
 
 # ------------------------------------------------------------------ taxonomy
 
+# The languages a taxonomy may be written for. A manifest naming any other
+# is reported by name: this script would have no rule for deciding whether a
+# class in it is specified, and a taxonomy nothing can be decided about
+# passes every class it holds.
+TAXONOMY_LANGUAGES = ("aiken", "typescript")
+
+
+def _near(lang):
+    """A known language within a character or two of `lang`, or None.
+
+    Uncovered is the right verdict for a language this guard has not learned,
+    but it reads the same as a typo, and a typo silently un-gates every class
+    under it. Naming the near miss makes a transposition obvious in the one
+    line a reader sees.
+    """
+    for known in TAXONOMY_LANGUAGES:
+        if lang == known:
+            continue
+        if sorted(lang.lower()) == sorted(known.lower()) or (
+                abs(len(lang) - len(known)) <= 1
+                and sum(1 for a, b in zip(lang.lower(), known.lower()) if a != b) <= 1):
+            return known
+    return None
+
+
+def uncovered_note(tax):
+    """The line an uncovered taxonomy prints, with what it cost and a hint."""
+    lang, n = tax["language"], len(tax["classes"])
+    hint = _near(lang)
+    return (f"NOT COVERED: taxonomy {lang!r} ({n} class(es) unchecked) — this guard "
+            f"decides 'specified' for {', '.join(TAXONOMY_LANGUAGES)} only"
+            + (f". Did you mean {hint!r}?" if hint else ""))
+NAMED_BY = {
+    "aiken": "no Aiken test named",
+    "typescript": "no TypeScript test title or declaration names",
+}
+DORMANT_WHY = {
+    "aiken": "no Aiken file is tracked",
+    "typescript": "no TypeScript test file is tracked",
+}
+
+# What the off-chain side runs as a test: the conventional suffixes, plus any
+# .ts/.tsx under a test directory, which is where a repo that keeps its tests
+# out of the source tree puts them.
+TS_TEST_SUFFIX = (".test.ts", ".test.tsx", ".spec.ts", ".spec.tsx")
+TS_SOURCE_SUFFIX = (".ts", ".tsx")
+TS_TEST_DIR = re.compile(r"(?:^|/)(?:tests?|__tests__)/")
+
+# A test title: `it("…")`, `test('…')`, `describe(`…`)`, through any chained
+# modifier (`it.only`, `test.skip`, `it.each`). The class id has to appear
+# inside the title, so a title that says more than the id still counts.
+TS_TITLE = re.compile(
+    r"\b(?:it|test|describe|suite|bench)\s*(?:\.\s*[A-Za-z_$][\w$]*\s*)*"
+    r"\(\s*(['\"`])(.*?)\1", re.S)
+# A declaration carrying the class id as its own name.
+TS_DECL = re.compile(r"\b(?:function|const|let|var|class)\s+([A-Za-z_$][\w$]*)")
+# fast-check in the file: the package imported, or a call on its conventional
+# binding. Either one means the matched test can run over a generator.
+TS_FASTCHECK = re.compile(r"\bfc\s*\.\s*[A-Za-z_$]|['\"]fast-check['\"]")
+
+
+def _taxonomy_problem(tax, where):
+    """What is wrong with one taxonomy object, or None."""
+    if not isinstance(tax, dict):
+        return f"{where} must be an object carrying a 'language' and a 'classes' list"
+    # A language this guard has no rule for is NOT a malformed manifest. The
+    # manifest is a repo's declaration of what it answers for, and this script
+    # is what lags behind it; failing the build teaches people to delete
+    # classes, which is the opposite of the taxonomy's purpose. It is reported
+    # as uncovered instead, the way a tracked Agda file already is — loud every
+    # run, never counted as covered. Only the SHAPE is a problem here.
+    if not isinstance(tax.get("language"), str) or not tax["language"]:
+        return f"{where} needs a 'language' string"
+    classes = tax.get("classes")
+    if not isinstance(classes, list) or not all(
+            isinstance(c, dict) and isinstance(c.get("id"), str) and c["id"] for c in classes):
+        return f"{where} needs a 'classes' list of objects with an 'id'"
+    if not isinstance(tax.get("waived", {}), dict):
+        return f"{where} 'waived' must be an object of id: reason"
+    return None
+
+
 def load_attacks(root):
+    """(doc, problem), the doc normalised to the multi-taxonomy shape.
+
+    Two shapes are read. The 1.38.0 form carries `language`, `classes` and
+    `waived` at the top level and is one taxonomy, so a manifest already
+    copied into a repo keeps its exact behaviour. The current form carries a
+    `taxonomies` list, one entry per language. Anything else comes back as a
+    named problem, because a manifest this script cannot read is a gate that
+    passes every class in it.
+    """
     p = os.path.join(root, ATTACKS)
     if not os.path.exists(p):
         return None, None
@@ -620,14 +722,101 @@ def load_attacks(root):
             doc = json.load(fh)
     except (OSError, json.JSONDecodeError) as e:
         return None, f"{ATTACKS} is not readable JSON ({e})"
-    classes = doc.get("classes") if isinstance(doc, dict) else None
-    if not isinstance(classes, list) or not all(
-            isinstance(c, dict) and isinstance(c.get("id"), str) and c["id"] for c in classes):
-        return None, f"{ATTACKS} needs a 'classes' list of objects with an 'id'"
-    waived = doc.get("waived", {})
-    if not isinstance(waived, dict):
-        return None, f"{ATTACKS} 'waived' must be an object of id: reason"
-    return doc, None
+    if not isinstance(doc, dict):
+        return None, f"{ATTACKS} must be a JSON object"
+    raw = doc.get("taxonomies")
+    if raw is None:
+        if "classes" not in doc:
+            return None, (f"{ATTACKS} needs a 'taxonomies' list, or the single-taxonomy "
+                          f"'classes' list at the top level")
+        # The shape that shipped in 1.38.0 named no language beside 'aiken'.
+        legacy = dict(doc)
+        legacy.setdefault("language", "aiken")
+        raw = [legacy]
+    elif not isinstance(raw, list) or not raw:
+        return None, f"{ATTACKS} 'taxonomies' must be a non-empty list"
+    out, seen = [], set()
+    for i, tax in enumerate(raw):
+        problem = _taxonomy_problem(tax, f"{ATTACKS} taxonomy {i + 1}")
+        if problem:
+            return None, problem
+        if tax["language"] in seen:
+            return None, f"{ATTACKS} names the {tax['language']} taxonomy twice"
+        seen.add(tax["language"])
+        out.append({"language": tax["language"], "classes": tax["classes"],
+                    "waived": tax.get("waived", {})})
+    return {"version": doc.get("version", 1), "taxonomies": out}, None
+
+
+def typescript_test_files(tracked):
+    """The tracked files the off-chain side runs as tests."""
+    return [rel for rel in tracked
+            if rel.endswith(TS_TEST_SUFFIX)
+            or (rel.endswith(TS_SOURCE_SUFFIX) and TS_TEST_DIR.search(rel))]
+
+
+def typescript_specified(root, files, ids):
+    """{class id: [(file, the file uses fast-check)]} over the ids named.
+
+    A class id is named by a test title that contains it or by a declaration
+    of exactly that name. Comments are blanked first, so an id sitting in a
+    `//` line or a `/* */` block is not evidence that anything runs, which is
+    the rule the Aiken side already applies to a commented-out test.
+    """
+    hits = {}
+    for rel in files:
+        try:
+            with open(os.path.join(root, rel), encoding="utf-8", errors="replace") as fh:
+                text = fh.read()
+        except OSError:
+            continue
+        text = strip_line_comments(strip_block(text, "/*", "*/", nested=False), "//")
+        fuzzed = bool(TS_FASTCHECK.search(text))
+        names = {m.group(1) for m in TS_DECL.finditer(text)}
+        # Titles are joined on a newline the ids cannot contain, so no id is
+        # assembled out of the tail of one title and the head of the next.
+        titles = "\n".join(m.group(2) for m in TS_TITLE.finditer(text))
+        for cid in ids:
+            if cid in names or cid in titles:
+                hits.setdefault(cid, []).append((rel, fuzzed))
+    return hits
+
+
+def taxonomy_context(root, now, tracked=None):
+    """Per language: whether the taxonomy gates anything in this repo, and
+    what it reads to decide a class is specified.
+
+    Dormancy is per language. A repo carrying only a validator has nothing
+    for the builder classes to hold of, and a repo carrying only a builder
+    has nothing for the eUTxO classes to hold of; reddening every class in a
+    language the repo does not carry produces a gate people delete instead of
+    satisfy. A repo carrying both is gated by both.
+    """
+    if tracked is None:
+        tracked = tracked_files(root)
+    aiken = {}
+    for o in now.values():
+        if o["tool"] == "aiken":
+            aiken.setdefault(o["name"], []).append(o)
+    ts_files = typescript_test_files(tracked)
+    return {
+        "aiken": {"dormant": not aiken and not any(r.endswith(".ak") for r in tracked),
+                  "tests": aiken},
+        "typescript": {"dormant": not ts_files, "files": ts_files},
+    }
+
+
+def specified_in(root, tax, ctx):
+    """{class id: the evidence that names it} for one taxonomy.
+
+    One function so `--scan` and `--check` cannot disagree about what counts
+    as specified. A missing id is a class nothing names.
+    """
+    ids = [c["id"] for c in tax["classes"]]
+    if tax["language"] == "aiken":
+        tests = ctx["aiken"]["tests"]
+        return {cid: tests[cid] for cid in ids if cid in tests}
+    return typescript_specified(root, ctx["typescript"]["files"], ids)
 
 
 def attack_findings(root, now):
@@ -637,37 +826,85 @@ def attack_findings(root, now):
     if doc is None:
         return [], []
     findings, notes = [], []
-    by_name = {}
-    for o in now.values():
-        if o["tool"] == "aiken":
-            by_name.setdefault(o["name"], []).append(o)
-    if not any(o["tool"] == "aiken" for o in now.values()) and not any(
-            rel.endswith(".ak") for rel in tracked_files(root)):
-        notes.append(f"{ATTACKS} is present but no Aiken file is tracked — the taxonomy "
-                     f"gates nothing here")
+    ctx = taxonomy_context(root, now)
+    taxonomies = []
+    for tax in doc["taxonomies"]:
+        if tax["language"] in TAXONOMY_LANGUAGES:
+            taxonomies.append(tax)
+        else:
+            # Unchecked, and said so every run. Silence here would let a
+            # reader take a green gate for coverage of classes nothing read.
+            notes.append(uncovered_note(tax))
+    if not taxonomies:
         return findings, notes
-    waived = doc.get("waived", {})
-    for cls in doc["classes"]:
-        cid = cls["id"]
-        if cid in waived:
-            reason = waived[cid] if isinstance(waived[cid], str) else ""
-            if len(reason.strip()) < MIN_REASON:
-                findings.append((f"attack:{cid}", f"WAIVED WITHOUT A REASON — a waiver needs "
-                                                  f"at least {MIN_REASON} characters saying why "
-                                                  f"this class cannot apply"))
-            else:
-                notes.append(f"attack class {cid} waived: {reason.strip()[:80]}")
+    if all(ctx[t["language"]]["dormant"] for t in taxonomies):
+        why = "; ".join(dict.fromkeys(DORMANT_WHY[t["language"]] for t in taxonomies))
+        notes.append(f"{ATTACKS} is present but gates nothing here: {why}")
+        return findings, notes
+    for tax in taxonomies:
+        lang = tax["language"]
+        if ctx[lang]["dormant"]:
+            notes.append(f"{ATTACKS}: the {lang} taxonomy gates nothing here "
+                         f"({DORMANT_WHY[lang]})")
             continue
-        tests = by_name.get(cid)
-        if not tests:
-            prop = cls.get("property") or "(no property text in the manifest)"
-            findings.append((f"attack:{cid}", f"UNSPECIFIED — no Aiken test named `{cid}`. "
-                                              f"The property to state: {prop}"))
-            continue
-        if not any(" via " in t["statement"] for t in tests):
-            notes.append(f"attack class {cid} is a unit test, not a property over aiken/fuzz "
-                         f"(no `via` generator in its signature)")
+        waived, evidence = tax["waived"], specified_in(root, tax, ctx)
+        for cls in tax["classes"]:
+            cid = cls["id"]
+            oid = f"attack:{lang}:{cid}"
+            # A waiver belongs to the taxonomy it is written in. The same id
+            # excused on the on-chain side says nothing about the off-chain
+            # one: they are different properties over different code.
+            if cid in waived:
+                reason = waived[cid] if isinstance(waived[cid], str) else ""
+                if len(reason.strip()) < MIN_REASON:
+                    findings.append((oid, f"WAIVED WITHOUT A REASON — a waiver needs "
+                                          f"at least {MIN_REASON} characters saying why "
+                                          f"this class cannot apply"))
+                else:
+                    notes.append(f"attack class {lang}:{cid} waived: {reason.strip()[:80]}")
+                continue
+            where = evidence.get(cid)
+            if not where:
+                prop = cls.get("property") or "(no property text in the manifest)"
+                findings.append((oid, f"UNSPECIFIED — {NAMED_BY[lang]} `{cid}`. "
+                                      f"The property to state: {prop}"))
+                continue
+            if lang == "aiken":
+                if not any(" via " in t["statement"] for t in where):
+                    notes.append(f"attack class {lang}:{cid} is a unit test, not a property "
+                                 f"over aiken/fuzz (no `via` generator in its signature)")
+            elif not any(fuzzed for _, fuzzed in where):
+                notes.append(f"attack class {lang}:{cid} is specified by an example in "
+                             f"{where[0][0]}; that file imports no fast-check and calls no "
+                             f"`fc.`, so it covers the cases the file lists. State it over "
+                             f"an fc generator to cover the range.")
     return findings, notes
+
+
+def print_taxonomy(root, obligations, doc, problem):
+    """The taxonomy half of `--scan`: every class, its language and its state."""
+    if problem:
+        print(f"  attack taxonomy: UNREADABLE — {problem}")
+        return
+    if not doc:
+        return
+    ctx = taxonomy_context(root, obligations)
+    for tax in doc["taxonomies"]:
+        lang = tax["language"]
+        if lang not in TAXONOMY_LANGUAGES:
+            print(f"  attack taxonomy {lang}: {uncovered_note(tax)}")
+            for cls in tax["classes"]:
+                print(f"  attack class {lang}:{cls['id']}: UNCHECKED")
+            continue
+        if ctx[lang]["dormant"]:
+            print(f"  attack taxonomy {lang}: dormant ({DORMANT_WHY[lang]})")
+            continue
+        evidence = specified_in(root, tax, ctx)
+        for cls in tax["classes"]:
+            state = ("specified" if cls["id"] in evidence
+                     else "waived" if cls["id"] in tax["waived"]
+                     else "UNSPECIFIED")
+            print(f"  attack class {lang}:{cls['id']}: {state}")
 
 
 # ------------------------------------------------------------------ axioms
@@ -961,7 +1198,11 @@ def main():
                 else:
                     print(f"  {oid}: {status.upper()} — {detail}")
             return 0
-        if not obligations and not uncovered:
+        # A repo with no obligations still has a taxonomy to report: the
+        # off-chain classes are gated by test files this scanner does not
+        # read as obligations.
+        doc, problem = load_attacks(root)
+        if not obligations and not uncovered and doc is None and problem is None:
             print("spec-guard: no obligations in a covered language — dormant")
             return 0
         print(f"spec-guard: {len(obligations)} obligation(s)")
@@ -970,16 +1211,7 @@ def main():
             print(f"      {o['statement'][:110]}")
         for tool in sorted(uncovered):
             print(f"  NOT COVERED: {tool} obligations are not parsed yet")
-        doc, problem = load_attacks(root)
-        if problem:
-            print(f"  attack taxonomy: UNREADABLE — {problem}")
-        elif doc:
-            names = {o["name"] for o in obligations.values() if o["tool"] == "aiken"}
-            for cls in doc["classes"]:
-                state = ("specified" if cls["id"] in names
-                         else "waived" if cls["id"] in doc.get("waived", {})
-                         else "UNSPECIFIED")
-                print(f"  attack class {cls['id']}: {state}")
+        print_taxonomy(root, obligations, doc, problem)
         return 0
 
     if a.baseline:

@@ -284,6 +284,42 @@ ITF_PATH = re.compile(r"(?P<path>[^\s,\"'<>]+\.itf\.json)")
 AP_EXITCODE = re.compile(r"EXITCODE:\s*(?:ERROR\s*\()?(?P<n>\d+)", re.I)
 AP_VIOLATION = re.compile(r"invariant[^\n]*violated|Check the (?:trace|counterexample)", re.I)
 
+# ---- fast-check (off-chain property tests, through the vitest reporter) -----
+# Jest and a bare `fc.assert` throw print the same error body in a different
+# frame; only the vitest reporter's ` FAIL file > describe > it` header is
+# parsed, and anything else is named rather than guessed at.
+TS_COMMENT = re.compile(r"//[^\n]*|/\*.*?\*/", re.S)
+TS_STRING = re.compile(r'"(?P<s>(?:[^"\\\n]|\\.)*)"'
+                       r"|'(?P<t>(?:[^'\\\n]|\\.)*)'"
+                       r"|`(?P<u>(?:[^`\\]|\\.)*)`", re.S)
+TS_LEAF = re.compile(
+    r'("(?:[^"\\]|\\.)*")'
+    r"|('(?:[^'\\]|\\.)*')"
+    r"|(-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?n?)"
+    r"|\b(true|false|null|undefined|NaN|Infinity)\b"
+)
+TS_VACUOUS = re.compile(
+    r"^(?:expect\s*\(\s*(?P<x>true|1)\s*\)\s*\.\s*to(?:Be|Equal|BeTruthy)\s*\([^)]*\)\s*;?\s*)+$")
+TS_CALL = re.compile(r"[A-Za-z_$][\w$]*\s*\(")
+# `.skip`/`.todo` never run; `.fails`/`.failing` invert the oracle, passing
+# because the code is still broken.
+TS_TEST_HEAD = re.compile(
+    r"\b(?P<x>x)?(?P<fn>it|test)(?P<mod>(?:\.\w+)*)\s*\(\s*(?P<q>[\"'`])")
+TS_NAMED = re.compile(
+    r"(?:^|\n)[ \t]*(?:export[ \t]+)?(?:async[ \t]+)?"
+    r"(?:function[ \t]+(?P<f>{name})\b|(?:const|let|var)[ \t]+(?P<c>{name})\b[^\n=]*=)")
+FC_BLOCK = re.compile(r"^[ \t]*FAIL[ \t]+(?P<sel>\S+.*?)[ \t]*$", re.M)
+FC_HEADER = re.compile(r"Failed Tests[ \t]+(?P<n>\d+)")
+FC_PROPERTY = re.compile(r"Property failed after (?P<n>\d+) test")
+FC_REPLAY = re.compile(r"\{\s*seed:\s*(?P<seed>-?\d+)\s*,\s*path:\s*\"(?P<path>[^\"]*)\"")
+FC_CEX = re.compile(r"^[ \t]*Counterexample:[ \t]*(?P<value>.+?)[ \t]*$", re.M)
+FC_SHRUNK = re.compile(r"Shrunk (?P<n>\d+) time")
+FC_CAUSE = re.compile(r"^[ \t]*Caused by:[ \t]*(?P<msg>.+?)[ \t]*$", re.M)
+# The run never reached a test: nothing to record, and not parser drift.
+FC_NO_RUN = re.compile(
+    r"No test files found|Failed to load|Transform failed|SyntaxError|"
+    r"Cannot find (?:module|package)|ERR_MODULE_NOT_FOUND", re.I)
+
 
 def path_for(root):
     return os.path.join(root, CEX)
@@ -344,9 +380,24 @@ def strip_tla(text):
     return _digest_strings(TLA_COMMENT.sub(" ", text), TLA_STRING, ("s",))
 
 
+def strip_ts(text):
+    """TypeScript comments removed; string literals digested.
+
+    Digested rather than blanked so `pc = "L1"` stays pinnable while nothing
+    can hide inside a string, which is the rule kani and apalache already
+    use. Single, double and template quotes all carry data in TypeScript.
+    """
+    return _digest_strings(TS_COMMENT.sub(" ", text), TS_STRING, ("s", "t", "u"))
+
+
 def needle_for(nd, tool):
     """A recorded leaf in the form the stripped body would carry it."""
-    if tool in ("kani", "apalache") and len(nd) >= 2 and nd[0] == nd[-1] == '"':
+    if tool in ("kani", "apalache", "fastcheck") and len(nd) >= 2 and nd[0] == nd[-1] == '"':
+        return '"' + sha(nd[1:-1])[:12] + '"'
+    # fast-check prints strings in double quotes; a pin may legitimately write
+    # the same string in single quotes or a template literal, and the digest
+    # of the contents is what both reduce to.
+    if tool == "fastcheck" and len(nd) >= 2 and nd[0] == nd[-1] == "'":
         return '"' + sha(nd[1:-1])[:12] + '"'
     return nd
 
@@ -372,6 +423,13 @@ def leaves(value, tool="aiken"):
         # No constructors in a TLA+ value: field names and variable names are
         # not literals, and everything else is.
         for m in TLA_LEAF.finditer(str(value or "")):
+            vals.append(next(g for g in m.groups() if g))
+        return vals, ctors
+    if tool == "fastcheck":
+        # fast-check prints a JavaScript literal array. Record-shaped
+        # counterexamples carry their keys, which are identifiers rather than
+        # data, so only the literals are required of a pin.
+        for m in TS_LEAF.finditer(str(value or "")):
             vals.append(next(g for g in m.groups() if g))
         return vals, ctors
     for m in LEAF.finditer(str(value or "")):
@@ -561,6 +619,61 @@ def tla_test_body(text, name):
     return None, None
 
 
+def ts_test_body(text, name):
+    """(body, inverted) for a TypeScript test carrying `name`, else (None, None).
+
+    A test is found by its TITLE containing the name, which is how the pin
+    rule reads in a language whose tests are named by a string rather than an
+    identifier; a bare `function`/`const` of that name is accepted too.
+    Comments are stripped first, but strings are NOT digested until the body
+    is found, or the title this looks for would be a hash.
+    """
+    src = TS_COMMENT.sub(" ", text)
+    for m in TS_TEST_HEAD.finditer(src):
+        q = m.group("q")
+        end = src.find(q, m.end())
+        if end < 0:
+            continue
+        title = src[m.end():end]
+        if name not in title:
+            continue
+        mod = (m.group("mod") or "").lower()
+        inverted = False
+        if m.group("x") or ".skip" in mod or ".todo" in mod:
+            inverted = ("declared `x`/`.skip`/`.todo`, so the runner never "
+                        "executes it and it guards nothing")
+        elif ".fails" in mod or ".failing" in mod:
+            inverted = ("declared `.fails`, which inverts the oracle: it passes "
+                        "because the code is still broken and goes red the day "
+                        "someone fixes it")
+        # The callback's block, told apart from an options object by what
+        # precedes it: `=> {` or `) {` opens a body, `, {` opens options.
+        i = end + 1
+        while i < len(src):
+            if src[i] == "{":
+                j = i - 1
+                while j >= 0 and src[j] in " \t\n\r":
+                    j -= 1
+                if j >= 0 and (src[j] == ">" or src[j] == ")"):
+                    break
+            i += 1
+        else:
+            return None, None
+        body = _brace_body(src, i)
+        if body is None:
+            return None, None
+        return norm(_digest_strings(body, TS_STRING, ("s", "t", "u"))), inverted
+    nm = re.compile(TS_NAMED.pattern.replace("{name}", re.escape(name)))
+    m = nm.search(src)
+    if m:
+        i = src.find("{", m.end())
+        if i >= 0:
+            body = _brace_body(src, i)
+            if body is not None:
+                return norm(_digest_strings(body, TS_STRING, ("s", "t", "u"))), False
+    return None, None
+
+
 def hollow(body, tool="aiken"):
     """A body that runs but asserts nothing. Returns a reason or ''."""
     if not body:
@@ -579,6 +692,14 @@ def hollow(body, tool="aiken"):
     if tool == "apalache":
         if TLA_VACUOUS.match(body):
             return f"the body is `{body}` — it constrains nothing"
+        return ""
+    if tool == "fastcheck":
+        if TS_VACUOUS.match(body):
+            return f"the body is `{body}` — it cannot fail"
+        if not re.search(r"\bexpect\b|\bassert\w*\b|\bfc\s*\.", body) \
+                and not TS_CALL.search(body):
+            return ("the body calls nothing and asserts nothing — the values "
+                    "are bound and then ignored")
         return ""
     if VACUOUS.match(body):
         return f"the body is `{body}` — it cannot fail"
@@ -1203,6 +1324,98 @@ def parse_apalache(root, output, exit_code, source=None):
 # prover's language into (body, oracle_inverted); `roots` bounds where a pin
 # may live (None: anywhere tracked, judged by `ext`); `rerun` is the command a
 # human types to reproduce; `draft` is the skeleton --pin writes to scratch.
+def parse_fastcheck(root, output, exit_code, source=None):
+    """fast-check failures out of a vitest run.
+
+    A property failure carries the shrunk counterexample plus the `seed` and
+    `path` that replay it, which is the same triple the Aiken parser reads.
+    A plain assertion failure in the same run carries none of that and is
+    deliberately NOT recorded: it is a failing test, not a counterexample,
+    and minting one would put a value in the ledger that no generator found.
+    """
+    text = output.strip()
+    if exit_code == 0:
+        return ("nothing", None)
+    if not text:
+        return ("failed", f"the test run exited {exit_code} and wrote nothing")
+    head = FC_HEADER.search(text)
+    region = text[head.end():] if head else text
+    blocks = list(FC_BLOCK.finditer(region))
+    if not blocks:
+        if FC_NO_RUN.search(text):
+            print("cex: the test run failed before any test reported "
+                  "(load, transform or resolution) — nothing to record")
+            return ("nothing", None)
+        if head and head.group("n") == "0":
+            return ("nothing", None)
+        return ("failed", "no ` FAIL <file> > <test>` block and no load error — "
+                          "this is not vitest output as this parser knows it")
+    if head and len(blocks) != int(head.group("n")):
+        return ("failed", f"the summary counts {head.group('n')} failed test(s) but "
+                          f"{len(blocks)} block(s) could be read — the reporter "
+                          f"format changed")
+
+    rows, properties = [], 0
+    for n, m in enumerate(blocks):
+        seg = region[m.end():blocks[n + 1].start() if n + 1 < len(blocks) else len(region)]
+        prop = FC_PROPERTY.search(seg)
+        if not prop:
+            # A plain failing test. Said once, never recorded.
+            continue
+        properties += 1
+        sel = norm(m.group("sel"))
+        parts = [p.strip() for p in sel.split(">")]
+        rel = parts[0].replace(os.sep, "/")
+        title = parts[-1] if len(parts) > 1 else sel
+        cex = FC_CEX.search(seg)
+        replay = FC_REPLAY.search(seg)
+        cause = FC_CAUSE.search(seg)
+        # NOT normalised. fast-check generates arbitrary strings, and a
+        # counterexample like `[-10,"         "]` is nine spaces: collapsing
+        # whitespace inside a string literal would record a value the
+        # generator never produced, and pin a test against the wrong one.
+        # The line is already one line, so there is nothing to fold.
+        payload = cex.group("value").strip() if cex else ""
+        shrunk = FC_SHRUNK.search(seg)
+        key = f"fastcheck|{rel}|{sel}|{payload}"
+        rows.append({
+            "cexId": "cex_" + sha(key)[:12],
+            "dedupeKey": key,
+            "tool": "fastcheck",
+            "toolVersion": tool_version("npx", "--version"),
+            "module": rel,
+            "title": title,
+            "selector": sel,
+            "kind": "property",
+            "input": payload or None,
+            "inputForm": "js-literal" if payload else None,
+            "assertion": (cause.group("msg") if cause else
+                          f"property failed after {prop.group('n')} test(s)"),
+            "containment": payload,
+            "signature": "counterexample" if payload else "no-counterexample-found",
+            "iterations": int(prop.group("n")),
+            "seed": int(replay.group("seed")) if replay else None,
+            "replayPath": replay.group("path") if replay else None,
+            "shrinks": int(shrunk.group("n")) if shrunk else None,
+            "status": "open",
+            "firstSeen": now(),
+            "headSha": head_sha(root),
+        })
+    if not rows:
+        print(f"cex: {len(blocks)} failing test(s), none of them a property "
+              f"failure — nothing to record")
+        return ("nothing", None)
+
+    def raw_for(row):
+        for n, m in enumerate(blocks):
+            if norm(m.group("sel")) == row["selector"]:
+                seg = region[m.start():blocks[n + 1].start()
+                             if n + 1 < len(blocks) else len(region)]
+                return {"block": seg[:20000]}
+        return {}
+    return ("rows", rows, raw_for)
+
+
 TOOLS = {
     "aiken": {
         "parse": parse_aiken,
@@ -1263,6 +1476,23 @@ TOOLS = {
         "call": lambda row: _tla_conj(row.get("containment")),
         "comment": "\\*",
         "tail": "",
+    },
+    "fastcheck": {
+        "parse": parse_fastcheck,
+        "body": ts_test_body,
+        "roots": None,
+        "ext": (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs"),
+        "inverted": ("declared `.skip`, `.todo` or `.fails` — the first two never "
+                     "run and the last inverts the oracle"),
+        "rerun": lambda row: (
+            f"npx vitest run {row.get('module')} -t {row.get('title')!r}   "
+            f"(replay the exact case with fc.assert(prop, {{ seed: {row.get('seed')}, "
+            f"path: {row.get('replayPath')!r}, endOnFailure: true }}))"),
+        "head": lambda cexid: f'it("{cexid} regression", () => {{',
+        "hint": "// call the code under test with the recorded values and assert the fix",
+        "call": lambda row: f"expect(<fn>{row.get('input') or '()'}).toBe(<expected>);",
+        "comment": "//",
+        "tail": "});",
     },
 }
 
@@ -1373,7 +1603,10 @@ def pin(root, cexid, path, testname):
         # the artifact that satisfies its own containment check.
         d = os.path.join(root, SCRATCH)
         os.makedirs(d, exist_ok=True)
-        draft = os.path.join(d, f"{cexid}{spec['ext']}.draft")
+        # A tool may read several extensions; the first is the one a draft
+        # is written as.
+        exts = spec["ext"] if isinstance(spec["ext"], tuple) else (spec["ext"],)
+        draft = os.path.join(d, f"{cexid}{exts[0]}.draft")
         need = required_leaves(row.get("containment"), tool)
         # The draft speaks the prover's language down to its comment marker
         # and its closing line (none, for a TLA+ operator).
@@ -1424,8 +1657,10 @@ def pin(root, cexid, path, testname):
         print(f"cex: {rel} is not under {', '.join(roots)} — a test "
               f"{tool} never compiles cannot guard anything", file=sys.stderr)
         return 1
-    if not rel.endswith(spec["ext"]):
-        print(f"cex: {rel} is not a {spec['ext']} file — {tool} never reads it, "
+    exts = spec["ext"] if isinstance(spec["ext"], tuple) else (spec["ext"],)
+    if not rel.endswith(exts):
+        print(f"cex: {rel} is not a {' or '.join(exts)} file — {tool} never reads "
+              f"it, "
               f"so it cannot guard anything", file=sys.stderr)
         return 1
     if rel not in tracked(root):
@@ -1505,16 +1740,22 @@ def verify_pin(root, row, rel, testname):
 
 
 def check(root):
+    # The sweep's state is reported whether or not anything is recorded: a
+    # repo whose gate pins seed 1 and has never swept past it is exploring
+    # the same cases forever, and silence would read as coverage.
+    fuzz_lines, fuzz_fatal = fuzz_status(root)
+    for line in fuzz_lines:
+        print(f"cex: {line}", file=sys.stderr if fuzz_fatal else sys.stdout)
     p = path_for(root)
     if not os.path.exists(p):
         print("cex: no counterexamples recorded — dormant")
-        return 0
+        return 1 if fuzz_fatal else 0
     rows = current(root)
     pinned = [r for r in rows.values() if r.get("status") == "pinned"]
     openrows = [r for r in rows.values() if r.get("status") == "open"]
     if not pinned:
         print(f"cex: {len(openrows)} open counterexample(s), none pinned yet")
-        return 0
+        return 1 if fuzz_fatal else 0
     bad = []
     for row in pinned:
         pinrec = row.get("pin") or {}
@@ -1525,7 +1766,7 @@ def check(root):
     if not bad:
         print(f"cex: green — {len(pinned)} pinned counterexample(s) still in "
               f"the tree, {len(openrows)} open")
-        return 0
+        return 1 if fuzz_fatal else 0
     print("\ncex: RED — a pinned counterexample lost its regression\n",
           file=sys.stderr)
     for row, why in bad:
@@ -1544,6 +1785,123 @@ def check(root):
         "  a Decisions row for the obligation too.",
         file=sys.stderr)
     return 1
+
+
+# ------------------------------------------------------------------ the sweep
+# The gate pins `--seed 1` so a shrink is reproducible and this ledger can
+# dedupe. The cost was never stated: every run of every property test then
+# explores the SAME cases, at whatever iteration count the tool defaults to.
+# Reproducible and shallow. The fix is the split mutation-guard already
+# makes — the cheap half stays in `--full`, the expensive half runs
+# off-session on a Routine and carries the exploration.
+FUZZ = ".fluxpoint-fuzz.json"
+SWEEP_DEFAULT_SEEDS = 25
+SWEEP_DEFAULT_MAX_SUCCESS = 1000
+SWEEP_TOOLS = {
+    # `aiken check --help` on v1.1.9: `--seed <UINT>` seeds the generator and
+    # `--max-success <UINT>` sets how many successful runs make a property
+    # valid. Both are read here rather than assumed.
+    "aiken": "aiken check --seed {seed} --max-success {max_success}",
+}
+
+
+def load_fuzz(root):
+    p = os.path.join(root, FUZZ)
+    if not os.path.exists(p):
+        return None, []
+    try:
+        with open(p, encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except (OSError, json.JSONDecodeError) as e:
+        return None, [f"{FUZZ} is not readable JSON ({e}) — no sweep is configured"]
+    if not isinstance(doc, dict):
+        return None, [f"{FUZZ} must be an object"]
+    tool = doc.get("tool")
+    if tool not in SWEEP_TOOLS and not doc.get("command"):
+        return None, [f"{FUZZ}: 'tool' must be one of {', '.join(sorted(SWEEP_TOOLS))}, "
+                      f"or give an explicit 'command' with {{seed}} in it"]
+    return doc, []
+
+
+def _commits_since(root, sha_):
+    try:
+        r = subprocess.run(["git", "-C", root, "rev-list", "--count", f"{sha_}..HEAD"],
+                           capture_output=True, text=True, timeout=30)
+        return int(r.stdout.strip()) if r.returncode == 0 else None
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+
+
+def fuzz_status(root):
+    """(lines, fatal). What the wide sweep covered, and whether that is stale."""
+    doc, problems = load_fuzz(root)
+    if doc is None:
+        return problems, bool(problems)
+    last = doc.get("last")
+    if not isinstance(last, dict) or not last.get("when"):
+        return ([f"a wide fuzz sweep is declared in {FUZZ} and has never run — "
+                 f"the gate's seed is pinned, so nothing has explored past it. "
+                 f"Run: cex.py --sweep"], False)
+    stale = _commits_since(root, last.get("headSha") or "")
+    where = (f"seeds {last.get('from')}-{last.get('to')} at max-success "
+             f"{last.get('maxSuccess')}, {last.get('found', 0)} new counterexample(s)")
+    if stale is None:
+        return ([f"last wide sweep: {where}, at a commit this clone no longer has "
+                 f"({last.get('when')})"], bool(doc.get("failWhenStale")))
+    if stale == 0:
+        return ([f"last wide sweep: {where}, on this exact tree"], False)
+    limit = doc.get("maxStaleCommits", 50)
+    line = f"last wide sweep: {where}, {stale} commit(s) ago ({last.get('when')})"
+    if stale > limit:
+        return ([line + f" — past the {limit} this repo allows"],
+                bool(doc.get("failWhenStale")))
+    return [line], False
+
+
+def sweep(root, seeds, max_success):
+    """Run the prover over a rotating seed window and ingest what it finds."""
+    doc, problems = load_fuzz(root)
+    if doc is None:
+        for p in problems:
+            print(f"cex: {p}", file=sys.stderr)
+        if not problems:
+            print(f"cex: no {FUZZ} — declare the tool and the sweep width first, "
+                  f"e.g. {{\"version\": 1, \"tool\": \"aiken\"}}", file=sys.stderr)
+        return 1
+    tool = doc.get("tool", "aiken")
+    template = doc.get("command") or SWEEP_TOOLS[tool]
+    seeds = seeds or int(doc.get("seeds") or SWEEP_DEFAULT_SEEDS)
+    max_success = max_success or int(doc.get("maxSuccess") or SWEEP_DEFAULT_MAX_SUCCESS)
+    # Start where the last sweep stopped: repeating seed 1 forever is the
+    # very shallowness this exists to fix.
+    start = int(((doc.get("last") or {}).get("to") or 1)) + 1
+    before = len(current(root))
+    ran = failed = 0
+    for seed in range(start, start + seeds):
+        cmd = template.format(seed=seed, max_success=max_success)
+        try:
+            r = subprocess.run(cmd, shell=True, cwd=root, capture_output=True,
+                               text=True, timeout=3600)
+        except (OSError, subprocess.SubprocessError) as e:
+            print(f"cex: seed {seed}: could not run {cmd!r}: {e}", file=sys.stderr)
+            return 1
+        ran += 1
+        if r.returncode != 0:
+            failed += 1
+        ingest(root, r.stdout, r.returncode, tool)
+    found = len(current(root)) - before
+    doc["last"] = {"from": start, "to": start + seeds - 1, "seeds": seeds,
+                   "maxSuccess": max_success, "found": found, "failingSeeds": failed,
+                   "headSha": head_sha(root), "when": now()}
+    with open(os.path.join(root, FUZZ), "w", encoding="utf-8", newline="\n") as fh:
+        json.dump(doc, fh, indent=2, sort_keys=True)
+        fh.write("\n")
+    print(f"cex: swept seeds {start}-{start + seeds - 1} at max-success "
+          f"{max_success}: {failed}/{ran} run(s) failed, {found} new "
+          f"counterexample(s)")
+    print(f"cex: commit {FUZZ} and {CEX} — a sweep nobody else can see is one "
+          f"that did not happen")
+    return 0
 
 
 def work_text(root):
@@ -1607,7 +1965,12 @@ def main():
     g.add_argument("--pin", metavar="CEXID")
     g.add_argument("--retire", metavar="CEXID")
     g.add_argument("--check", action="store_true")
+    g.add_argument("--sweep", action="store_true",
+                   help="run the prover over a rotating seed window (off-session)")
     g.add_argument("--list", action="store_true")
+    ap.add_argument("--seeds", type=int, help="how many seeds the sweep covers")
+    ap.add_argument("--max-success", type=int, dest="max_success",
+                    help="successful runs per property during the sweep")
     a = ap.parse_args()
 
     if a.ingest:
@@ -1620,6 +1983,8 @@ def main():
         return retire(a.root, a.retire, a.reason)
     if a.check:
         return check(a.root)
+    if a.sweep:
+        return sweep(a.root, a.seeds, a.max_success)
 
     rows = current(a.root)
     if not rows:

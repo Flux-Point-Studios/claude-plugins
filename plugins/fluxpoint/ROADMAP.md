@@ -323,6 +323,31 @@ tracked `.dfy` declaration carrying the literals in order, refused when it is
 harness captures `dafny verify` the way it captures `aiken check`, with
 `FPL_DAFNY_ARGS` carrying `--extract-counterexample`.
 
+*fast-check landed in slice 24 (issue #80), and with it the seed sweep
+(issue #82).* Off-chain property tests produce the same artifact as a
+prover: a shrunk counterexample with the `seed` and `path` that replay it.
+They now enter the same ledger under the same pin discipline, and the
+scaffolded harness captures the `test` script the way it captures the
+provers. Only the vitest reporter is parsed; a bare `fc.assert` throw and
+Jest's frame are named rather than guessed at. A vitest run is the first
+input whose failures are not all counterexamples, so a plain assertion
+failure in the same run is deliberately not recorded: it carries no
+generated input, and minting one would put a value in the ledger that no
+generator produced.
+
+Capturing it exposed what pinning the gate's seed had cost. `--seed 1`
+makes a shrink reproducible and lets this ledger dedupe, and the price —
+every run exploring the same cases forever, at the tool's default
+iteration count — had never been written down. `cex.py --sweep` is the
+other half of the split `mutation-guard` already makes: it runs the prover
+over a rotating seed window at a raised `--max-success`, starting where the
+last sweep stopped, ingests what it finds through the parser the gate
+already uses, and stamps `{from, to, found, headSha, when}` into
+`.fluxpoint-fuzz.json`. `--check` reports what the last sweep covered and
+how many commits ago, loud by default and fatal only under
+`failWhenStale`. Both flags were read off `aiken check --help` on a real
+v1.1.9 binary rather than assumed.
+
 *Kani and Apalache landed in slice 21.* `cargo kani` output is read per
 harness — the FAILURE checks with their locations, the `Failed Checks`
 summary, and the concrete-playback block's interpreted values in harness
@@ -727,6 +752,17 @@ the attested chain (statement hash → prover exit → mutation score →
 Evidence row) is reconstructible certification evidence rather than a
 vibe.
 
+*Extended off-chain in slice 25 (issue #81).* The taxonomy was written as
+if the validator were the only thing with an attack surface. The builder
+has its own enumerable list, and it is the one an autonomous caller
+reaches: an unvalidated change address, a datum that does not survive
+encode-then-decode, protocol parameters cached past an epoch boundary, a
+replayable signed body, coin selection over a wallet an attacker grew, a
+transaction whose redeemer set and its committing hash disagree,
+collateral with no ceiling. The manifest now carries one taxonomy per
+language and each gates only a repo that tracks its language, so neither
+half shouts at a repo it does not apply to.
+
 *Shipped in slice 21, as a manifest rather than generated Aiken.* A
 scaffolded `.ak` file that does not compile would drop a red file into a
 tree that was merely unspecified, and nothing here can compile Aiken to
@@ -797,6 +833,8 @@ existing harness and each is independently shippable.
 | 21 | Part 4 off the roadmap (v1.38.0): spec-guard parses Lean, Coq, Isabelle, TLA+ theorems plus the invariants a TLC `.cfg` names, and Kani harnesses and contracts; `--axioms` records each headline theorem's assumption set from the prover's own listing and reds on a new one; DoD `— proof: <obligation id>` tails are enforced; the attack taxonomy ships as `templates/attack-taxonomy.json`, copied to `.fluxpoint-attacks.json` by init and red per unspecified class (4d, slice 12); Kani concrete playback and Apalache ITF traces join the counterexample ledger under the same pin discipline (3b); every new parser verified against the real toolchain (Lean 4.15.0, Coq 8.18.0, Dafny 4.9.1, Kani 0.67.0, Apalache 0.47.2) and the fixtures captured from those runs | **shipped** |
 | 22 | Route 1 reaches off-chain (#78): `proof-guard.py` counts TypeScript escape hatches (`ts.any`, `ts.double_cast`, `ts.non_null`, `ts.ts_ignore`, `flags.types_off`), with strings stripped before counting and the `@ts-` directives read from the raw line; `@ts-expect-error` deliberately uncounted; plain JavaScript does not arm the ratchet. Also fixes the latent defect that made every category this plugin ever added a red gate for repos that armed before it | **shipped** |
 | 23 | Blueprint conformance (#79): `blueprint-guard.py` decodes PlutusData and checks it against the CIP-57 schema `plutus.json` declares — `--scan` names every opaque schema, `--conform` checks hex against a purpose, `--check` runs the corpora in `.fluxpoint-blueprint.json` and reds on a refused value, a stale manifest or an unresolvable `$ref`. Stdlib-only CBOR reader verified against `cbor2` on 24 values; fixtures are real blueprints from the aiken compiler's own repository | **shipped** |
+| 24 | Off-chain properties in the ledger (#80) and the seed sweep (#82): `cex.py` parses fast-check failures out of a vitest run — shrunk counterexample, seed and replay path — with TypeScript pins refusing `.skip`/`.todo`/`.fails`, and a plain assertion failure deliberately not minted as a counterexample; `--sweep` runs a rotating seed window at a raised `--max-success` off-session and stamps what it covered, with `--check` reporting staleness | **shipped** |
+| 25 | The builder's own attack taxonomy (#81): `.fluxpoint-attacks.json` carries one taxonomy per language, the 1.38.0 single-object shape still read as one; seven TypeScript classes specified by a test title carrying the class id, with an example noted as weaker than a fast-check property; each taxonomy dormant in a repo that does not track its language, and waivers scoped so an Aiken waiver cannot excuse a builder class | **shipped** |
 
 ## Part 6 — named absences
 

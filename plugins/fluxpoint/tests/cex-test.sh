@@ -1438,6 +1438,393 @@ mkapalache
     bash scripts/harness.sh --full >"$ROOT/harness.log" 2>&1 ); hrc=$?
 check "without FPL_APALACHE_ARGS the checker is not invoked at all" 0 "$(rows)"
 
+# ================= 12. a fifth prover: fast-check, off-chain =============
+# Captured from a real run, 2026-09-11: fast-check 4.x under vitest 5.0.0 on
+# the module below, `npx vitest run`, exit 1. Two property failures and one
+# passing property; the stack frames are trimmed and the crate path edited,
+# nothing else. The plain-assertion and load-error fixtures come from runs of
+# the same project.
+#
+# This is the first tool in the ledger whose failures are NOT all
+# counterexamples: a vitest run mixes property failures with ordinary
+# assertion failures, and only the first kind carries a shrunk input.
+mkfc() {
+  mkrepo
+  mkdir -p "$R/test"
+  printf '{ "name": "app", "type": "module", "scripts": { "test": "vitest run" } }\n' \
+    >"$R/package.json"
+  cat >"$R/test/datum.test.ts" <<'EOF'
+import { describe, it, expect } from "vitest";
+import fc from "fast-check";
+
+export function encode(n: number): string { return n < 1000 ? `n${n}` : "overflow"; }
+export function decode(s: string): number { return Number(s.slice(1)); }
+export function render(n: number, s: string): string { return `${n}${s}`; }
+
+describe("datum", () => {
+  it("attack_datum_round_trip survives encode then decode", () => {
+    fc.assert(fc.property(fc.integer({ min: 0, max: 5000 }), (n) => {
+      expect(decode(encode(n))).toBe(n);
+    }));
+  });
+});
+EOF
+  git -C "$R" add -A; git -C "$R" -c user.email=t@t -c user.name=t commit -qm fc
+}
+fc_fail() {
+  cat <<'EOF'
+ RUN  v5.0.0 /work/app
+
+ ❯ test/datum.test.ts (3 tests | 2 failed) 28ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  test/datum.test.ts > datum > attack_datum_round_trip survives encode then decode
+Error: Property failed after 1 tests
+{ seed: -1590747016, path: "0:1:0:2:0:2:0:1", endOnFailure: true }
+Counterexample: [1000]
+Shrunk 7 time(s)
+
+Hint: Enable verbose mode in order to have the list of all failing values encountered during the run
+ ❯ Module.assert node_modules/fast-check/lib/fast-check.js:2542:7
+ ❯ test/datum.test.ts:9:8
+
+Caused by: AssertionError: expected NaN to be 1000 // Object.is equality
+ ❯ test/datum.test.ts:10:33
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  test/datum.test.ts > datum > two inputs
+Error: Property failed after 1 tests
+{ seed: -1736740566, path: "0:3:0:5:8:11:14:17:20:22:24:25", endOnFailure: true }
+Counterexample: [-10,"         "]
+Shrunk 11 time(s)
+
+Hint: Enable verbose mode in order to have the list of all failing values encountered during the run
+ ❯ Module.assert node_modules/fast-check/lib/fast-check.js:2542:7
+
+Caused by: AssertionError: expected 12 to be less than 12
+ ❯ test/datum.test.ts:16:33
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 1 passed (3)
+EOF
+}
+fc_plain() {
+  cat <<'EOF'
+ RUN  v5.0.0 /work/app
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  t2/plain.test.ts > plain > a normal assertion failure, no property
+AssertionError: expected 4 to be 5 // Object.is equality
+
+- Expected
++ Received
+
+- 5
++ 4
+
+ ❯ t2/plain.test.ts:3:71
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+ Test Files  1 failed (1)
+      Tests  1 failed (1)
+EOF
+}
+fc_green() {
+  cat <<'EOF'
+ RUN  v5.0.0 /work/app
+
+ ✓ test/datum.test.ts (1 test) 5ms
+
+ Test Files  1 passed (1)
+      Tests  1 passed (1)
+EOF
+}
+fcex() { cex --ingest --tool fastcheck "$@"; }
+fcid() { # $1 = substring of the title
+  "$FPL_PY" - "$R/.fluxpoint-cex.jsonl" "$1" <<'PY2'
+import json, sys
+for l in open(sys.argv[1]):
+    r = json.loads(l)
+    if r["tool"] == "fastcheck" and sys.argv[2] in r["title"]: print(r["cexId"]); break
+PY2
+}
+
+mkfc
+fc_green | fcex --exit 0 >/dev/null 2>&1
+check "a green run records nothing" 0 "$(rows)"
+fc_fail | fcex --exit 0 >/dev/null 2>&1
+check "exit 0 records nothing whatever was printed" 0 "$(rows)"
+fc_fail | fcex --exit 1 >/dev/null 2>&1
+check "two property failures record two counterexamples" 2 "$(rows)"
+out="$(cex --list)"
+case "$out" in *"[fastcheck] test/datum.test.ts > datum > attack_datum_round_trip"*)
+  ok "the row names the tool, the file and the full test path" "selector" ;;
+  *) bad "the row names the tool, the file and the full test path" "${out:0:80}" ;; esac
+
+# A plain assertion failure carries no generated input. Recording one would
+# put a value in the ledger that no generator ever produced.
+mkfc
+fc_plain | fcex --exit 1 >/dev/null 2>&1
+check "a plain assertion failure is not a counterexample" 0 "$(rows)"
+check "and files nothing" 0 "$("$FPL_PY" "$INBOX" --root "$R" --count)"
+
+mkfc
+fc_fail | fcex --exit 1 >/dev/null 2>&1
+"$FPL_PY" - "$R/.fluxpoint-cex.jsonl" <<'PY2' && ok "the shrunk input, seed and replay path are all recorded" "verbatim" \
+  || bad "the shrunk input, seed and replay path are all recorded" "wrong payload"
+import json, sys
+rows = {json.loads(l)["title"]: json.loads(l) for l in open(sys.argv[1])}
+a = rows["attack_datum_round_trip survives encode then decode"]
+b = rows["two inputs"]
+assert a["input"] == "[1000]", a["input"]
+assert a["seed"] == -1590747016 and a["replayPath"] == "0:1:0:2:0:2:0:1", a
+assert a["iterations"] == 1 and a["shrinks"] == 7, a
+assert a["kind"] == "property" and a["inputForm"] == "js-literal"
+assert "expected NaN to be 1000" in a["assertion"], a["assertion"]
+# NOT whitespace-collapsed. fast-check generates arbitrary strings, and this
+# counterexample is nine spaces: folding them would record a value the
+# generator never produced and pin a test against the wrong one.
+assert b["input"] == '[-10,"         "]', repr(b["input"])
+assert b["input"].count(" ") == 9, b["input"].count(" ")
+PY2
+fc_fail | fcex --exit 1 >/dev/null 2>&1
+check "re-ingesting the same run appends nothing" 2 "$(rows)"
+
+# ----- what a fast-check pin has to survive
+tspin() { # $1 = the it() modifier (may be empty), $2 = body
+  cat >"$R/test/reg.test.ts" <<EOF
+import { it, expect } from "vitest";
+import { render } from "./datum.test";
+it$1("$FID regression", () => {
+  $2
+});
+EOF
+  commit p >/dev/null
+}
+mkfc; fc_fail | fcex --exit 1 >/dev/null 2>&1; FID="$(fcid 'two inputs')"
+cex --pin "$FID" >/dev/null 2>&1
+[ -f "$R/.claude/fluxpoint/cex/$FID.ts.draft" ] \
+  && ok "the draft carries the prover's own extension" "ts" \
+  || bad "the draft carries the prover's own extension" "missing"
+tspin '' 'expect(render(-10, "         ").length).toBeGreaterThanOrEqual(12);'
+check "a test carrying both values in order pins" 0 \
+  "$(rc_of --pin "$FID" --file test/reg.test.ts --test-name "$FID")"
+check "and --check is green" 0 "$(rc_of --check)"
+
+# The nine-space string is the whole point: one space is a different value.
+tspin '' 'expect(render(-10, " ").length).toBeGreaterThanOrEqual(12);'
+check "the same string retyped shorter is refused" 1 \
+  "$(rc_of --pin "$FID" --file test/reg.test.ts --test-name "$FID")"
+tspin '' 'expect(render(10, "         ").length).toBeGreaterThanOrEqual(12);'
+check "a retyped number is refused" 1 \
+  "$(rc_of --pin "$FID" --file test/reg.test.ts --test-name "$FID")"
+tspin '' 'expect(render("         ", -10).length).toBeGreaterThanOrEqual(12);'
+check "the values out of order are refused" 1 \
+  "$(rc_of --pin "$FID" --file test/reg.test.ts --test-name "$FID")"
+tspin '.skip' 'expect(render(-10, "         ").length).toBeGreaterThanOrEqual(12);'
+check ".skip is refused (the runner never executes it)" 1 \
+  "$(rc_of --pin "$FID" --file test/reg.test.ts --test-name "$FID")"
+tspin '.todo' 'expect(render(-10, "         ").length).toBeGreaterThanOrEqual(12);'
+check ".todo is refused" 1 "$(rc_of --pin "$FID" --file test/reg.test.ts --test-name "$FID")"
+tspin '.fails' 'expect(render(-10, "         ").length).toBeGreaterThanOrEqual(12);'
+check ".fails is refused (it inverts the oracle)" 1 \
+  "$(rc_of --pin "$FID" --file test/reg.test.ts --test-name "$FID")"
+err="$(cex --pin "$FID" --file test/reg.test.ts --test-name "$FID" 2>&1 >/dev/null)"
+case "$err" in *"inverts the oracle"*) ok "and says why" "said" ;;
+  *) bad "and says why" "${err:0:60}" ;; esac
+tspin '' 'expect(true).toBe(true);'
+check "an expect(true) body is refused" 1 \
+  "$(rc_of --pin "$FID" --file test/reg.test.ts --test-name "$FID")"
+tspin '' '// render(-10, "         ")
+  expect(render(1, "x").length).toBe(2);'
+check "the values in a COMMENT are refused" 1 \
+  "$(rc_of --pin "$FID" --file test/reg.test.ts --test-name "$FID")"
+tspin '' 'const s = "render(-10,          )"; expect(s.length).toBe(21);'
+check "the values inside a STRING are refused" 1 \
+  "$(rc_of --pin "$FID" --file test/reg.test.ts --test-name "$FID")"
+printf 'test %s() {\n  pred(-10)\n}\n' "$FID" >"$R/lib/reg.ak"; commit ak >/dev/null
+check "a pin in another prover's language is refused" 1 \
+  "$(rc_of --pin "$FID" --file lib/reg.ak --test-name "$FID")"
+
+# ----- --check: red on real weakening
+mkfc; fc_fail | fcex --exit 1 >/dev/null 2>&1; FID="$(fcid 'two inputs')"
+tspin '' 'expect(render(-10, "         ").length).toBeGreaterThanOrEqual(12);'
+cex --pin "$FID" --file test/reg.test.ts --test-name "$FID" >/dev/null 2>&1
+git -C "$R" rm -q test/reg.test.ts; commit rm >/dev/null
+check "a deleted regression is red" 1 "$(rc_of --check)"
+
+# ----- drift is loud and never red
+mkfc
+check "a summary counting more blocks than it printed exits 0" 0 \
+  "$(fc_fail | sed 's/Failed Tests 2/Failed Tests 3/' | fcex --exit 1 >/dev/null 2>&1; echo $?)"
+check "and files INGEST-FAILED" 1 "$("$FPL_PY" "$INBOX" --root "$R" --count)"
+mkfc
+printf 'Error: Cannot find module "./missing.js"\n' | fcex --exit 1 >/dev/null 2>&1
+check "a run that never reached a test records nothing" 0 "$(rows)"
+check "and files nothing" 0 "$("$FPL_PY" "$INBOX" --root "$R" --count)"
+mkfc
+printf 'some other runner said something else entirely\n' | fcex --exit 1 >/dev/null 2>&1
+check "output this parser does not know is a parser break" 1 \
+  "$("$FPL_PY" "$INBOX" --root "$R" --count)"
+out="$("$FPL_PY" "$INBOX" --root "$R" --list 2>/dev/null || cat "$R/.claude/fluxpoint/inbox.jsonl")"
+case "$out" in *"fastcheck"*) ok "the inbox row names the prover that drifted" "named" ;;
+  *) bad "the inbox row names the prover that drifted" "${out:0:60}" ;; esac
+
+# ----- the scaffolded harness captures the test run
+mkfc
+mkdir -p "$R/scripts" "$R/bin"
+cp "$PLUGIN/templates/harness.sh" "$R/scripts/harness.sh"; chmod +x "$R/scripts/harness.sh"
+fc_fail >"$R/bin/vitest.out"
+cat >"$R/bin/npm" <<'EOF'
+#!/usr/bin/env bash
+[ "$1" = run ] || { echo "npm shim: unexpected $*" >&2; exit 2; }
+case "$2" in
+  test) cat "$(dirname "$0")/vitest.out"; exit 1 ;;
+  *) exit 0 ;;
+esac
+EOF
+chmod +x "$R/bin/npm"
+git -C "$R" add -A; git -C "$R" -c user.email=t@t -c user.name=t commit -qm shim
+( cd "$R" && env -u CLAUDE_PLUGIN_ROOT PATH="$R/bin:$PATH" FPL_PLUGIN_ROOT="$PLUGIN" \
+    bash scripts/harness.sh --full >"$ROOT/harness.log" 2>&1 ); hrc=$?
+check "the harness fails with the runner's exit" 1 "$hrc"
+check "and both counterexamples were recorded on the way" 2 "$(rows)"
+[ "$(rows)" = 2 ] || { echo "      harness output:"; tail -15 "$ROOT/harness.log" | sed 's/^/      /'; }
+# A repo with no `test` script must not be aborted by the absence: the
+# helper returns 0 rather than letting `set -e` take the run down.
+mkfc
+mkdir -p "$R/scripts" "$R/bin"
+cp "$PLUGIN/templates/harness.sh" "$R/scripts/harness.sh"; chmod +x "$R/scripts/harness.sh"
+printf '{ "name": "app", "type": "module" }\n' >"$R/package.json"
+printf '#!/usr/bin/env bash\necho "npm shim: should not be called with $*" >&2\nexit 9\n' >"$R/bin/npm"
+chmod +x "$R/bin/npm"
+git -C "$R" add -A; git -C "$R" -c user.email=t@t -c user.name=t commit -qm noscript
+( cd "$R" && env -u CLAUDE_PLUGIN_ROOT PATH="$R/bin:$PATH" FPL_PLUGIN_ROOT="$PLUGIN" \
+    bash scripts/harness.sh --full >"$ROOT/harness.log" 2>&1 ); hrc=$?
+check "a package.json with no test script is green, not aborted" 0 "$hrc"
+
+# ================= 13. the wide sweep: the gate's seed is pinned ==========
+# `--full` runs `aiken check --seed 1` so a shrink is reproducible and this
+# ledger can dedupe. The cost was never stated: every run then explores the
+# SAME cases. The fix is the split mutation-guard already makes — the cheap
+# half stays in the gate, the expensive half runs off-session and carries
+# the exploration.
+#
+# `--seed <UINT>` and `--max-success <UINT>` are read off `aiken check
+# --help` from a real v1.1.9 binary, not assumed.
+mkfuzz() {  # $1 = seeds that fail, space separated
+  mkrepo
+  mkdir -p "$R/bin"
+  printf '%s\n' "$1" >"$R/bin/failing-seeds"
+  # The shim is `aiken check --seed S --max-success M`. It fails for the
+  # seeds named above, with a counterexample whose value is the seed, so a
+  # sweep that really does rotate finds something new each time.
+  cat >"$R/bin/aiken" <<'EOF'
+#!/usr/bin/env bash
+seed=""; maxs=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --seed) seed="$2"; shift 2 ;;
+    --max-success) maxs="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[ -n "$maxs" ] || { echo "shim: no --max-success" >&2; exit 2; }
+echo "$seed $maxs" >>"$(dirname "$0")/calls"
+if grep -qw "$seed" "$(dirname "$0")/failing-seeds" 2>/dev/null; then
+  cat <<JSON
+{ "seed": $seed,
+  "summary": { "total": 1, "passed": 0, "failed": 1, "kind": { "unit": 0, "property": 1 } },
+  "modules": [ { "name": "x/vault",
+    "summary": { "total": 1, "passed": 0, "failed": 1, "kind": { "unit": 0, "property": 1 } },
+    "tests": [ { "title": "prop_holds", "status": "fail",
+                 "on_failure": "fail_immediately", "iterations": 7,
+                 "counterexample": "Deep { depth: $seed }" } ] } ] }
+JSON
+  exit 1
+fi
+printf '{ "seed": %s, "summary": { "total": 1, "passed": 1, "failed": 0, "kind": { "unit": 0, "property": 1 } }, "modules": [] }\n' "$seed"
+EOF
+  chmod +x "$R/bin/aiken"
+  printf '{ "version": 1, "tool": "aiken" }\n' >"$R/.fluxpoint-fuzz.json"
+  commit fuzz >/dev/null
+}
+sw() { ( cd "$R" && PATH="$R/bin:$PATH" "$FPL_PY" "$CEX" --root "$R" --sweep "$@" ); }
+rc_sw() { sw "$@" >/dev/null 2>&1; echo $?; }
+stamp() { "$FPL_PY" -c "
+import json,sys
+print(json.load(open('$R/.fluxpoint-fuzz.json')).get('last',{}).get(sys.argv[1],''))" "$1"; }
+
+mkrepo
+check "no fuzz config: --check says nothing about a sweep" 0 "$(rc_of --check)"
+case "$(cex --check 2>&1)" in *sweep*) bad "and stays silent" "mentioned a sweep" ;;
+  *) ok "and stays silent" "silent" ;; esac
+check "--sweep without a config is refused" 1 "$(rc_sw)"
+
+mkfuzz "3 7"
+out="$(cex --check 2>&1)"
+case "$out" in *"never run"*"seed is pinned"*)
+  ok "a declared sweep that never ran is named every run" "named" ;;
+  *) bad "a declared sweep that never ran is named every run" "${out:0:70}" ;; esac
+check "and does not fail the gate on its own" 0 "$(rc_of --check)"
+
+check "a sweep runs and exits 0" 0 "$(rc_sw --seeds 5 --max-success 250)"
+check "  it ran five seeds" 5 "$(wc -l <"$R/bin/calls" | tr -d ' ')"
+check "  starting at 2, since the gate already owns seed 1" "2 250" "$(head -1 "$R/bin/calls")"
+check "  and it raised max-success past the default" "6 250" "$(tail -1 "$R/bin/calls")"
+check "  the stamp records where it got to" 6 "$(stamp to)"
+check "  and how many new counterexamples it found" 1 "$(stamp found)"
+check "  which are in the ledger" 1 "$(rows)"
+out="$(cex --list)"
+case "$out" in *"Deep { depth: 3 }"*) ok "  recorded by the parser the gate already uses" "seed 3" ;;
+  *) bad "  recorded by the parser the gate already uses" "${out:0:70}" ;; esac
+
+# The whole point: a second sweep explores new ground rather than repeating.
+: >"$R/bin/calls"
+sw --seeds 5 --max-success 250 >/dev/null 2>&1
+check "a second sweep starts where the first stopped" "7 250" "$(head -1 "$R/bin/calls")"
+check "  and finds what the first could not reach" 2 "$(rows)"
+case "$(cex --list)" in *"Deep { depth: 7 }"*) ok "  the seed-7 case is now in the ledger" "found" ;;
+  *) bad "  the seed-7 case is now in the ledger" "missing" ;; esac
+check "  the stamp moved with it" 11 "$(stamp to)"
+
+# ----- staleness is named, and fatal only if the repo asks
+mkfuzz "3"
+sw --seeds 2 >/dev/null 2>&1
+check "a sweep on this exact tree is green and says so" 0 "$(rc_of --check)"
+case "$(cex --check)" in *"on this exact tree"*) ok "  naming the tree it covered" "said" ;;
+  *) bad "  naming the tree it covered" "silent" ;; esac
+printf 'x\n' >"$R/moved.txt"; commit moved >/dev/null
+printf 'y\n' >"$R/moved2.txt"; commit moved2 >/dev/null
+case "$(cex --check)" in *"2 commit(s) ago"*) ok "a sweep two commits back is named as stale" "2" ;;
+  *) bad "a sweep two commits back is named as stale" "$(cex --check | head -1)" ;; esac
+check "  and staleness alone does not fail the gate" 0 "$(rc_of --check)"
+"$FPL_PY" - "$R/.fluxpoint-fuzz.json" <<'PY2'
+import json, sys
+p = sys.argv[1]; d = json.load(open(p))
+d["failWhenStale"] = True; d["maxStaleCommits"] = 1
+json.dump(d, open(p, "w"), indent=2)
+PY2
+commit strict >/dev/null
+check "failWhenStale past the limit is RED" 1 "$(rc_of --check)"
+case "$(cex --check 2>&1 >/dev/null)" in *"past the 1 this repo allows"*)
+  ok "  and names the limit" "said" ;;
+  *) bad "  and names the limit" "silent" ;; esac
+
+# ----- a config nobody can read is not a pass
+mkrepo; printf '{not json\n' >"$R/.fluxpoint-fuzz.json"; commit bad >/dev/null
+check "a malformed fuzz config is RED, never silent" 1 "$(rc_of --check)"
+mkrepo; printf '{ "version": 1, "tool": "nosuch" }\n' >"$R/.fluxpoint-fuzz.json"; commit t >/dev/null
+check "a tool with no sweep command is RED" 1 "$(rc_of --check)"
+case "$(cex --check 2>&1 >/dev/null)" in *"explicit 'command'"*) ok "  and says what to give it" "said" ;;
+  *) bad "  and says what to give it" "silent" ;; esac
+
 cd /; rm -rf "$ROOT"
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
