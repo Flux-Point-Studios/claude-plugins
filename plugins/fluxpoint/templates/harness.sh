@@ -224,7 +224,7 @@ full() {
   fi
   # Provers run in --full, not only per-file. A gate that decides "done"
   # without invoking the prover is not a gate.
-  if has dafny && compgen -G '**/*.dfy' >/dev/null 2>&1; then
+  if has dafny && [ -n "$(git ls-files -- '*.dfy' 2>/dev/null)" ]; then
     # Same shape as the aiken block above: capture, record, re-raise, with
     # the prover's exit code staying the gate. Dafny prints a model for the
     # first failing assertion only under --extract-counterexample; put it
@@ -232,10 +232,20 @@ full() {
     # harness stays the one place the prover is invoked. The output is
     # echoed unconditionally: in a repo carrying this harness without the
     # plugin, it is the only record of what failed.
+    #
+    # The prover takes a project file or the .dfy files themselves; a bare
+    # `.` is refused by Dafny 4.9 ("neither a recognized option nor a Dafny
+    # input file"), and a `**/*.dfy` glob without globstar only ever saw one
+    # directory level. Tracked files are the honest list either way.
     dafny_out="$(mktemp)"
     dafny_rc=0
-    # shellcheck disable=SC2086
-    dafny verify ${FPL_DAFNY_ARGS:-} . >"$dafny_out" 2>&1 || dafny_rc=$?
+    if [ -f dfyconfig.toml ]; then
+      # shellcheck disable=SC2086
+      dafny verify ${FPL_DAFNY_ARGS:-} dfyconfig.toml >"$dafny_out" 2>&1 || dafny_rc=$?
+    else
+      # shellcheck disable=SC2086,SC2046
+      dafny verify ${FPL_DAFNY_ARGS:-} $(git ls-files -- '*.dfy') >"$dafny_out" 2>&1 || dafny_rc=$?
+    fi
     cat "$dafny_out"
     cx="$(plugin_script cex.py)"
     if [ -n "$cx" ]; then

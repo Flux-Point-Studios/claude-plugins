@@ -337,10 +337,19 @@ operator the invariant can be re-checked from — and an `ASSUME` refused
 as inverted. The scaffolded harness runs `cargo kani` when the crate
 declares a harness and `cargo-kani` is installed (`FPL_KANI_ARGS` carries
 the playback flags), and `apalache-mc check` only when `FPL_APALACHE_ARGS`
-names the spec and invariant. Neither tool is installed where this repo's
-harness runs, so both parsers are pinned through PATH shims against the
-documented output shapes and route drift to INGEST-FAILED; the first real
-run against each is the remaining check.
+names the spec and invariant. Both fixtures are captured from real runs
+(Kani 0.67.0 on CBMC 6.8.0, Apalache 0.47.2, 2026-09-11) and both provers
+were driven through the scaffolded harness on real installs. The captures
+corrected the documentation in three places: Apalache names its trace
+files `violation1.*`, its ITF `#meta` carries no `source` (the spec name
+now comes from the `_apalache-out/<Spec.tla>/` directory, so the same
+trace dedupes across timestamped runs), and Dafny 4.9.1's `dafny verify`
+prints ` Related counterexample:` with the literal left of the `==`, which
+the Dafny parser had read as a bare assertion until the real output became
+the fixture. The same session found that `dafny verify .` is refused by
+the real CLI and that a `**/*.dfy` arm glob saw one directory level, so
+the harness template now hands the prover its project file or the tracked
+`.dfy` files.
 
 The original design, for reference. `cex.py --ingest` parses prover
 output tee'd from the harness (aiken's shrunk counterexample block first;
@@ -537,10 +546,16 @@ fewer is always allowed; a missing toolchain prints NOT RUN by name and
 never reads clean, and a listing the parser cannot read is red. The DoD
 `— proof: <obligation id>` tail is enforced: a checked box whose obligation
 does not exist is red, and one whose obligation changed is caught by the
-statement hash. The toolchains are not installed where the plugin's own
-harness runs, so the audit parsers are pinned against the documented
-listings through shims; the first real run against each prover is the
-remaining check.
+statement hash. The plugin's own harness runs without the provers, so
+the audit parsers are pinned through shims — but the shims print what
+Lean 4.15.0, Coq 8.18.0 and Dafny 4.9.1 printed on 2026-09-11, and each
+audit was driven against the real install through the scaffolded harness,
+including a red the moment a `sorry` entered a green Lean theorem. The
+real runs corrected two guesses: Dafny 4.9.1 spells the report format
+`txt` and prints its ordinary warnings beside the finding rows, which are
+now told apart by the `file(l,c):Name:` shape; and a Dafny declaration
+carrying an attribute (`lemma {:axiom} Helper`) was invisible to the
+statement scanner, which folded its clauses into the previous method.
 
 Building it surfaced a live bug in the sibling guard, now fixed with
 regression cases: `proof-guard.py` matched Aiken parameter lists with a
@@ -736,7 +751,7 @@ existing harness and each is independently shippable.
 | 18 | Hybrid recall (Part 3e): derived memory graph + pluggable embeddings + BM25 + PPR fused with weighted RRF; bi-temporal serving, stale-kill marks, relevance-ordered seed maps, SessionStart recall section, `/fluxpoint:recall` | **shipped** |
 | 19 | Recall follow-ons (Part 3e): `memory.priors` refuter wiring with emission probe; decision nodes from run artifacts; `substrate-graph.mjs --json` + primitive ingestion; gemini provider; dark-launched per-prompt hook (`FPL_MEM_PROMPT=1`); `WORK.consolidate.md` (3d's template half) | **shipped** |
 | 20 | Issues #62–#72 closed together (v1.36.0): relation gate `differential` / `bite` / `authority` / `--scan` (#62); Dafny in the counterexample ledger (#70); `ProofV1` + the `proof-audit` node in the feature campaign, `record-run` filing WEAKENED as `BLOCKED-PROOF` (#72); the `prover` role and opt-in `WORK.verified.md` (#71); the token estimate, `maxEstimatedTokens`, `cacheTtl`, effort-transition warnings and the estimate/profile instrumentation (#64–#67, the sweep itself still to run); `prompt-audit.py` as an advisory harness step (#68); the cached-prefix wording and the two thoroughness boosters retired (#69) | **shipped** |
-| 21 | Part 4 off the roadmap (v1.38.0): spec-guard parses Lean, Coq, Isabelle, TLA+ theorems plus the invariants a TLC `.cfg` names, and Kani harnesses and contracts; `--axioms` records each headline theorem's assumption set from the prover's own listing and reds on a new one; DoD `— proof: <obligation id>` tails are enforced; the attack taxonomy ships as `templates/attack-taxonomy.json`, copied to `.fluxpoint-attacks.json` by init and red per unspecified class (4d, slice 12); Kani concrete playback and Apalache ITF traces join the counterexample ledger under the same pin discipline (3b) | **shipped** |
+| 21 | Part 4 off the roadmap (v1.38.0): spec-guard parses Lean, Coq, Isabelle, TLA+ theorems plus the invariants a TLC `.cfg` names, and Kani harnesses and contracts; `--axioms` records each headline theorem's assumption set from the prover's own listing and reds on a new one; DoD `— proof: <obligation id>` tails are enforced; the attack taxonomy ships as `templates/attack-taxonomy.json`, copied to `.fluxpoint-attacks.json` by init and red per unspecified class (4d, slice 12); Kani concrete playback and Apalache ITF traces join the counterexample ledger under the same pin discipline (3b); every new parser verified against the real toolchain (Lean 4.15.0, Coq 8.18.0, Dafny 4.9.1, Kani 0.67.0, Apalache 0.47.2) and the fixtures captured from those runs | **shipped** |
 
 ## Part 6 — named absences
 

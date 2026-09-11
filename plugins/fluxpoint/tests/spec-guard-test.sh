@@ -353,6 +353,45 @@ case "$out" in *"NOT COVERED"*) bad "nothing is reported uncovered" "reported" ;
 sg --baseline >/dev/null
 check "armed over five languages: green" 0 "$(rc_of --check)"
 
+# A Dafny declaration carrying attributes between the keyword and the name
+# (`lemma {:axiom} Helper`, `method {:verify false} Skipped`) is its own
+# obligation; a scanner that missed the attributes folded their clauses into
+# the previous method, which a real file showed.
+mkrepo; mkdir -p src; cat >src/vault.dfy <<'EOF'
+module Vault {
+  method Withdraw(bal: int, amt: int) returns (out: int)
+    requires amt > 0
+    ensures out == bal - amt
+    ensures out >= 0
+  {
+    out := bal - amt;
+  }
+
+  lemma {:axiom} Helper(x: int)
+    ensures x * x >= 0
+
+  method {:verify false} Skipped(n: int) returns (r: int)
+    ensures r > n
+  {
+    r := n;
+  }
+
+  method UsesAssume(n: int) returns (r: int)
+    ensures r > 0
+  {
+    assume n > 0;
+    r := n;
+  }
+}
+EOF
+commit
+out="$(sg --scan)"
+case "$out" in *"dafny:src/vault.dfy:Helper"*"dafny:src/vault.dfy:Skipped"*"dafny:src/vault.dfy:UsesAssume"*)
+  ok "Dafny declarations carrying attributes are their own obligations" "found" ;;
+  *) bad "Dafny declarations carrying attributes are their own obligations" "${out:0:60}" ;; esac
+case "$out" in *"Withdraw"*"x * x"*) bad "and their clauses do not fold into the previous method" "folded" ;;
+  *) ok "and their clauses do not fold into the previous method" "separate" ;; esac
+
 weaken() {  # name, file, sed-expr, expected-word
   poly_state; sg --baseline >/dev/null
   sed -i "$3" "$2"
@@ -466,11 +505,13 @@ case "$(sg --check)" in *"gates nothing"*) ok "  and the note says it gates noth
   *) bad "  and the note says it gates nothing" "silent" ;; esac
 
 # ================= 9. --axioms: the prover's own assumption audit =========
-# No prover is installed here, so each toolchain is a shim on PATH that
-# prints the listing its real counterpart prints for the probe it is
-# handed. The shapes are the documented ones (`#print axioms`, `Print
-# Assumptions`, `dafny audit --report-format text`); a real run should be
-# read against them before this is trusted on a live repo.
+# The provers are not installed where this suite runs, so each toolchain is
+# a shim on PATH that prints the listing its real counterpart printed for the
+# same probe — captured 2026-09-11 from Lean 4.15.0 (`lake env lean` on a
+# `#print axioms` file), Coq 8.18.0 (`coqc` on a `Print Assumptions` file,
+# module path from _CoqProject) and Dafny 4.9.1 (`dafny audit
+# --report-format txt`), and pinned against the same three parsers end to
+# end on those installs.
 mkshims() {
   mkdir -p "$ROOT/bin"
   cat >"$ROOT/bin/lake" <<'EOF'
@@ -492,8 +533,17 @@ else printf 'Axioms:\n'; for a in $SHIM_COQ_AXIOMS; do printf '%s : forall P : P
 EOF
   cat >"$ROOT/bin/dafny" <<'EOF'
 #!/usr/bin/env bash
+# dafny audit --report-format txt <files>, as Dafny 4.9.1 prints it: the
+# ordinary warnings first, one `file(l,c):Name: message` row per finding,
+# then the completion lines. 4.9.1 rejects `text` for the format.
 [ "$1" = audit ] || { echo "shim: unexpected $*" >&2; exit 2; }
+if [ "$2" != --report-format ] || [ "$3" != txt ]; then
+  printf "Argument '%s' not recognized. Must be one of:\n\t'html'\n\t'txt'\n" "$3"; exit 1
+fi
+printf 'src/vault.dfy(22,4): Warning: assume statement has no {:axiom} annotation\n'
 printf '%b' "${SHIM_DAFNY_AUDIT:-}"
+printf 'Dafny auditor completed with %s findings\n\nDafny program verifier did not attempt verification\n' \
+  "$(printf '%b' "${SHIM_DAFNY_AUDIT:-}" | grep -c .)"
 EOF
   chmod +x "$ROOT/bin/"*
 }
@@ -509,10 +559,18 @@ EOF
 mkshims
 export SHIM_LEAN_AXIOMS="propext, Classical.choice"
 export SHIM_COQ_AXIOMS="classic"
-export SHIM_DAFNY_AUDIT='src/vault.dfy(12,9):Lemma Helper:Declaration has explicit axiom attribute\n'
+export SHIM_DAFNY_AUDIT='src/vault.dfy(10,17):Helper: Declaration has explicit `{:axiom}` attribute. Possible mitigation: Provide a proof or test.\n'
 HEADS="--headline lean:src/Foo.lean:add_zero' --headline coq:src/Bar.v:plus_O_n --headline dafny:*"
 with_shims() { PATH="$ROOT/bin:$PATH" "$FPL_PY" "$SG" --root "$ROOT/r" "$@"; }
 rc_shims() { with_shims "$@" >/dev/null 2>&1; echo $?; }
+# A PATH with git and the interpreter and nothing else, so the "toolchain
+# absent" case holds on a machine where a real prover happens to be installed.
+mkdir -p "$ROOT/nobin"
+for _t in git "$FPL_PY" sh bash env sed grep; do
+  _p="$(command -v "$_t")"; [ -n "$_p" ] && ln -sf "$_p" "$ROOT/nobin/$(basename "$_t")"
+done
+without_tools() { PATH="$ROOT/nobin" "$FPL_PY" "$SG" --root "$ROOT/r" "$@"; }
+rc_none() { without_tools "$@" >/dev/null 2>&1; echo $?; }
 
 ax_state
 check "a headline that is not an obligation is refused" 1 "$(rc_shims --baseline --axioms --headline lean:src/Foo.lean:nope)"
@@ -520,14 +578,14 @@ check "recording the assumption sets" 0 "$(rc_shims --baseline --axioms $HEADS)"
 rec="$("$FPL_PY" -c 'import json; d=json.load(open(".fluxpoint-proof-baseline.json")); print(",".join(d["axioms"]["recorded"]["lean:src/Foo.lean:add_zero'"'"'"]))')"
 check "  Lean's listing is recorded verbatim" "Classical.choice,propext" "$rec"
 rec="$("$FPL_PY" -c 'import json; d=json.load(open(".fluxpoint-proof-baseline.json")); print(len(d["axioms"]["recorded"]["dafny:*"]))')"
-check "  dafny audit rows are recorded" 1 "$rec"
+check "  dafny audit finding rows are recorded, warnings are not" 1 "$rec"
 check "same assumptions: green" 0 "$(rc_shims --check)"
 check "a new axiom under a headline is red" 1 "$(SHIM_LEAN_AXIOMS='propext, Classical.choice, sorryAx' rc_shims --check)"
 case "$(SHIM_LEAN_AXIOMS='propext, Classical.choice, sorryAx' with_shims --check 2>&1)" in
   *"NEW AXIOM"*sorryAx*) ok "  and names it" "named" ;; *) bad "  and names it" "silent" ;; esac
 check "fewer axioms is green" 0 "$(SHIM_LEAN_AXIOMS=propext rc_shims --check)"
-check "a new dafny audit row is red" 1 "$(SHIM_DAFNY_AUDIT='src/vault.dfy(12,9):Lemma Helper:Declaration has explicit axiom attribute\nsrc/vault.dfy(30,1):Method Withdraw:Definition has verify false attribute\n' rc_shims --check)"
-check "the same row at another line is not new" 0 "$(SHIM_DAFNY_AUDIT='src/vault.dfy(40,9):Lemma Helper:Declaration has explicit axiom attribute\n' rc_shims --check)"
+check "a new dafny audit row is red" 1 "$(SHIM_DAFNY_AUDIT='src/vault.dfy(10,17):Helper: Declaration has explicit `{:axiom}` attribute. Possible mitigation: Provide a proof or test.\nsrc/vault.dfy(13,25):Skipped: Declaration has `{:verify false}` attribute. Possible mitigation: Remove `{:verify false}` attribute and prove if possible.\n' rc_shims --check)"
+check "the same row at another line is not new" 0 "$(SHIM_DAFNY_AUDIT='src/vault.dfy(40,17):Helper: Declaration has explicit `{:axiom}` attribute. Possible mitigation: Provide a proof or test.\n' rc_shims --check)"
 check "a new Coq assumption is red" 1 "$(SHIM_COQ_AXIOMS='classic functional_extensionality' rc_shims --check)"
 check "--check --axioms runs only the audit" 0 "$(rc_shims --check --axioms)"
 sed -i 's/x + 1 > 1/x + 1 > 0/' src/Baz.thy
@@ -537,8 +595,8 @@ ax_state; with_shims --baseline --axioms $HEADS >/dev/null
 sg --baseline >/dev/null
 has_ax="$("$FPL_PY" -c 'import json; print("yes" if "axioms" in json.load(open(".fluxpoint-proof-baseline.json")) else "no")')"
 check "re-recording statements preserves the axiom section" yes "$has_ax"
-check "without the toolchains --check is green and says NOT RUN" 0 "$(rc_of --check)"
-case "$(sg --check)" in *"AXIOM AUDIT NOT RUN"*"lake is not on PATH"*) ok "  naming the missing tool" "named" ;;
+check "without the toolchains --check is green and says NOT RUN" 0 "$(rc_none --check)"
+case "$(without_tools --check)" in *"AXIOM AUDIT NOT RUN"*"lake is not on PATH"*) ok "  naming the missing tool" "named" ;;
   *) bad "  naming the missing tool" "silent" ;; esac
 check "a listing that cannot be read is red, never clean" 1 "$(SHIM_LEAN_GARBAGE=1 rc_shims --check)"
 case "$(SHIM_LEAN_GARBAGE=1 with_shims --check 2>&1)" in *"AXIOM AUDIT UNREADABLE"*) ok "  and says UNREADABLE" "said" ;;

@@ -97,10 +97,15 @@ UNCOVERED = {".agda": "Agda", ".fst": "F*", ".als": "Alloy"}
 # property tests this ratchet exists to protect invisible to it.
 AIKEN_TEST_HEAD = re.compile(
     r"(?:^|\n)[ \t]*test[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]*\(")
-# A Dafny declaration that can carry a specification.
+# A Dafny declaration that can carry a specification. Attributes sit between
+# the keyword and the name (`lemma {:axiom} Helper`, `method {:verify false}
+# Skipped`); a pattern that skipped those folded their clauses into the
+# previous declaration, which a real file showed.
 DAFNY_DECL = re.compile(
-    r"^\s*(?:ghost\s+)?(?:method|function|lemma|predicate|twostate\s+\w+)"
-    r"\s+([A-Za-z_][A-Za-z0-9_']*)")
+    r"^\s*(?:ghost\s+|static\s+|twostate\s+|opaque\s+)*"
+    r"(?:method|function|lemma|predicate|constructor|iterator|function method|"
+    r"predicate method|greatest lemma|least lemma|greatest predicate|least predicate)"
+    r"(?:\s*\{:[^}]*\})*\s+([A-Za-z_][A-Za-z0-9_']*)")
 # The clauses that ARE the specification. `invariant` is included because a
 # loop invariant that loses a conjunct weakens the proof exactly as an
 # `ensures` does.
@@ -170,7 +175,13 @@ DOD_LINE = re.compile(
     r"^\s*-\s*\[(?P<box>[ xX])\]\s*(?P<claim>.*?)\s*(?:—|--|-)\s*proof:\s*(?P<tail>.+?)\s*$")
 OBLIGATION_ID = re.compile(r"\b(?:aiken|dafny|lean|coq|isabelle|tla|kani):[^\s,;]+")
 
-DAFNY_AUDIT = re.compile(r"^(?P<file>[^\n(]+?\.dfy)\((?P<line>\d+),(?P<col>\d+)\):(?P<rest>.+)$")
+# A finding row from `dafny audit --report-format txt` (Dafny 4.9.1):
+#   src/vault.dfy(10,17):Helper: Declaration has explicit `{:axiom}` attribute. …
+# The declaration name follows the position with no space; the ordinary
+# `file(l,c): Warning: …` lines the same run prints have one, and are not
+# findings.
+DAFNY_AUDIT = re.compile(
+    r"^(?P<file>[^\n(]+?\.dfy)\((?P<line>\d+),(?P<col>\d+)\):(?P<name>[^\s:][^:\n]*):(?P<msg>.+)$")
 # A Lean name may itself end in a prime (`add_zero'`), so the quoted name is
 # matched lazily up to the closing quote that precedes the verb.
 LEAN_AXIOMS = re.compile(r"'(.+?)' depends on axioms: \[([^\]]*)\]")
@@ -760,7 +771,9 @@ def audit_dafny(root, o):
              else [r for r in tracked_files(root) if r.endswith(".dfy")])
     if not files:
         return "not-run", None, "no tracked .dfy file to audit"
-    rc, out = _run(["dafny", "audit", "--report-format", "text", *files], root)
+    # `txt` is the spelling Dafny 4.9.1 accepts; its help lists `text` as an
+    # alias, and rejects it.
+    rc, out = _run(["dafny", "audit", "--report-format", "txt", *files], root)
     if rc is None:
         return "unreadable", None, f"dafny audit could not run: {out}"
     if rc != 0:
@@ -771,11 +784,11 @@ def audit_dafny(root, o):
         if m:
             # Line and column are dropped: a moved declaration is not a new
             # assumption, a new declaration with an assumption is.
-            rows.append(norm(f"{m.group('file')}:{m.group('rest')}"))
-        elif ".dfy(" in line and "):" in line:
-            rows.append(norm(line))
+            rows.append(norm(f"{m.group('file')}:{m.group('name')}: {m.group('msg')}"))
+    if not rows and "auditor completed" not in out:
+        return "unreadable", None, f"dafny audit printed no findings and no completion line: {norm(out)[:200]}"
     if o["name"] != "*":
-        rows = [r for r in rows if o["name"] in r]
+        rows = [r for r in rows if f":{o['name']}:" in r]
     return "ok", sorted(set(rows)), ""
 
 

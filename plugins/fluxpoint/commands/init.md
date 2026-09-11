@@ -171,7 +171,10 @@ step; do not stop at copying files.
    `#[kani::proof]` harnesses and `cargo-kani` installed is captured the
    same way, with `FPL_KANI_ARGS="-Z concrete-playback
    --concrete-playback=print"` so the ledger gets the interpreted values
-   and not only the failed check; an Apalache spec runs only when
+   and not only the failed check (declare `cfg(kani)` under
+   `[lints.rust] unexpected_cfgs` in `Cargo.toml`, or the clippy step that
+   runs first fails on the harness module's `#[cfg(kani)]`); an Apalache
+   spec runs only when
    `FPL_APALACHE_ARGS` names it (`--inv=Inv Spec.tla`), and the ITF trace
    it writes is what gets recorded. That file and
    `.fluxpoint-cex/` are committed artifacts like the baselines — a

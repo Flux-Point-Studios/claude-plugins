@@ -186,13 +186,23 @@ DFY_VERIFICATION = re.compile(
     r"is not proved|violat|does not hold|not maintained|not established|"
     r"nontermination|decreases", re.I)
 DFY_SUMMARY = re.compile(r"verifier finished with \d+ verified, (?P<n>\d+) error", re.I)
-DFY_CEX_HEAD = re.compile(r"^\s*Counterexample(?: for first failing assertion)?:\s*$", re.M)
+# Three spellings of the heading, all seen in real output: Dafny 3 prints
+# `Counterexample for first failing assertion:`, Dafny 4.9 prints
+# ` Related counterexample:` under the Error line (indented, and followed
+# by a WARNING that the model may be inconsistent), older 4.x a bare
+# `Counterexample:`.
+DFY_CEX_HEAD = re.compile(
+    r"^\s*(?:Related\s+)?[Cc]ounterexample(?: for first failing assertion)?:\s*$", re.M)
 DFY_STATE = re.compile(
-    r"^(?P<file>[^\s(]+\.dfy)\((?P<line>\d+),(?P<col>\d+)\)(?::\s*(?P<label>[^:\n]*?))?\s*:\s*$")
+    r"^\s*(?P<file>[^\s(]+\.dfy)\((?P<line>\d+),(?P<col>\d+)\)(?::\s*(?P<label>[^:\n]*?))?\s*:\s*$")
 DFY_ASSIGN = re.compile(
     r"^\s+(?P<name>[A-Za-z_][\w'#$]*)\s*:\s*(?P<type>[^=\n]+?)\s*=\s*(?P<value>.+?)\s*$")
 DFY_ASSUME = re.compile(r"^\s*assume\s+(?P<expr>.+?)\s*;\s*$")
-DFY_CONJUNCT = re.compile(r"([A-Za-z_][\w'#$]*)\s*==\s*([^&]+?)\s*(?=&&|$)")
+# Dafny 4.9 writes the literal on the left (`assume 0 == bal && 1 == amt`),
+# earlier 4.x the name; both orders are read and recorded as name == value.
+DFY_CONJUNCT = re.compile(
+    r"(?:(?P<name>[A-Za-z_][\w'#$]*)\s*==\s*(?P<value>[^&]+?)"
+    r"|(?P<lvalue>[^&=]+?)\s*==\s*(?P<lname>[A-Za-z_][\w'#$]*))\s*(?=&&|$)")
 DFY_DECL = re.compile(
     r"^\s*(?:ghost\s+|static\s+|twostate\s+)*"
     r"(?:method|function|lemma|predicate|function method|greatest lemma|least lemma)"
@@ -804,8 +814,11 @@ def dafny_model(section):
             continue
         s = DFY_ASSUME.match(line)
         if s:
-            for name, value in DFY_CONJUNCT.findall(s.group("expr")):
-                cur["assign"].append((name, value.strip()))
+            for m in DFY_CONJUNCT.finditer(s.group("expr")):
+                if m.group("name"):
+                    cur["assign"].append((m.group("name"), m.group("value").strip()))
+                elif m.group("lname"):
+                    cur["assign"].append((m.group("lname"), m.group("lvalue").strip()))
     initial = next((b for b in blocks if "initial" in b["label"].lower() and b["assign"]), None)
     first = next((b for b in blocks if b["assign"]), None)
     chosen = initial or first
@@ -1141,6 +1154,14 @@ def parse_apalache(root, output, exit_code, source=None):
             r = os.path.relpath(module, os.path.abspath(root))
             module = r if not r.startswith("..") else module
         module = (module or label).replace(os.sep, "/")
+        # Apalache 0.47 writes each run under _apalache-out/<Spec.tla>/<stamp>/
+        # and its ITF carries no `source`, so the spec is read from that
+        # directory. A key carrying the timestamp would file the same trace
+        # as new on every run.
+        if "_apalache-out/" in module:
+            after = module.split("_apalache-out/", 1)[1].split("/")
+            if after and after[0]:
+                module = after[0]
         base = os.path.splitext(os.path.basename(module))[0]
         n = len(states)
         payload = " ; ".join(rendered)
