@@ -62,7 +62,14 @@ Three more checks ride on the same scan:
              red — route 0 of the escape routes, never specifying the
              property, gets a gate too. Each taxonomy gates only a repo
              that carries its language, so a validator-only repo is
-             silent on the builder classes and the other way round.
+             silent on the builder classes and the other way round. A
+             taxonomy in a language this guard has no rule for is NOT a
+             malformed manifest: the manifest is the repo's declaration
+             and this script is what lags it, so those classes are
+             reported NOT COVERED and counted UNCHECKED, never as
+             specified and never as a failure. The known languages are
+             printed beside the unknown one, and a near miss is named,
+             so a transposition cannot quietly un-gate a language.
 
 What a statement hash cannot see: a property proved about an unreachable
 state, a generator that cannot produce the interesting case, a test whose
@@ -620,6 +627,33 @@ def dod_findings(root, now, recorded):
 # class in it is specified, and a taxonomy nothing can be decided about
 # passes every class it holds.
 TAXONOMY_LANGUAGES = ("aiken", "typescript")
+
+
+def _near(lang):
+    """A known language within a character or two of `lang`, or None.
+
+    Uncovered is the right verdict for a language this guard has not learned,
+    but it reads the same as a typo, and a typo silently un-gates every class
+    under it. Naming the near miss makes a transposition obvious in the one
+    line a reader sees.
+    """
+    for known in TAXONOMY_LANGUAGES:
+        if lang == known:
+            continue
+        if sorted(lang.lower()) == sorted(known.lower()) or (
+                abs(len(lang) - len(known)) <= 1
+                and sum(1 for a, b in zip(lang.lower(), known.lower()) if a != b) <= 1):
+            return known
+    return None
+
+
+def uncovered_note(tax):
+    """The line an uncovered taxonomy prints, with what it cost and a hint."""
+    lang, n = tax["language"], len(tax["classes"])
+    hint = _near(lang)
+    return (f"NOT COVERED: taxonomy {lang!r} ({n} class(es) unchecked) — this guard "
+            f"decides 'specified' for {', '.join(TAXONOMY_LANGUAGES)} only"
+            + (f". Did you mean {hint!r}?" if hint else ""))
 NAMED_BY = {
     "aiken": "no Aiken test named",
     "typescript": "no TypeScript test title or declaration names",
@@ -653,10 +687,14 @@ def _taxonomy_problem(tax, where):
     """What is wrong with one taxonomy object, or None."""
     if not isinstance(tax, dict):
         return f"{where} must be an object carrying a 'language' and a 'classes' list"
-    lang = tax.get("language")
-    if lang not in TAXONOMY_LANGUAGES:
-        return (f"{where} names language {lang!r}; this guard decides 'specified' for "
-                f"{' and '.join(TAXONOMY_LANGUAGES)} only")
+    # A language this guard has no rule for is NOT a malformed manifest. The
+    # manifest is a repo's declaration of what it answers for, and this script
+    # is what lags behind it; failing the build teaches people to delete
+    # classes, which is the opposite of the taxonomy's purpose. It is reported
+    # as uncovered instead, the way a tracked Agda file already is — loud every
+    # run, never counted as covered. Only the SHAPE is a problem here.
+    if not isinstance(tax.get("language"), str) or not tax["language"]:
+        return f"{where} needs a 'language' string"
     classes = tax.get("classes")
     if not isinstance(classes, list) or not all(
             isinstance(c, dict) and isinstance(c.get("id"), str) and c["id"] for c in classes):
@@ -789,7 +827,16 @@ def attack_findings(root, now):
         return [], []
     findings, notes = [], []
     ctx = taxonomy_context(root, now)
-    taxonomies = doc["taxonomies"]
+    taxonomies = []
+    for tax in doc["taxonomies"]:
+        if tax["language"] in TAXONOMY_LANGUAGES:
+            taxonomies.append(tax)
+        else:
+            # Unchecked, and said so every run. Silence here would let a
+            # reader take a green gate for coverage of classes nothing read.
+            notes.append(uncovered_note(tax))
+    if not taxonomies:
+        return findings, notes
     if all(ctx[t["language"]]["dormant"] for t in taxonomies):
         why = "; ".join(dict.fromkeys(DORMANT_WHY[t["language"]] for t in taxonomies))
         notes.append(f"{ATTACKS} is present but gates nothing here: {why}")
@@ -844,6 +891,11 @@ def print_taxonomy(root, obligations, doc, problem):
     ctx = taxonomy_context(root, obligations)
     for tax in doc["taxonomies"]:
         lang = tax["language"]
+        if lang not in TAXONOMY_LANGUAGES:
+            print(f"  attack taxonomy {lang}: {uncovered_note(tax)}")
+            for cls in tax["classes"]:
+                print(f"  attack class {lang}:{cls['id']}: UNCHECKED")
+            continue
         if ctx[lang]["dormant"]:
             print(f"  attack taxonomy {lang}: dormant ({DORMANT_WHY[lang]})")
             continue

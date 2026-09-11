@@ -754,8 +754,10 @@ base_state
 printf '{"version": 1, "taxonomies": []}\n' >.fluxpoint-attacks.json
 check "an empty taxonomies list is red" 1 "$(rc_of --check)"
 printf '{"version": 1, "taxonomies": [{"language": "rust", "classes": []}]}\n' >.fluxpoint-attacks.json
-check "a taxonomy in a language with no rule is red" 1 "$(rc_of --check)"
-case "$(sg --check 2>&1)" in *UNREADABLE*rust*) ok "  naming the language" "named" ;;
+# A language with no rule is NOT a malformed manifest; see 9b. The shape of
+# the entry is still checked, which is what the cases around this one cover.
+check "a taxonomy in a language with no rule is uncovered, not red" 0 "$(rc_of --check)"
+case "$(sg --check 2>&1)" in *"NOT COVERED"*rust*) ok "  naming the language" "named" ;;
   *) bad "  naming the language" "silent" ;; esac
 printf '{"version": 1, "taxonomies": [{"language": "typescript", "classes": [{"nope": 1}]}]}\n' \
   >.fluxpoint-attacks.json
@@ -766,6 +768,75 @@ case "$(sg --check 2>&1)" in *UNREADABLE*taxonomies*) ok "  and says what it nee
   *) bad "  and says what it needed" "silent" ;; esac
 printf '[]\n' >.fluxpoint-attacks.json
 check "a manifest that is not an object is red" 1 "$(rc_of --check)"
+
+# ========= 9b. a language this guard has not learned is UNCOVERED =========
+# The manifest is a repo's declaration of what it answers for; this script
+# is what lags behind it. Reddening a forward-looking declaration teaches
+# people to delete classes, which is the opposite of the taxonomy's point.
+# Skipping it silently is worse: the classes would read as covered when
+# nothing looked at them. So it is reported, exactly as a tracked Agda file
+# already is — named every run, counted as covered never.
+unknown_lang() {  # $1 = the language string to write
+  mkrepo; write_aiken
+  "$FPL_PY" - "$1" <<'PY'
+import json, sys
+json.dump({"version": 1, "taxonomies": [
+    {"language": "aiken",
+     "classes": [{"id": "attack_double_satisfaction", "property": "p"}], "waived": {}},
+    {"language": sys.argv[1],
+     "classes": [{"id": "attack_reentrancy", "property": "p"},
+                 {"id": "attack_overflow", "property": "p"}], "waived": {}}]},
+    open(".fluxpoint-attacks.json", "w"), indent=2)
+PY
+  printf '\ntest attack_double_satisfaction(n: Int via bounded_int(1, 9)) {\n  !spend(mk_datum(n), Void, mk_ctx(a: True))\n}\n' >>validators/vault.ak
+  commit
+}
+
+unknown_lang rust
+check "a language this guard has not learned does not fail the gate" 0 "$(rc_of --check)"
+out="$(sg --check 2>&1)"
+case "$out" in *"NOT COVERED: taxonomy 'rust'"*"2 class(es) unchecked"*)
+  ok "  it is named, with what it cost" "named" ;;
+  *) bad "  it is named, with what it cost" "${out:0:70}" ;; esac
+case "$out" in *"aiken, typescript only"*) ok "  and the known languages are listed beside it" "listed" ;;
+  *) bad "  and the known languages are listed beside it" "silent" ;; esac
+case "$out" in *"attack:rust:"*) bad "  its classes are not findings" "red" ;;
+  *) ok "  its classes are not findings" "unchecked" ;; esac
+out="$(sg --scan)"
+case "$out" in *"attack class rust:attack_reentrancy: UNCHECKED"*)
+  ok "  --scan calls them UNCHECKED, a state of their own" "UNCHECKED" ;;
+  *) bad "  --scan calls them UNCHECKED, a state of their own" "${out:0:70}" ;; esac
+case "$out" in *"rust:attack_overflow: specified"*|*"rust:attack_overflow: UNSPECIFIED"*)
+  bad "  never folded into specified or unspecified" "folded" ;;
+  *) ok "  never folded into specified or unspecified" "distinct" ;; esac
+# The language it DOES know keeps gating in the same manifest.
+case "$(sg --check 2>&1)" in *"attack:aiken:"*) bad "  the known taxonomy still gates" "silent" ;;
+  *) ok "  the known taxonomy still gates" "gating" ;; esac
+
+# The one real risk the change introduces: a typo un-gates a language that
+# WAS covered, quietly. The near miss is named so it cannot pass a reader.
+unknown_lang typescrpit
+check "a transposed language still does not fail the gate" 0 "$(rc_of --check)"
+case "$(sg --check 2>&1)" in *"Did you mean 'typescript'?"*)
+  ok "  but the near miss is named" "hinted" ;;
+  *) bad "  but the near miss is named" "no hint" ;; esac
+unknown_lang typescripts
+case "$(sg --check 2>&1)" in *"Did you mean 'typescript'?"*)
+  ok "a one-character-longer language is hinted too" "hinted" ;;
+  *) bad "a one-character-longer language is hinted too" "no hint" ;; esac
+unknown_lang haskell
+case "$(sg --check 2>&1)" in *"Did you mean"*) bad "a genuinely different language gets no hint" "hinted" ;;
+  *) ok "a genuinely different language gets no hint" "no hint" ;; esac
+
+# Shape is still a hard error: this change is about vocabulary, not rigour.
+mkrepo; write_aiken
+printf '{"version": 1, "taxonomies": [{"language": "rust", "classes": [{"nope": 1}]}]}\n' \
+  >.fluxpoint-attacks.json
+commit
+check "an unknown language with a malformed class is still red" 1 "$(rc_of --check)"
+printf '{"version": 1, "taxonomies": [{"classes": []}]}\n' >.fluxpoint-attacks.json
+commit
+check "a taxonomy with no language at all is still red" 1 "$(rc_of --check)"
 
 # ================= 10. --axioms: the prover's own assumption audit ========
 # The provers are not installed where this suite runs, so each toolchain is
