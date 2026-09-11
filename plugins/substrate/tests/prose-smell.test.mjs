@@ -404,3 +404,61 @@ test("hook mode ignores a Codex patch that only deletes prose or touches code", 
     dir);
   assert.equal(r.status, 0, r.stdout + r.stderr);
 });
+
+// ------------------------------------------------------------ mail verbosity
+// An ~800-word message whose every claim was accurate, and which passed every
+// frame rule above, still came back from its reader asking for less; the
+// ~130-word rewrite is what got acted on. Length is the defect the frame rules
+// cannot see, and it only applies to prose that leaves as MAIL — a memo or a
+// plan is legitimately long, so the trigger is structural: a file whose first
+// non-blank line is a Subject: header is an email body.
+function mail(words, subject = "Subject: RE: the quarterly figures") {
+  const body = Array.from({ length: words }, (_, i) => `word${i}`).join(" ");
+  return `${subject}\n\nHello,\n\n${body}\n\nRegards\n`;
+}
+
+test("an over-long mail body is a high finding", () => {
+  const r = runOnText(mail(400), []);
+  assert.equal(r.status, 2, `expected a high finding\n${r.stdout}${r.stderr}`);
+  assert.match(r.stderr, /mail-too-long/);
+});
+
+test("a mail body at working length passes clean", () => {
+  const r = runOnText(mail(120));
+  assert.equal(r.status, 0, r.stderr);
+  assert.doesNotMatch(r.stdout + r.stderr, /mail-too-long|mail-getting-long/);
+});
+
+test("a mail body approaching the ceiling is advice, not a failure", () => {
+  const r = runOnText(mail(300));
+  assert.equal(r.status, 0, `medium findings must not fail the gate\n${r.stderr}`);
+  assert.match(r.stdout, /mail-getting-long/);
+});
+
+test("a long document that is NOT mail is left alone", () => {
+  // The same 400 words with no Subject: header is a memo, and memos are
+  // allowed to be long. Firing here would make the gate something to disable.
+  const body = Array.from({ length: 400 }, (_, i) => `word${i}`).join(" ");
+  const r = runOnText(`# Findings from the review\n\n${body}\n`);
+  assert.equal(r.status, 0, r.stderr);
+  assert.doesNotMatch(r.stdout + r.stderr, /mail-too-long|mail-getting-long/);
+});
+
+test("the Subject line does not count toward the body length", () => {
+  // A long subject must not push a short mail over the ceiling, or the rule
+  // would punish the one line that is supposed to be descriptive.
+  const longSubject = "Subject: " + Array.from({ length: 80 }, (_, i) => `s${i}`).join(" ");
+  const r = runOnText(mail(120, longSubject));
+  assert.equal(r.status, 0, r.stderr);
+});
+
+test("mail length is measured on the author's own words, not a quoted chain", () => {
+  // Replying in thread means the draft can carry the whole history below the
+  // sign-off. Counting it would fail every reply on a long thread.
+  const body = Array.from({ length: 120 }, (_, i) => `word${i}`).join(" ");
+  const quoted = Array.from({ length: 600 }, (_, i) => `old${i}`).join(" ");
+  const r = runOnText(
+    `Subject: RE: something\n\nHello,\n\n${body}\n\nRegards\n\n`
+    + `From: A Colleague\nSent: Thursday\nTo: team@example.com\n\n${quoted}\n`);
+  assert.equal(r.status, 0, `a quoted chain must not fail the gate\n${r.stderr}`);
+});
