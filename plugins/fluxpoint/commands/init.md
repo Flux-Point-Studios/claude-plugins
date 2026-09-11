@@ -167,7 +167,13 @@ step; do not stop at copying files.
    JSON and records any counterexample it finds to `.fluxpoint-cex.jsonl`;
    for Dafny repos it captures `dafny verify` the same way, and
    `FPL_DAFNY_ARGS="--extract-counterexample"` in the environment makes
-   the prover print the model the ledger records. That file and
+   the prover print the model the ledger records. A Rust crate with
+   `#[kani::proof]` harnesses and `cargo-kani` installed is captured the
+   same way, with `FPL_KANI_ARGS="-Z concrete-playback
+   --concrete-playback=print"` so the ledger gets the interpreted values
+   and not only the failed check; an Apalache spec runs only when
+   `FPL_APALACHE_ARGS` names it (`--inv=Inv Spec.tla`), and the ITF trace
+   it writes is what gets recorded. That file and
    `.fluxpoint-cex/` are committed artifacts like the baselines — a
    ratchet only anyone else can see is one that lives in the tree, so do
    not add them to `.gitignore`.

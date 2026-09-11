@@ -245,6 +245,29 @@ full() {
     rm -f "$dafny_out"
     if [ "$dafny_rc" -ne 0 ]; then return "$dafny_rc"; fi
   fi
+  # Apalache runs only where the repo names its spec and invariant: there is
+  # no manifest to detect, and `apalache-mc check` without --inv checks
+  # nothing worth recording. FPL_APALACHE_ARGS carries them, e.g.
+  # `--inv=Inv Spec.tla`. Same shape again — capture, record, re-raise, the
+  # checker's exit code staying the gate (12 on a violation) and the
+  # recorder never getting a vote. The trace itself lands under
+  # _apalache-out/ and the recorder reads it from the path the checker
+  # prints; the output is echoed unconditionally for the repo that carries
+  # this harness without the plugin.
+  if has apalache-mc && [ -n "${FPL_APALACHE_ARGS:-}" ]; then
+    ap_out="$(mktemp)"
+    ap_rc=0
+    # shellcheck disable=SC2086
+    apalache-mc check $FPL_APALACHE_ARGS >"$ap_out" 2>&1 || ap_rc=$?
+    cat "$ap_out"
+    cx="$(plugin_script cex.py)"
+    if [ -n "$cx" ]; then
+      "$FPL_PY" "$cx" --ingest --tool apalache --from "$ap_out" \
+        --exit "$ap_rc" || true
+    fi
+    rm -f "$ap_out"
+    if [ "$ap_rc" -ne 0 ]; then return "$ap_rc"; fi
+  fi
   if [ -f lakefile.lean ] || [ -f lakefile.toml ]; then
     if has lake; then lake build; fi
   fi
@@ -257,6 +280,30 @@ full() {
       cargo clippy --all-targets --quiet -- -D warnings
     fi
     cargo test --quiet
+    # Kani proof harnesses, when the crate declares any and the cargo plugin
+    # is installed. Same shape as the aiken and dafny blocks: capture,
+    # record, re-raise, with the prover's exit code staying the gate and
+    # the recorder never getting a vote. Put `-Z concrete-playback
+    # --concrete-playback=print` (and whatever else these proofs need) in
+    # FPL_KANI_ARGS so the ledger gets the interpreted input values and not
+    # only the failed check; `=inplace` writes that playback test into the
+    # source instead, where — renamed to carry the cexId and tracked — it is
+    # a legal pin target. The output is echoed unconditionally: without the
+    # plugin it is the only record of what failed.
+    if has cargo-kani && grep -rqs 'kani::proof' src; then
+      kani_out="$(mktemp)"
+      kani_rc=0
+      # shellcheck disable=SC2086
+      cargo kani ${FPL_KANI_ARGS:-} >"$kani_out" 2>&1 || kani_rc=$?
+      cat "$kani_out"
+      cx="$(plugin_script cex.py)"
+      if [ -n "$cx" ]; then
+        "$FPL_PY" "$cx" --ingest --tool kani --from "$kani_out" \
+          --exit "$kani_rc" || true
+      fi
+      rm -f "$kani_out"
+      if [ "$kani_rc" -ne 0 ]; then return "$kani_rc"; fi
+    fi
   fi
   if [ -f package.json ]; then
     run_script_if_present typecheck

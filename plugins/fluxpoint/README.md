@@ -32,7 +32,7 @@ does.
   - Gates and ratchets: `exec-attest.sh` with `attest.py` (hook-minted exit
     codes for declared gates), `secret-guard.py` (credential gate),
     `proof-guard.py` (escape hatches), `spec-guard.py` (statements),
-    `cex.py` (counterexample ledger for Aiken and Dafny),
+    `cex.py` (counterexample ledger for Aiken, Dafny, Kani and Apalache),
     `mutation-guard.py` (mutation score), `seam-guard.py` (module mocks),
     `guard-guard.py` (named guards and the tests that hold them down),
     `pair-guard.py` (relations: co-change, parity, differential, bite and
