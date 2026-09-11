@@ -354,6 +354,16 @@ full() {
   if need_gate cex.py .fluxpoint-cex.jsonl; then
     "$FPL_PY" "$FPL_GATE" --check
   fi
+  # Blueprint conformance. Every gate above judges the on-chain predicate.
+  # This one judges the off-chain encoder against the CIP-57 schema the
+  # validator itself declares, because a validator proved correct still
+  # signs whatever the builder constructs, and the caller an agent reaches
+  # is the builder. Outside the aiken block on purpose: a repo may commit
+  # plutus.json and check it in CI without building there. Dormant until
+  # a corpus is declared in .fluxpoint-blueprint.json.
+  if need_gate blueprint-guard.py .fluxpoint-blueprint.json plutus.json; then
+    "$FPL_PY" "$FPL_GATE" --check
+  fi
   # Mutation score. Every check above asks whether the tests pass; this asks
   # whether they can fail. Cheap here on purpose — it re-runs nothing and
   # only asks whether a measurement exists and still describes this tree.

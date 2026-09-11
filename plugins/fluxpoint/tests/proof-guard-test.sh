@@ -385,6 +385,115 @@ check "with proof files it is unarmed, not silently green" 0 "$rc"
 case "$err" in *"NOT armed"*) ok "and says the ratchet is not armed" "reported" ;;
   *) bad "and says the ratchet is not armed" "${err:0:60}" ;; esac
 
+# ========= 9. TypeScript: `as any` is the off-chain `sorry` ===============
+# Off-chain code is where an autonomous caller actually reaches a protocol,
+# and a type checker is a prover with a weak logic: every hatch below leaves
+# `tsc` exiting 0. The second half of each case matters as much as the
+# first, because a category that cries wolf gets re-baselined blind.
+write_ts() {
+  mkdir -p src
+  cat >src/build.ts <<'EOF'
+import { Lucid } from "lucid-cardano";
+
+export function encode(d: unknown): any {
+  const raw = d as any;
+  const addr = raw!.address;
+  const cfg = raw as unknown as Config;
+  return { addr, cfg };
+}
+
+// @ts-ignore  the wallet types are wrong upstream
+export const wallet = globalThis.cardano!;
+
+export function ok(x: string): boolean {
+  // a URL in a comment: https://example.com/a//b
+  const msg = "expected: any, got: any";
+  const tpl = `type is any here`;
+  if (!x) return false;
+  return x !== "" && x.length > 0;
+}
+
+export function items(xs: string[]): string {
+  return xs[0]!;
+}
+EOF
+}
+counted() { $PG "$ROOT/r" --scan 2>&1 | awk -v c="$1" '$1 == c { print $2 }'; }
+
+mkrepo; write_ts; commit base
+check "an erased type is counted, twice over" 2 "$(counted ts.any)"
+check "the double cast is its own category" 1 "$(counted ts.double_cast)"
+check "the non-null assertion is counted" 3 "$(counted ts.non_null)"
+check "@ts-ignore is counted, though the strip removes comments" 1 "$(counted ts.ts_ignore)"
+
+# The decoys, each a shape a careless pattern would have claimed.
+out="$($PG "$ROOT/r" --scan 2>&1)"
+case "$out" in *"expected: any"*) bad "a type named in a STRING is not a hatch" "counted" ;;
+  *) ok "a type named in a STRING is not a hatch" "ignored" ;; esac
+case "$out" in *"type is any here"*) bad "nor one in a template literal" "counted" ;;
+  *) ok "nor one in a template literal" "ignored" ;; esac
+case "$out" in *"if (!x) return false"*) bad "negation is not a non-null assertion" "counted" ;;
+  *) ok "negation is not a non-null assertion" "ignored" ;; esac
+case "$out" in *'x !== ""'*) bad "nor is a strict inequality" "counted" ;;
+  *) ok "nor is a strict inequality" "ignored" ;; esac
+
+# @ts-expect-error is deliberately NOT a category: it fails the build once
+# the error it names is fixed, so it cannot rot in place. Counting it would
+# push people toward the suppression that can.
+mkrepo; write_ts; printf '\n// @ts-expect-error known upstream gap\nexport const z = wallet.z;\n' >>src/build.ts; commit expect
+check "@ts-expect-error is not counted (it retires itself)" 1 "$(counted ts.ts_ignore)"
+
+# tsconfig turns the obligation off for the whole project.
+mkrepo; write_ts
+printf '{ "compilerOptions": { "strict": false, "skipLibCheck": true } }\n' >tsconfig.json
+commit cfg
+check "a tsconfig that turns strictness off is counted" 1 "$(counted flags.types_off)"
+mkrepo; write_ts
+printf '{ "compilerOptions": { "strict": true, "skipLibCheck": true } }\n' >tsconfig.json
+commit cfg
+check "and a strict one is not" "" "$(counted flags.types_off)"
+
+# The ratchet itself.
+mkrepo; write_ts; commit base; $PG "$ROOT/r" --baseline >/dev/null
+$PG "$ROOT/r" --check >/dev/null 2>&1
+check "armed on a TypeScript repo: green" 0 "$?"
+printf '\nexport const sneak = (v: unknown) => v as any;\n' >>src/build.ts; commit sneak
+$PG "$ROOT/r" --check >/dev/null 2>&1
+check "one more erased type is RED" 1 "$?"
+err="$($PG "$ROOT/r" --check 2>&1 >/dev/null)"
+case "$err" in *"ts.any: 2 -> 3"*) ok "and the rise names the category and both counts" "named" ;;
+  *) bad "and the rise names the category and both counts" "${err:0:60}" ;; esac
+
+# Plain JavaScript reaches the @ts- directives without being type-checked at
+# all, so it must not arm the ratchet on its own.
+mkrepo; mkdir -p src; printf '// @ts-ignore\nmodule.exports = {};\n' >src/a.js; commit js
+$PG "$ROOT/r" --check >/dev/null 2>&1
+check "a plain JavaScript repo stays dormant" 0 "$?"
+case "$($PG "$ROOT/r" --scan 2>&1)" in *dormant*) ok "and says so" "dormant" ;;
+  *) bad "and says so" "armed" ;; esac
+
+# ========= 10. a category this plugin added is not the repo's fault =======
+# Reading an absent baseline key as a recorded zero would turn every new
+# category into a red gate for every repo that armed before it — on an
+# upgrade they did not ask for, over a diff they did not write.
+mkrepo; write_ts; commit base; $PG "$ROOT/r" --baseline >/dev/null
+"$FPL_PY" - "$ROOT/r/.fluxpoint-proof-baseline.json" <<'PY'
+import json, sys
+p = sys.argv[1]; d = json.load(open(p))
+d["counts"] = {k: v for k, v in d["counts"].items() if not k.startswith("ts.")}
+json.dump(d, open(p, "w"), indent=2, sort_keys=True)
+PY
+$PG "$ROOT/r" --check >/dev/null 2>&1
+check "a baseline predating a category does not red on it" 0 "$?"
+out="$($PG "$ROOT/r" --check 2>&1)"
+case "$out" in *"NOT yet ratcheted"*"ts.any: 2 (new)"*)
+  ok "the new category is named and counted as new" "reported" ;;
+  *) bad "the new category is named and counted as new" "${out:0:70}" ;; esac
+$PG "$ROOT/r" --baseline >/dev/null
+printf '\nexport const sneak = (v: unknown) => v as any;\n' >>src/build.ts; commit sneak
+$PG "$ROOT/r" --check >/dev/null 2>&1
+check "and once re-recorded it ratchets like any other" 1 "$?"
+
 cd /; rm -rf "$ROOT"
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

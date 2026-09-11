@@ -38,6 +38,33 @@ Known misses are pinned by tests rather than assumed covered — a `when x
 is { _ -> True }` is vacuous but needs real expression analysis to see, so
 this does not claim it.
 
+TypeScript is ratcheted on the same argument. A type checker is a prover
+with a weak logic, and `as any` is the off-chain `sorry`: the obligation
+the checker had is discharged without being met, and `tsc` exits 0 either
+way. Off-chain code is where an autonomous caller actually reaches a
+protocol, so the erased type is the one that matters:
+
+  ts.any          `as any`, a `: any` annotation, `any[]`, `<any>`
+  ts.double_cast  `as unknown as T`, which exists only to defeat the checker
+  ts.non_null     the `!` assertion, claiming what the checker could not
+  ts.ts_ignore    `@ts-ignore` and `@ts-nocheck`
+  flags.types_off `"strict": false` and its siblings in a tsconfig
+
+Two deliberate exclusions, because a ratchet that cries wolf gets
+re-baselined blind. `@ts-expect-error` is NOT counted: it fails the build
+once the error it names goes away, so it cannot rot in place, and counting
+it would push people toward the suppression that can. Generic
+`eslint-disable` is not counted either — most of those lines are style
+rules, and burying four type suppressions in forty style ones is how a
+category stops being read.
+
+Known misses, stated rather than assumed: `Record<string, any>` (catching
+it would mean matching `any` after a comma, where it is a legal identifier
+in value position), a `!` assertion followed by an operator rather than a
+member access, and anything inside a block comment or a template literal
+spanning lines. Single-line strings ARE removed before counting, so a
+message reading "expected: any" does not register as an erased type.
+
 What remains beyond counting: a theorem whose statement lost a conjunct, a
 property proved about an unreachable state, a generator that cannot produce
 the interesting case, a solver `unknown` read as success. Those need
@@ -61,6 +88,11 @@ BASELINE = ".fluxpoint-proof-baseline.json"
 # it. Some are legitimate in context — an `expect` in an Aiken validator, a
 # negative `fail` test — which is exactly why this ratchets rather than
 # forbids: the count may hold or fall, and a rise needs a human.
+# Type syntax is TypeScript's alone; the `@ts-` directives also govern a
+# `// @ts-check`ed JavaScript file, so they are matched there too.
+TS = (".ts", ".tsx", ".mts", ".cts")
+TSJS = TS + (".js", ".jsx", ".mjs", ".cjs")
+
 PATTERNS = [
     # --- Aiken ---------------------------------------------------------
     ("aiken.todo",          (".ak",),   r"\btodo\b"),
@@ -91,6 +123,21 @@ PATTERNS = [
     ("isabelle.sorry",      (".thy",),  r"\b(sorry|oops)\b"),
     # --- TLA+ / Apalache -------------------------------------------------
     ("tla.assume",          (".tla",),  r"^\s*ASSUME\b"),
+    # --- TypeScript ------------------------------------------------------
+    # `as any` is the off-chain `sorry`. Each of these discharges an
+    # obligation the type checker had, and `tsc` exits 0 on all of them.
+    ("ts.any",          TS,   r"\bas\s+any\b|:\s*any\b|\bany\[\]|<\s*any\s*>"),
+    ("ts.double_cast",  TS,   r"\bas\s+unknown\s+as\b"),
+    # The `!` assertion, told apart from negation and `!==` by what sits on
+    # either side: a value on the left, a member access or a terminator on
+    # the right. `return !ok` and `a !== b` are neither.
+    ("ts.non_null",     TS,   r"[\w\]\)]\s*!\s*(?=[.\[,;)\}\]]|$)"),
+    ("ts.ts_ignore",    TSJS, r"@ts-ignore\b|@ts-nocheck\b"),
+    # --- Type checking disabled from a config file ------------------------
+    ("flags.types_off", (".json",),
+     r'"(?:strict|noImplicitAny|strictNullChecks|strictFunctionTypes|'
+     r'strictBindCallApply|alwaysStrict|noUncheckedIndexedAccess|'
+     r'useUnknownInCatchVariables)"\s*:\s*false'),
     # --- Verification disabled from the command line ---------------------
     # A flag in a script or CI config that turns the checker off is the
     # bluntest escape hatch of all, and the easiest to miss in review.
@@ -105,7 +152,21 @@ COMMENT = {
     ".ak": "//", ".rs": "//", ".dfy": "//", ".lean": "--", ".tla": r"\\\*",
     ".thy": None, ".v": None, ".sh": "#", ".yml": "#", ".yaml": "#",
     ".toml": "#", ".just": "#", ".mk": "#", "Makefile": "#", ".json": None,
+    **{s: "//" for s in TSJS},
 }
+
+# Categories whose marker IS a comment. TypeScript's strongest suppression
+# is written `// @ts-ignore`, which the strip above removes before any
+# pattern can see it, so these read the raw line instead.
+IN_COMMENT = {"ts.ts_ignore"}
+
+# Quoted text is data. A message reading "expected: any" must not count as
+# an erased type, and a URL in a string must not truncate the line at its
+# `//`. Blanked in place so a span that opens and closes on one line leaves
+# the columns after it where they were; a template literal spanning lines
+# is a known miss.
+STRING = re.compile(r'"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\'|`(?:[^`\\]|\\.)*`')
+STRINGED = set(TSJS)
 
 
 def tracked_files(root):
@@ -126,6 +187,13 @@ def strip_comment(line, suffix):
         return line
     m = re.search(marker, line)
     return line[: m.start()] if m else line
+
+
+def strip_source(line, suffix):
+    """Only code. Strings go first, so a `//` inside one is not a comment."""
+    if suffix in STRINGED:
+        line = STRING.sub(lambda m: " " * len(m.group(0)), line)
+    return strip_comment(line, suffix)
 
 
 # Categories that need structure rather than a line match, so they are
@@ -266,9 +334,9 @@ def scan(root):
         except OSError:
             continue
         for n, raw in enumerate(lines, 1):
-            line = strip_comment(raw, suffix)
+            line = strip_source(raw, suffix)
             for cat, rx in applicable:
-                if rx.search(line):
+                if rx.search(raw if cat in IN_COMMENT else line):
                     counts[cat] += 1
                     if len(hits[cat]) < 20:
                         hits[cat].append(f"{rel}:{n}: {raw.strip()[:100]}")
@@ -289,11 +357,19 @@ def scan(root):
     return counts, hits
 
 
+# Suffixes that carry categories without arming the ratchet on their own. A
+# CI file or a tsconfig is not a reason to tell a repo it has proof work, and
+# plain JavaScript reaches the `@ts-` directives without being type-checked
+# at all — arming there would red a repo that never asked for a type gate.
+NOT_ARMING = {".sh", ".yml", ".yaml", ".toml", ".json", ".just", ".mk",
+              ".js", ".jsx", ".mjs", ".cjs"}
+
+
 def applicable(counts, root):
     """True when this repo has anything worth ratcheting."""
     suffixes = {os.path.splitext(f)[1] for f in tracked_files(root)}
     proof_suffixes = {s for _, sfx, _ in PATTERNS for s in sfx if s.startswith(".")}
-    return bool(suffixes & (proof_suffixes - {".sh", ".yml", ".yaml", ".toml", ".json"}))
+    return bool(suffixes & (proof_suffixes - NOT_ARMING))
 
 
 def main():
@@ -381,11 +457,27 @@ def main():
         return 0
     base = doc.get("counts", {})
 
+    # A category the baseline never recorded is NEW since it was written —
+    # this plugin added it — so its first sighting is not a rise. Reading an
+    # absent key as a recorded zero makes every category the plugin ever
+    # ships a red gate for every repo that armed before it, on an upgrade
+    # those repos did not ask for and a diff they did not write. The first
+    # run names it and tells them to arm it; from the next baseline on it
+    # ratchets like any other.
+    unratcheted = sorted(c for c in counts if c not in base and counts[c])
     risen = [
-        (cat, base.get(cat, 0), counts[cat])
+        (cat, base[cat], counts[cat])
         for cat in sorted(counts)
-        if counts[cat] > base.get(cat, 0)
+        if cat in base and counts[cat] > base[cat]
     ]
+    if unratcheted:
+        print("proof-guard: categories added to this plugin since the baseline "
+              "was recorded, counted but NOT yet ratcheted:")
+        for cat in unratcheted:
+            print(f"  {cat}: {counts[cat]} (new)")
+            for h in hits[cat][:3]:
+                print(f"      {h}")
+        print("  Re-record with --baseline to hold them down.")
     if risen:
         print("proof-guard: RED — proof strength decreased\n", file=sys.stderr)
         for cat, was, now in risen:

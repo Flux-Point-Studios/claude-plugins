@@ -214,6 +214,8 @@ case "${1:---full}" in
         step "relation gate: differential + bite + scan" bash "$PLUGIN/tests/pair-verify-test.sh" ;;
       "$PLUGIN"/scripts/cex.py)
         step "counterexample ledger" bash "$PLUGIN/tests/cex-test.sh" ;;
+      "$PLUGIN"/scripts/blueprint-guard.py)
+        step "blueprint conformance" bash "$PLUGIN/tests/blueprint-test.sh" ;;
     esac
     ;;
   --full)
@@ -256,6 +258,7 @@ case "${1:---full}" in
     step "seam ratchet (executed)" bash "$PLUGIN/tests/seam-guard-test.sh"
     step "guard ratchet (executed)" bash "$PLUGIN/tests/guard-guard-test.sh"
     step "on-chain budget gate" bash "$PLUGIN/tests/budget-test.sh"
+    step "blueprint conformance (executed)" bash "$PLUGIN/tests/blueprint-test.sh"
     step "once-only ledger (executed)" "$FPL_PY" "$PLUGIN/tests/ledger-test.py"
     step "execution attestation (executed)" bash "$PLUGIN/tests/attest-test.sh"
     step "documented claims match the code" "$FPL_PY" "$PLUGIN/tests/doc-claims-test.py"

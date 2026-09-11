@@ -37,6 +37,7 @@ does.
     `guard-guard.py` (named guards and the tests that hold them down),
     `pair-guard.py` (relations: co-change, parity, differential, bite and
     `--scan`), `plutus-budget.py` (on-chain size and execution units),
+    `blueprint-guard.py` (the off-chain encoder against the CIP-57 schema),
     `recurrence-guard.py` (a lesson learned twice demands a gate).
   - Graph: `compile-graph.py`, `record-run.py`, `ledger.py` (once-only
     guard), `release.py`, `inbox.py` and `wake-check.sh` (the park layer),
@@ -265,6 +266,16 @@ proved one.
   (Lean/Isabelle), `Admitted` (Coq), `#[verifier::external_body]` (Verus),
   `ASSUME` (TLA+), and verification-disabling CLI flags into a committed
   file. `--check` fails when a category rises. Falling is always allowed.
+  TypeScript ratchets on the same argument: a type checker is a prover with
+  a weak logic, and `as any`, `as unknown as T`, the `!` assertion,
+  `@ts-ignore` and a tsconfig with `"strict": false` each discharge an
+  obligation `tsc` had while it exits 0 regardless. Off-chain code is the
+  surface an autonomous caller actually reaches, so it is gated rather than
+  trusted. `@ts-expect-error` is deliberately uncounted, because it fails
+  the build once the error it names is fixed and so cannot rot in place.
+  A category this plugin adds after a repo armed is reported as new and
+  left unratcheted until the next `--baseline`, so an upgrade never reds a
+  diff nobody wrote.
 - **`scripts/spec-guard.py` ratchets the statements.** Hatch counts police
   proof bodies; this hashes what is being proved, so a dropped `ensures`
   conjunct or a deleted property test is a red gate unless a Decisions row
@@ -296,6 +307,21 @@ proved one.
   a compiled artifact — they are a property of evaluating a script against a
   transaction — so measured values go in the same file and an absent
   measurement is reported as unmeasured rather than passed.
+- **`scripts/blueprint-guard.py` holds the builder to the validator.** Every
+  gate above judges the on-chain predicate. A validator proved correct still
+  signs whatever the transaction builder constructs, and the builder is what
+  an autonomous caller actually reaches, so a proof on one side of the wire
+  guarantees nothing about the other. `plutus.json` is the artifact both
+  sides can be held to: `aiken build` regenerates it from the validator, so
+  it cannot drift, and CIP-57 already says what a legal datum and redeemer
+  look like. `--conform` decodes PlutusData the builder produced and asks
+  the blueprint whether the validator would recognise it; `--check` runs the
+  corpora declared in `.fluxpoint-blueprint.json` and reds on a value the
+  schema refuses, a manifest naming a validator the blueprint lacks, or a
+  `$ref` that does not resolve. `--scan` names every schema that is opaque
+  `Data`, because a validator taking untyped data has no specification to
+  hold anyone to and the gate is blind there. A schema the checker cannot
+  read is reported UNCHECKED and never as conformant.
 - **`/fluxpoint:proof-audit`** runs the ratchet, checks the prover is
   actually in `--full`, then the `proof-auditor` agent for what a count
   cannot see: vacuity, specification drift, assumption laundering, tests

@@ -521,6 +521,49 @@ four escape routes; `proof-guard.py` closes the first. The roadmap closes
 the rest, and every mechanism lands as an exit code the existing gate
 already consumes.
 
+*Route 1 reaches off-chain, shipped in slice 22 (issue #78).* The whole of
+Part 4 assumed the prover was the gate worth gaming, which was true while
+the threat was a human reading validators. It is the wrong assumption
+against an autonomous caller, which does not call the validator at all: it
+calls the API, the indexer and the transaction builder, and a provably
+correct validator signs whatever that builder hands it. So the hatch
+ratchet now counts TypeScript, on the argument route 1 already makes. A
+type checker is a prover with a weak logic; `as any`, `as unknown as T`,
+the `!` assertion, `@ts-ignore` and a tsconfig with `"strict": false` each
+discharge an obligation it had, and `tsc` exits 0 on all of them.
+`@ts-expect-error` is deliberately uncounted: it fails the build once the
+error it names is fixed, so it cannot rot in place, and counting it would
+push people toward the suppression that can. The rest of the off-chain
+surface is #80 (fast-check in the counterexample ledger) and #81 (the
+builder's own attack taxonomy).
+
+*The blueprint half, shipped in slice 23 (issue #79).* `plutus-budget.py`
+read `plutus.json` for exactly one field, `compiledCode`, and used it for
+script size. The blueprint also carries the datum and redeemer *schemas*,
+and nothing held the off-chain encoder to them. `blueprint-guard.py`
+decodes the PlutusData a builder produced and asks the blueprint whether
+the validator would recognise it. The blueprint is the right oracle
+because `aiken build` regenerates it from the validator, so it cannot
+drift from the on-chain truth the way a hand-kept type does.
+
+Three honesty rules, since a conformance checker that guesses is worse
+than none: a schema construct the parser does not know is reported
+UNCHECKED rather than conformant; a `$ref` that does not resolve is an
+error rather than an empty schema everything satisfies; and an opaque
+`Data` schema conforms by definition but every conforming value is told
+how many fields rode through on that opacity. An opaque schema does not
+red by default — that would make the gate unadoptable in the repos that
+need it most — and `requireTyped` turns those into failures once a repo
+is ready.
+
+Building it surfaced a defect in the ratchet itself, latent since the
+first category and now fixed with regression cases: `--check` read a
+category absent from the baseline as a recorded zero, so **every category
+this plugin has ever added was a red gate for every repo that armed before
+it** — on an upgrade they did not ask for, over a diff they did not write.
+An absent key now reads as new, is reported and counted, and ratchets from
+the next `--baseline` on.
+
 **4a. `spec-guard.py` — the statement ratchet (route 2: weaken the
 theorem) — shipped in slice 4.** What landed covers Aiken and Dafny:
 Aiken test and property signatures (name, fuzzer types, `fail` polarity)
@@ -752,6 +795,8 @@ existing harness and each is independently shippable.
 | 19 | Recall follow-ons (Part 3e): `memory.priors` refuter wiring with emission probe; decision nodes from run artifacts; `substrate-graph.mjs --json` + primitive ingestion; gemini provider; dark-launched per-prompt hook (`FPL_MEM_PROMPT=1`); `WORK.consolidate.md` (3d's template half) | **shipped** |
 | 20 | Issues #62–#72 closed together (v1.36.0): relation gate `differential` / `bite` / `authority` / `--scan` (#62); Dafny in the counterexample ledger (#70); `ProofV1` + the `proof-audit` node in the feature campaign, `record-run` filing WEAKENED as `BLOCKED-PROOF` (#72); the `prover` role and opt-in `WORK.verified.md` (#71); the token estimate, `maxEstimatedTokens`, `cacheTtl`, effort-transition warnings and the estimate/profile instrumentation (#64–#67, the sweep itself still to run); `prompt-audit.py` as an advisory harness step (#68); the cached-prefix wording and the two thoroughness boosters retired (#69) | **shipped** |
 | 21 | Part 4 off the roadmap (v1.38.0): spec-guard parses Lean, Coq, Isabelle, TLA+ theorems plus the invariants a TLC `.cfg` names, and Kani harnesses and contracts; `--axioms` records each headline theorem's assumption set from the prover's own listing and reds on a new one; DoD `— proof: <obligation id>` tails are enforced; the attack taxonomy ships as `templates/attack-taxonomy.json`, copied to `.fluxpoint-attacks.json` by init and red per unspecified class (4d, slice 12); Kani concrete playback and Apalache ITF traces join the counterexample ledger under the same pin discipline (3b); every new parser verified against the real toolchain (Lean 4.15.0, Coq 8.18.0, Dafny 4.9.1, Kani 0.67.0, Apalache 0.47.2) and the fixtures captured from those runs | **shipped** |
+| 22 | Route 1 reaches off-chain (#78): `proof-guard.py` counts TypeScript escape hatches (`ts.any`, `ts.double_cast`, `ts.non_null`, `ts.ts_ignore`, `flags.types_off`), with strings stripped before counting and the `@ts-` directives read from the raw line; `@ts-expect-error` deliberately uncounted; plain JavaScript does not arm the ratchet. Also fixes the latent defect that made every category this plugin ever added a red gate for repos that armed before it | **shipped** |
+| 23 | Blueprint conformance (#79): `blueprint-guard.py` decodes PlutusData and checks it against the CIP-57 schema `plutus.json` declares — `--scan` names every opaque schema, `--conform` checks hex against a purpose, `--check` runs the corpora in `.fluxpoint-blueprint.json` and reds on a refused value, a stale manifest or an unresolvable `$ref`. Stdlib-only CBOR reader verified against `cbor2` on 24 values; fixtures are real blueprints from the aiken compiler's own repository | **shipped** |
 
 ## Part 6 — named absences
 
