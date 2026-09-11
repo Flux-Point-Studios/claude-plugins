@@ -126,6 +126,38 @@ report("the assumptions ride out with the number",
        est(plain)["assumptions"]["effortMult"] == cg.EFFORT_MULT, "stated")
 
 # ==================== the ceiling refuses, like maxNodes =================
+
+packet = {"packet": {"goal": "x" * 4000 + "\u20ac" * 20}, "identity": {"sha256": "a" * 64}}
+repeated = copy.deepcopy(fan)
+repeated["nodes"][0]["repeat"] = {"maxRounds": 3}
+reduced = copy.deepcopy(plain)
+reduced["nodes"].append({"id": "reduce", "reduce": {"from": "f", "over": "findings", "dedupeBy": ["title"]}})
+for name, shape, charged in [("workers", plain, 1), ("refuters", panel, 7),
+                             ("fan-out", fan, 3), ("repeat", repeated, 9),
+                             ("advisors", parked, 3), ("sentinel exclusion", guarded, 1),
+                             ("reducer exclusion", reduced, 1)]:
+    with_spec = cg.estimate_tokens(shape, CONTRACTS, packet)
+    delta = with_spec["total"] - est(shape)["total"]
+    input_cost = with_spec["assumptions"]["specificationInputTokens"]
+    report(f"spec input covers {name}", delta == charged * input_cost and input_cost > 4000,
+           f"{charged} calls charged {delta}")
+weighted = chain("high", model="claude-haiku-4-5-20251001")
+weighted_spec = cg.estimate_tokens(weighted, CONTRACTS, packet)
+report("spec input retains model price weighting",
+       weighted_spec["total"] - est(weighted)["total"] == round(weighted_spec["assumptions"]["specificationInputTokens"] * 0.25),
+       "haiku input weighted without effort scaling")
+named_sentinel = copy.deepcopy(plain)
+named_sentinel["nodes"][0]["id"] = "tree-check"
+report("a user node named tree-check is priced as work",
+       cg.estimate_tokens(named_sentinel, CONTRACTS, packet)["total"] == cg.estimate_tokens(plain, CONTRACTS, packet)["total"],
+       "only actual sentinels omit the packet")
+bounded = copy.deepcopy(plain)
+total = cg.estimate_tokens(bounded, CONTRACTS, packet)["total"]
+bounded["budget"]["maxEstimatedTokens"] = total
+report("the exact spec-aware ceiling is accepted", not cg.validate(bounded, CONTRACTS, specification=packet), str(total))
+bounded["budget"]["maxEstimatedTokens"] = total - 1
+report("one token under the spec-aware estimate is rejected",
+       any("maxEstimatedTokens" in finding for finding in cg.validate(bounded, CONTRACTS, specification=packet)), str(total - 1))
 over = chain("high", "high")
 over["budget"]["maxEstimatedTokens"] = 1000
 e = cg.validate(over, CONTRACTS)

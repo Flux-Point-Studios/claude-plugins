@@ -95,6 +95,18 @@ limitations are documented in
 
 ## Graph mode
 
+Implementation starts with `/fluxpoint:grill-me` on Claude Code or
+`$fluxpoint-grill-me` on Codex. The model researches the decisions, supplies
+options with costs, chooses a baseline and explains its evidence. The user
+can override those defaults. The resulting requirement packet is locked
+before implementation; each requirement names executable checks.
+
+Mutating graph compilation requires that packet, and newly initialized
+loops run its checks through the harness. Existing copied harnesses need
+an explicit update. See [the spec-first contract](docs/spec-first.md) and
+[packet format](plugins/fluxpoint/references/spec-format.md). Tests, bounded
+model checks and proofs retain their declared scope and assumptions.
+
 A campaign is declared as a `graph-ir` block in `WORK.md`: nodes with named
 contracts, edges, a verification tier per node and a budget ceiling.
 `scripts/compile-graph.py` compiles it deterministically into a Workflow

@@ -31,7 +31,12 @@ step; do not stop at copying files.
      `.codex/config.toml`, creating the file if absent. It enables
      `fluxpoint@fluxpoint` once the marketplace has been added with
      `codex plugin marketplace add Flux-Point-Studios/fluxpoint-plugins`.
-5. Tailor `scripts/harness.sh`: inspect the repo's real stack and replace
+5. Perform `/fluxpoint:grill-me` (Codex: `$fluxpoint-grill-me`) for the goal.
+   Draft and challenge the packet, fill routine decisions with model defaults,
+   and lock `.fluxpoint-spec.json`. The new WORK.md declares its mandatory
+   spec runner. On an existing WORK.md add `SPEC: .fluxpoint-spec.json` and
+   merge that runner from the template into the existing harness.
+   Tailor `scripts/harness.sh`: inspect the repo's real stack and replace
    the auto-detection floor with the exact commands the Definition of Done
    requires (build, unit and property tests, lint, typecheck, formal
    checks, preview-net exercises). Then run `scripts/harness.sh --full` and
@@ -144,6 +149,9 @@ step; do not stop at copying files.
    not parse yet, so an unarmed corner never reads as a covered one.
    Confirm `harness.sh --full` actually invokes the prover; per-file
    checking on edit is not a Definition-of-Done gate.
+   After onboarding has finished arming or updating these baselines, review
+   them and re-run `specification.py --lock`; the packet lock covers the
+   proof baseline too. Re-run the full harness with the final lock.
    Where the repo has headline theorems — the results everything else
    rests on — record what the prover says they depend on, so an
    assumption that later sneaks in through a helper lemma is a red gate

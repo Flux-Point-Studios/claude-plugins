@@ -61,6 +61,12 @@ twice. Each one has an `agents/openai.yaml` with its display name; the
 commands that write files or fire effects (`init`, `migrate`, `release`,
 `graph-design`, `graph-run`, `emit`) are explicit-invocation only.
 
+The new `grill-me` entry point is also available for implicit Codex selection
+because it is a planning prerequisite. It shares `commands/grill-me.md` with
+Claude's `/fluxpoint:grill-me`. Both populate the same requirement packet;
+optional user answers can revise model defaults and never supply implicit
+authorization. The compiler, packet runner and lock checks are shared Python.
+
 **Agents.** Claude Code runs `agents/*.md` as subagents by name. Codex has
 subagents but does not read those files, so the commands that name an
 agent tell a Codex session to hand the agent file to a subagent as its

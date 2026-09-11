@@ -5,6 +5,14 @@ description: How to run Loop Engineering at Flux Point — choosing between /goa
 
 # Loop Engineering
 
+Before implementing a new goal, run `/fluxpoint:grill-me` (Codex:
+`$fluxpoint-grill-me`). Draft the decisions and checkable requirements, then
+lock `.fluxpoint-spec.json`. Model defaults let authorized routine work
+proceed while the user retains an override. Put `SPEC: .fluxpoint-spec.json`
+in WORK.md and wire `specification.py --run` through the scaffolded harness.
+Existing copied harnesses need that integration explicitly; installing a
+plugin update cannot edit them. Each slice implements named requirement ids.
+
 The loop is the artifact. Every loop has three parts: a state file
 (`WORK.md`, `MODE: loop`), a deterministic harness (`scripts/harness.sh`),
 and a driver. The agent never decides "done"; the harness does.

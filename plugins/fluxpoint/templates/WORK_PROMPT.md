@@ -1,5 +1,12 @@
 Read WORK.md in the repo root. It is the loop's single source of state.
 
+Before implementation, read its `.fluxpoint-spec.json` and validate the lock
+with the plugin's `scripts/py.sh specification.py --check`. If absent, stale
+or unrelated to the goal, perform the grill-me decision pass first. Model
+defaults are changeable recommendations, never user approval. Work from the
+requirement ids and their declared checks; do not weaken the packet or
+rebaseline proofs to make an implementation pass.
+
 Each iteration of this loop starts with a fresh context. Work exactly one
 slice per iteration, and a slice is not finished until it is shipped or
 explicitly parked:

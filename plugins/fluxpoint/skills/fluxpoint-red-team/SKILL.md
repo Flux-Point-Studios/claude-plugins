@@ -1,6 +1,6 @@
 ---
 name: fluxpoint-red-team
-description: Adversarial review of the current diff with the red-team-reviewer agent — validator, oracle, keeper, key-handling and infra attack surface. Codex entry point for the fluxpoint `red-team` command.
+description: Review a working change or PR with attack coverage, executable evidence, a composition pass and skeptical reproduction. Codex entry point for the fluxpoint `red-team` command.
 user-invocable: false
 disable-model-invocation: true
 ---

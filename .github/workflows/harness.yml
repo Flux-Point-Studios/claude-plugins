@@ -68,3 +68,19 @@ jobs:
             if [ ! -x "$f" ]; then echo "not executable: $f"; missing=1; fi
           done < <(git ls-files '*.sh')
           exit $missing
+
+  windows-specification:
+    name: Windows specification (Python 3.9)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Exercise specification and process cleanup
+        env:
+          PYTHONIOENCODING: utf-8
+        run: python plugins/fluxpoint/tests/specification-test.py

@@ -42,6 +42,8 @@ def record(summary, run_id, *flags, template="WORK.md"):
         work = os.path.join(d, "WORK.md")
         with open(os.path.join(PLUGIN, "templates", template), encoding="utf-8") as fh:
             src = fh.read()
+        # These historical summaries predate requirement packets.
+        src = src.replace("SPEC: .fluxpoint-spec.json\n", "")
         with open(work, "w", encoding="utf-8", newline="\n") as fh:
             fh.write(src)
         r = subprocess.run(
@@ -91,6 +93,15 @@ report("BLOCK and WEAKENED together: outcome is BLOCKED-REDTEAM",
        "| wf_p3 | BLOCKED-REDTEAM |" in text, "red-team first")
 report("  and the claim carries both",
        "red-team returned BLOCK" in text and "proof-audit returned WEAKENED" in text, "both")
+
+s = summary("SOUND", ["access.py"])
+s["results"]["rt"] = {"verdict": "BLOCK", "findings": [],
+                      "review": {"blockers": ["No authority attack executed"], "coverage": []}}
+text, art, _ = record(s, "wf_rt_incomplete", "--red-team", "SHIP")
+report("incomplete red-team coverage blocks with no fabricated finding",
+       art.get("outcome") == "BLOCKED-REDTEAM", "derived BLOCK wins over SHIP flag")
+report("additional red-team review evidence survives recording",
+       art.get("summary", {}).get("results", {}).get("rt") == s["results"]["rt"], "review retained")
 
 # ==================== UNPROVEN is a verification that did not run ========
 text, art, _ = record(summary("UNPROVEN", ["src/vault.dfy"]), "wf_p4")

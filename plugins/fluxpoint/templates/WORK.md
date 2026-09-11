@@ -2,6 +2,7 @@
 
 STATUS: ACTIVE
 MODE: loop
+SPEC: .fluxpoint-spec.json
 
 One goal, one Definition of Done, one Evidence table — whether the work is
 decomposed as loop slices, as a graph campaign, or both. MODE is `loop`
@@ -25,6 +26,9 @@ needs a row in Evidence.
 
 Loop slices, worked one per iteration per `WORK_PROMPT.md`.
 
+Complete the grill-me decision pass and lock the requirement packet before
+implementation. Map each slice to requirement ids and their failing checks.
+
 - [ ] <failing test for the first behavior>
 - [ ] <minimum code to flip it green>
 - [ ] <next slice>
@@ -41,7 +45,7 @@ for a worked council → build → independently-gated campaign.
   "version": 1,
   "name": "campaign",
   "campaign": "<one line: what this campaign proves or produces>",
-  "budget": { "maxNodes": 12, "verifyFloorTokens": 50000, "cacheTtl": "1h", "maxEstimatedTokens": 150000 },
+  "budget": { "maxNodes": 12, "verifyFloorTokens": 50000, "cacheTtl": "1h", "maxEstimatedTokens": 200000 },
   "defaults": { "effort": "medium" },
   "argDefaults": {
     "target": "the uncommitted diff: git diff HEAD, plus untracked files from git status"

@@ -64,7 +64,8 @@ check "no state file -> non-zero" "1" "$?"
 
 # --- 2. unified 5-column Evidence table gets the graph row ---
 newrepo
-cp "$PLUGIN/templates/WORK.md" WORK.md
+legacy_work() { sed '/^SPEC: /d' "$PLUGIN/templates/WORK.md" > WORK.md; }
+legacy_work
 printf '%s' "$RESULT" | "$FPL_PY" "$PLUGIN/scripts/record-run.py" --run-id wf_u1 --harness 0 --red-team SHIP >/dev/null
 contains "unified table: row appended" "| wf_u1 | COMPLETE |" WORK.md
 contains "unified table: claim column" "1 node(s) OK, 1 dead, 2 produced item(s)" WORK.md
@@ -73,7 +74,7 @@ check "provenance artifact written" "0" "$([ -f .claude/fluxpoint/runs/wf_u1.jso
 
 # --- 2b. budget-skipped nodes are reported, never filed as success ---
 newrepo
-cp "$PLUGIN/templates/WORK.md" WORK.md
+legacy_work
 SKIPPED='{"campaign":"c","outcome":"COMPLETE","results":{},"provenance":[{"node":"a","status":"OK"},{"node":"b","status":"SKIPPED","detail":"budget floor"}]}'
 printf '%s' "$SKIPPED" | "$FPL_PY" "$PLUGIN/scripts/record-run.py" --run-id wf_sk1 >/dev/null
 contains "skipped node: flagged in Evidence claim" "1 SKIPPED on budget — coverage incomplete" WORK.md
@@ -87,7 +88,7 @@ check "skipped node: counted in artifact" "1" \
 # reported its own blocking verdict depended on an orchestrator remembering
 # to pass it. The run already knows; the recorder now reads it.
 newrepo
-cp "$PLUGIN/templates/WORK.md" WORK.md
+legacy_work
 BLOCKED='{"campaign":"c","outcome":"COMPLETE","contracts":{"gate":"HarnessCheckV1","rt":"RedTeamV1"},
  "results":{"gate":{"exit":0},"rt":{"verdict":"BLOCK","findings":[{"severity":"HIGH"}]}},
  "provenance":[{"node":"gate","status":"OK"},{"node":"rt","status":"OK"}]}'
@@ -100,14 +101,14 @@ check "artifact records the derived verdict" "BLOCK" \
 
 # A flag that disagrees with the run does not get to win.
 newrepo
-cp "$PLUGIN/templates/WORK.md" WORK.md
+legacy_work
 printf '%s' "$BLOCKED" | "$FPL_PY" "$PLUGIN/scripts/record-run.py" --run-id wf_b2 \
   --harness 0 --red-team SHIP >/dev/null
 contains "a SHIP flag cannot override a BLOCK in the run" "| wf_b2 | BLOCKED-REDTEAM |" WORK.md
 
 # Worst exit wins: one red harness node is the campaign's answer.
 newrepo
-cp "$PLUGIN/templates/WORK.md" WORK.md
+legacy_work
 TWOGATES='{"campaign":"c","outcome":"COMPLETE","contracts":{"g1":"HarnessCheckV1","g2":"HarnessCheckV1"},
  "results":{"g1":{"exit":0},"g2":{"exit":2}},"provenance":[{"node":"g1","status":"OK"}]}'
 printf '%s' "$TWOGATES" | "$FPL_PY" "$PLUGIN/scripts/record-run.py" --run-id wf_b3 --harness 0 >/dev/null
@@ -115,7 +116,7 @@ contains "a red harness node beats a green one" "harness exit 2" WORK.md
 
 # A run from before contracts were emitted still gets read.
 newrepo
-cp "$PLUGIN/templates/WORK.md" WORK.md
+legacy_work
 OLD='{"campaign":"c","outcome":"COMPLETE","results":{"rt":{"verdict":"BLOCK","findings":[]}},
  "provenance":[{"node":"rt","status":"OK"}]}'
 printf '%s' "$OLD" | "$FPL_PY" "$PLUGIN/scripts/record-run.py" --run-id wf_b4 >/dev/null
@@ -123,7 +124,7 @@ contains "no contracts map: falls back to result shape" "| wf_b4 | BLOCKED-REDTE
 
 # A campaign with neither node keeps the flags as the fallback they are.
 newrepo
-cp "$PLUGIN/templates/WORK.md" WORK.md
+legacy_work
 printf '%s' "$RESULT" | "$FPL_PY" "$PLUGIN/scripts/record-run.py" --run-id wf_b5 \
   --harness 0 --red-team SHIP >/dev/null
 contains "no gate node: the flag is still used" "harness exit 0; red-team SHIP" WORK.md
@@ -148,7 +149,7 @@ case "$err" in *"no Evidence table header"*) check "missing table -> warns" "war
 
 # --- 5. SessionStart injection reflects the unified world ---
 newrepo
-cp "$PLUGIN/templates/WORK.md" WORK.md
+legacy_work
 printf '%s' "$RESULT" | "$FPL_PY" "$PLUGIN/scripts/record-run.py" --run-id wf_s1 --harness 0 --red-team SHIP >/dev/null
 mkdir -p .claude/fluxpoint; printf 'PASS 2026-01-01T00:00:00Z\n' >.claude/fluxpoint/last-harness
 out="$(printf '{"session_id":"s","cwd":"%s"}' "$ROOT/r" | bash "$PLUGIN/scripts/inject-state.sh")"

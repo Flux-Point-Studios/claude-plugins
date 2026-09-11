@@ -376,6 +376,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--root", default=".")
+    ap.add_argument("--require-armed", action="store_true",
+                    help="fail --check when the ratchet or an active category is unarmed")
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--scan", action="store_true")
     g.add_argument("--baseline", action="store_true")
@@ -429,14 +431,14 @@ def main():
 
     # --check
     if not os.path.exists(bpath):
-        if not applicable(counts, root):
+        if not args.require_armed and not applicable(counts, root):
             return 0  # dormant, like the gate in a repo with no harness
         print(
             f"proof-guard: proof files are tracked but {BASELINE} is absent, so the "
             f"ratchet is NOT armed. Run: proof-guard.py --baseline",
             file=sys.stderr,
         )
-        return 0  # bootstrapping must not block; arming is a deliberate step
+        return 1 if args.require_armed else 0
 
     with open(bpath, encoding="utf-8") as fh:
         doc = json.load(fh)
@@ -447,14 +449,14 @@ def main():
         # plain JS repo turn the first `--no-verify` in a tracked workflow
         # file into a proof-guard RED, in a repo with zero proof files.
         # An absent section is the absent-file case.
-        if not applicable(counts, root):
+        if not args.require_armed and not applicable(counts, root):
             return 0
         print(
             f"proof-guard: proof files are tracked but {BASELINE} has no hatch "
             f"counts, so the ratchet is NOT armed. Run: proof-guard.py --baseline",
             file=sys.stderr,
         )
-        return 0
+        return 1 if args.require_armed else 0
     base = doc.get("counts", {})
 
     # A category the baseline never recorded is NEW since it was written —
@@ -478,6 +480,8 @@ def main():
             for h in hits[cat][:3]:
                 print(f"      {h}")
         print("  Re-record with --baseline to hold them down.")
+        if args.require_armed:
+            return 1
     if risen:
         print("proof-guard: RED — proof strength decreased\n", file=sys.stderr)
         for cat, was, now in risen:
